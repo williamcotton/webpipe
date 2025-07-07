@@ -1,0 +1,9 @@
+GET /page/:id
+  |> jq: `{ title: .itemTitle }`
+  |> lua: `return { title }`
+  |> pg: `select * from items`
+
+pg articlesQuery = `select * from articles`
+
+GET /articles
+  |> pg: articlesQuery
