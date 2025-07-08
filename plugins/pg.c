@@ -95,9 +95,29 @@ json_t *pg_result_to_json(PGresult *result) {
   ExecStatusType status = PQresultStatus(result);
 
   if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
+    // Return standardized error format
     json_t *error_obj = json_object();
-    json_object_set_new(error_obj, "error",
-                        json_string(PQresultErrorMessage(result)));
+    json_t *errors_array = json_array();
+    json_t *error_detail = json_object();
+    
+    json_object_set_new(error_detail, "type", json_string("sqlError"));
+    json_object_set_new(error_detail, "message", json_string(PQresultErrorMessage(result)));
+    
+    // Add SQL state if available
+    char *sqlstate = PQresultErrorField(result, PG_DIAG_SQLSTATE);
+    if (sqlstate) {
+      json_object_set_new(error_detail, "sqlstate", json_string(sqlstate));
+    }
+    
+    // Add severity if available
+    char *severity = PQresultErrorField(result, PG_DIAG_SEVERITY);
+    if (severity) {
+      json_object_set_new(error_detail, "severity", json_string(severity));
+    }
+    
+    json_array_append_new(errors_array, error_detail);
+    json_object_set_new(error_obj, "errors", errors_array);
+    
     return error_obj;
   }
 
@@ -166,8 +186,16 @@ json_t *execute_sql(const char *sql, json_t *params, void *arena,
   // Try to initialize connection if needed
   if (!pg_plugin_init()) {
     json_t *error = json_object();
-    json_object_set_new(error, "error",
-                        json_string("Failed to connect to database"));
+    json_t *errors_array = json_array();
+    json_t *error_detail = json_object();
+    
+    json_object_set_new(error_detail, "type", json_string("sqlError"));
+    json_object_set_new(error_detail, "message", json_string("Failed to connect to database"));
+    json_object_set_new(error_detail, "sqlstate", json_string("08000")); // Connection exception
+    
+    json_array_append_new(errors_array, error_detail);
+    json_object_set_new(error, "errors", errors_array);
+    
     return error;
   }
 
@@ -229,10 +257,20 @@ json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func,
   // Execute query
   json_t *result = execute_sql(sql_query, sql_params, arena, alloc_func);
 
-  // Check if there was an error
-  json_t *error = json_object_get(result, "error");
-  if (error) {
-    return result;
+  // Check if there was an error (using standardized format)
+  json_t *errors = json_object_get(result, "errors");
+  if (errors) {
+    // Add the SQL query to the error for debugging
+    json_t *first_error = json_array_get(errors, 0);
+    if (first_error) {
+      json_object_set_new(first_error, "query", json_string(sql_query));
+    }
+    
+    // Copy input and add the errors
+    json_t *response = json_deep_copy(input);
+    json_object_set_new(response, "errors", json_deep_copy(errors));
+    
+    return response;
   }
 
   // Create response by copying input and adding data
