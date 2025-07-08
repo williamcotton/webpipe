@@ -265,31 +265,64 @@ int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena
 }
 
 bool match_route(const char *pattern, const char *url, json_t *params) {
-    // Simple route matching - could be enhanced
+    // Skip leading slash if present
+    if (url[0] == '/') {
+        url++;
+    }
+    
+    // Split pattern and URL into parts using strtok_r for thread safety
     char *pattern_copy = strdup(pattern);
     char *url_copy = strdup(url);
     
-    char *pattern_part = strtok(pattern_copy, "/");
-    char *url_part = strtok(url_copy, "/");
+    char *pattern_parts[64];  // Max 64 parts
+    char *url_parts[64];
+    int pattern_count = 0;
+    int url_count = 0;
     
-    while (pattern_part && url_part) {
-        if (pattern_part[0] == ':') {
-            // Parameter
-            json_object_set_new(params, pattern_part + 1, json_string(url_part));
-        } else if (strcmp(pattern_part, url_part) != 0) {
+    char *saveptr1 = NULL;
+    char *saveptr2 = NULL;
+    char *pattern_part = strtok_r(pattern_copy, "/", &saveptr1);
+    while (pattern_part && pattern_count < 64) {
+        pattern_parts[pattern_count++] = pattern_part;
+        pattern_part = strtok_r(NULL, "/", &saveptr1);
+    }
+    
+    char *url_part = strtok_r(url_copy, "/", &saveptr2);
+    while (url_part && url_count < 64) {
+        url_parts[url_count++] = url_part;
+        url_part = strtok_r(NULL, "/", &saveptr2);
+    }
+    
+    // If different number of parts, no match
+    if (pattern_count != url_count) {
+        free(pattern_copy);
+        free(url_copy);
+        return false;
+    }
+    
+    // Compare parts
+    for (int i = 0; i < pattern_count; i++) {
+        if (pattern_parts[i][0] == ':') {
+            // Parameter - extract the parameter name (remove the colon)
+            char *param_name = pattern_parts[i] + 1;
+            // Try to parse as integer, otherwise store as string
+            char *endptr = NULL;
+            long val = strtol(url_parts[i], &endptr, 10);
+            if (*endptr == '\0') {
+                json_object_set_new(params, param_name, json_integer(val));
+            } else {
+                json_object_set_new(params, param_name, json_string(url_parts[i]));
+            }
+        } else if (strcmp(pattern_parts[i], url_parts[i]) != 0) {
             free(pattern_copy);
             free(url_copy);
             return false;
         }
-        
-        pattern_part = strtok(NULL, "/");
-        url_part = strtok(NULL, "/");
     }
     
-    bool match = (pattern_part == NULL && url_part == NULL);
     free(pattern_copy);
     free(url_copy);
-    return match;
+    return true;
 }
 
 static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connection,
@@ -315,6 +348,22 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
             if (strcmp(stmt->data.route_def.method, method) == 0) {
                 json_t *params = json_object_get(request, "params");
                 if (match_route(stmt->data.route_def.route, url, params)) {
+                    // If pipeline is empty, return the request object as the response
+                    if (!stmt->data.route_def.pipeline) {
+                        set_current_arena(NULL);
+                        char *response_str = json_dumps(request, JSON_COMPACT);
+                        set_current_arena(arena);
+                        struct MHD_Response *mhd_response = 
+                            MHD_create_response_from_buffer(strlen(response_str),
+                                                           (void*)response_str,
+                                                           MHD_RESPMEM_MUST_FREE);
+                        MHD_add_response_header(mhd_response, "Content-Type", "application/json");
+                        (void)MHD_queue_response(connection, 200, mhd_response);
+                        MHD_destroy_response(mhd_response);
+                        set_current_arena(NULL);
+                        arena_free(arena);
+                        return MHD_YES;
+                    }
                     // Execute pipeline with result handling
                     json_t *final_response = NULL;
                     int response_code = 200;

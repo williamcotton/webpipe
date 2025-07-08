@@ -1,7 +1,5 @@
 GET /page/:id
-  |> jq: `{ title: .itemTitle }`
-  |> lua: `return { title }`
-  |> pg: `select * from items`
+  |> jq: `.`
 
 pg teamsQuery = `SELECT * FROM teams`
 
