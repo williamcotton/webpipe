@@ -49,8 +49,8 @@ POST /api/employees {
     success: true,
     employee: .data[0].rows[0]
   }`
-  |> result {
-    ok(201) {
+  |> result
+    ok(201):
       |> jq: `{
         success: true,
         data: .employee,
@@ -59,28 +59,34 @@ POST /api/employees {
           version: "1.0"
         }
       }`
-    }
-    validationError(400) {
+    validationError(400):
       |> jq: `{
         error: "Validation failed",
-        fields: .errors,
+        fields: .errors[0].field,
+        rule: .errors[0].rule,
         meta: {
           timestamp: now,
           support: "help@example.com"
         }
       }`
-    }
-    error(500) {
+    sqlError(500):
       |> jq: `{
-        error: "Internal server error",
-        message: .error,
+        error: "Database error",
+        sqlstate: .errors[0].sqlstate,
+        message: .errors[0].message,
         meta: {
           timestamp: now,
           contact: "support@example.com"
         }
       }`
-    }
-  }
+    default(500):
+      |> jq: `{
+        error: "Internal server error",
+        meta: {
+          timestamp: now,
+          contact: "support@example.com"
+        }
+      }`
 }
 ```
 
