@@ -74,33 +74,19 @@ jv jansson_to_jv(json_t *json) {
     return jv_null();
 }
 
-// Global jq state for caching compiled programs
-static jq_state *jq_global_state = NULL;
-
-// Initialize jq state
-void jq_plugin_init() {
-    if (!jq_global_state) {
-        jq_global_state = jq_init();
-    }
-}
-
-// Cleanup jq state
-void jq_plugin_cleanup() {
-    if (jq_global_state) {
-        jq_teardown(&jq_global_state);
-        jq_global_state = NULL;
-    }
-}
-
 // Plugin execute function
 json_t *plugin_execute(json_t *input, MemoryArena *arena, const char *jq_program) {
-    if (!jq_global_state) {
-        jq_plugin_init();
+    // Create a new jq state for each execution (thread-safe)
+    jq_state *jq = jq_init();
+    if (!jq) {
+        fprintf(stderr, "jq: Failed to initialize jq state\n");
+        return NULL;
     }
     
     // Compile jq program
-    if (jq_compile(jq_global_state, jq_program) == 0) {
+    if (jq_compile(jq, jq_program) == 0) {
         fprintf(stderr, "jq: Failed to compile program: %s\n", jq_program);
+        jq_teardown(&jq);
         return NULL;
     }
     
@@ -108,21 +94,18 @@ json_t *plugin_execute(json_t *input, MemoryArena *arena, const char *jq_program
     jv jv_input = jansson_to_jv(input);
     
     // Execute jq program
-    jq_start(jq_global_state, jv_input, 0);
+    jq_start(jq, jv_input, 0);
     
-    jv result = jq_next(jq_global_state);
+    jv result = jq_next(jq);
+    json_t *output = NULL;
+    
     if (jv_is_valid(result)) {
-        json_t *output = jv_to_jansson(result);
+        output = jv_to_jansson(result);
         jv_free(result);
-        return output;
-    } else {
-        jv_free(result);
-        return NULL;
     }
-}
-
-// Plugin cleanup function called when plugin is unloaded
-__attribute__((destructor))
-void plugin_destructor() {
-    jq_plugin_cleanup();
+    
+    // Clean up jq state
+    jq_teardown(&jq);
+    
+    return output;
 }

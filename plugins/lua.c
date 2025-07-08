@@ -9,9 +9,6 @@
 // Memory arena type (forward declaration)
 typedef struct MemoryArena MemoryArena;
 
-// Global lua state for caching
-static lua_State *lua_global_state = NULL;
-
 // Conversion functions
 void jansson_to_lua(lua_State *L, json_t *json) {
     if (json_is_null(json)) {
@@ -64,9 +61,10 @@ json_t *lua_to_jansson(lua_State *L, int index) {
             bool is_array = true;
             int max_index = 0;
             int count = 0;
+            int abs_index = lua_absindex(L, index);
             
             lua_pushnil(L);
-            while (lua_next(L, index) != 0) {
+            while (lua_next(L, abs_index) != 0) {
                 if (lua_type(L, -2) == LUA_TNUMBER) {
                     int idx = lua_tonumber(L, -2);
                     if (idx > max_index) max_index = idx;
@@ -84,7 +82,7 @@ json_t *lua_to_jansson(lua_State *L, int index) {
                 json_t *array = json_array();
                 for (int i = 1; i <= max_index; i++) {
                     lua_pushnumber(L, i);
-                    lua_gettable(L, index);
+                    lua_gettable(L, abs_index);
                     json_array_append_new(array, lua_to_jansson(L, -1));
                     lua_pop(L, 1);
                 }
@@ -93,7 +91,7 @@ json_t *lua_to_jansson(lua_State *L, int index) {
                 // It's an object
                 json_t *object = json_object();
                 lua_pushnil(L);
-                while (lua_next(L, index) != 0) {
+                while (lua_next(L, abs_index) != 0) {
                     const char *key = lua_tostring(L, -2);
                     if (key) {
                         json_object_set_new(object, key, lua_to_jansson(L, -1));
@@ -108,53 +106,39 @@ json_t *lua_to_jansson(lua_State *L, int index) {
     }
 }
 
-// Initialize lua state
-void lua_plugin_init() {
-    if (!lua_global_state) {
-        lua_global_state = luaL_newstate();
-        luaL_openlibs(lua_global_state);
-    }
-}
-
-// Cleanup lua state
-void lua_plugin_cleanup() {
-    if (lua_global_state) {
-        lua_close(lua_global_state);
-        lua_global_state = NULL;
-    }
-}
-
 // Plugin execute function
 json_t *plugin_execute(json_t *input, MemoryArena *arena, const char *lua_code) {
-    if (!lua_global_state) {
-        lua_plugin_init();
+    // Create a new Lua state for each execution (thread-safe)
+    lua_State *L = luaL_newstate();
+    if (!L) {
+        fprintf(stderr, "lua: Failed to create new Lua state\n");
+        return NULL;
     }
+    luaL_openlibs(L);
     
     // Push input as 'request' global variable
-    jansson_to_lua(lua_global_state, input);
-    lua_setglobal(lua_global_state, "request");
+    jansson_to_lua(L, input);
+    lua_setglobal(L, "request");
     
     // Execute lua code
-    if (luaL_dostring(lua_global_state, lua_code) != LUA_OK) {
-        const char *error = lua_tostring(lua_global_state, -1);
+    if (luaL_dostring(L, lua_code) != LUA_OK) {
+        const char *error = lua_tostring(L, -1);
         fprintf(stderr, "lua: Execution error: %s\n", error);
-        lua_pop(lua_global_state, 1);
+        lua_pop(L, 1);
+        lua_close(L);
         return NULL;
     }
     
     // Get result from stack
-    if (lua_gettop(lua_global_state) > 0) {
-        json_t *result = lua_to_jansson(lua_global_state, -1);
-        lua_pop(lua_global_state, 1);
-        return result;
+    json_t *result = NULL;
+    if (lua_gettop(L) > 0) {
+        result = lua_to_jansson(L, -1);
+        lua_pop(L, 1);
     } else {
         // No return value, return the original input
-        return json_incref(input);
+        result = json_incref(input);
     }
-}
-
-// Plugin cleanup function called when plugin is unloaded
-__attribute__((destructor))
-void plugin_destructor() {
-    lua_plugin_cleanup();
+    
+    lua_close(L);
+    return result;
 }

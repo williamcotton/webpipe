@@ -10,3 +10,6 @@ GET /articles
 
 GET /test
   |> jq: `.`
+
+GET /test2
+  |> lua: `return request`
