@@ -254,10 +254,10 @@ json_t* check_auth(json_t* request, arena_t* arena) {
 
 ```wp
 POST /api/users
-  |> validate: {
+  |> validate: `
     name: string(2..50)
     email: email
-  }
+  `
   |> lua: `return { sqlParams = { body.name, body.email } }`
   |> pg: `insert into users (name, email) values ($1, $2) returning *`
   |> result
@@ -283,17 +283,20 @@ POST /api/users
         table: .errors[0].table,
         query: .errors[0].attempted_query
       }`
-    authRequired(401): |> jq: `{
-      error: "Authentication required",
-      header: .errors[0].header,
-      format: .errors[0].expected_format
-    }`
-    authInvalid(401): |> jq: `{
-      error: "Invalid authentication",
-      expired: .errors[0].token_expired,
-      issued_at: .errors[0].issued_at
-    }`
-    default(500): |> jq: `{error: "Internal server error"}`
+    authRequired(401):
+      |> jq: `{
+        error: "Authentication required",
+        header: .errors[0].header,
+        format: .errors[0].expected_format
+      }`
+    authInvalid(401): 
+      |> jq: `{
+        error: "Invalid authentication",
+        expired: .errors[0].token_expired,
+        issued_at: .errors[0].issued_at
+      }`
+    default(500):
+      |> jq: `{error: "Internal server error"}`
 ```
 
 ## Benefits
