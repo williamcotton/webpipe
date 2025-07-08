@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <jansson.h>
+#include <microhttpd.h>
 
 // Forward declarations
 typedef struct ASTNode ASTNode;
@@ -105,6 +106,17 @@ typedef struct {
   int current;
 } Parser;
 
+// Arena allocation function types for plugins
+typedef void* (*arena_alloc_func)(void* arena, size_t size);
+typedef void (*arena_free_func)(void* arena);
+
+// Plugin interface with arena functions
+typedef struct {
+    char *name;
+    void *handle;
+    json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config);
+} Plugin;
+
 // Function declarations
 char *strdup_safe(const char *s);
 void set_current_arena(MemoryArena *arena);
@@ -134,15 +146,31 @@ void stringify_node(FILE *out, ASTNode *node, int level);
 int wp_runtime_init(const char *wp_file);
 void wp_runtime_cleanup(void);
 
-// Arena allocation function types for plugins
-typedef void* (*arena_alloc_func)(void* arena, size_t size);
-typedef void (*arena_free_func)(void* arena);
+// Internal function declarations (static functions that need prototypes)
+bool parser_is_at_end(Parser *parser);
+Token *parser_peek(Parser *parser);
+Token *parser_advance(Parser *parser);
+bool parser_check(Parser *parser, TokenType type);
+bool parser_match(Parser *parser, TokenType type);
+void parser_consume_newlines(Parser *parser);
+PipelineStep *parser_parse_pipeline(Parser *parser);
+ASTNode *parser_parse_route_definition(Parser *parser);
+ASTNode *parser_parse_variable_assignment(Parser *parser);
+ASTNode *parser_parse_statement(Parser *parser);
+void stringify_indent(FILE *out, int level);
+void stringify_pipeline(FILE *out, PipelineStep *pipeline, int level);
+void free_pipeline(PipelineStep *pipeline);
+void free_result_conditions(ResultCondition *conditions);
 
-// Plugin interface with arena functions
-typedef struct {
-    char *name;
-    void *handle;
-    json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config);
-} Plugin;
+// Server internal function declarations
+int load_plugin(const char *name);
+Plugin *find_plugin(const char *name);
+json_t *create_request_json(struct MHD_Connection *connection, 
+                           const char *url, const char *method,
+                           const char *upload_data, size_t *upload_data_size);
+int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
+                                json_t **final_response, int *response_code);
+int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena);
+bool match_route(const char *pattern, const char *url, json_t *params);
 
 #endif // WP_H

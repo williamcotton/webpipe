@@ -1,8 +1,10 @@
 -std=gnu2x
--Isrc
 -fno-common
 -fblocks
 -Weverything
+-Wno-padded
+-Wno-conditional-uninitialized
+-Wno-reserved-identifier
 -Wno-unknown-warning-option
 -Wno-poison-system-directories
 -Wno-declaration-after-statement
@@ -17,6 +19,7 @@
 -Wno-pre-c11-compat
 -Wno-pre-c2x-compat
 -Wno-covered-switch-default
+-Wno-implicit-int-float-conversion
 -I/opt/homebrew/include
 -L/opt/homebrew/lib
 -I/opt/homebrew/include/postgresql@14

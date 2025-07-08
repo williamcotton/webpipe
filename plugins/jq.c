@@ -5,6 +5,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Function prototype for plugin interface
+json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func, const char *filter);
+
 // Hash table for caching
 #define HASH_TABLE_SIZE 256
 #define HASH_MASK (HASH_TABLE_SIZE - 1)
@@ -25,7 +28,7 @@ static uint32_t hash_string(const char *str) {
   uint32_t hash = 5381;
   int c;
   while ((c = *str++)) {
-    hash = ((hash << 5) + hash) + c;
+    hash = ((hash << 5) + hash) + (uint32_t)c;
   }
   return hash;
 }
@@ -98,8 +101,6 @@ typedef struct {
   int valid;
 } jq_result;
 
-static __thread jq_result thread_result;
-
 // Minimal conversion functions
 static jv json_to_jv(json_t *j) {
   if (!j)
@@ -112,8 +113,10 @@ static jv json_to_jv(json_t *j) {
     return jv_true();
   case JSON_FALSE:
     return jv_false();
-  case JSON_INTEGER:
-    return jv_number(json_integer_value(j));
+  case JSON_INTEGER: {
+    json_int_t int_val = json_integer_value(j);
+    return jv_number((double)int_val);
+  }
   case JSON_REAL:
     return jv_number(json_real_value(j));
   case JSON_STRING:
@@ -234,3 +237,4 @@ json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func,
 
   return jv_to_json(out);
 }
+

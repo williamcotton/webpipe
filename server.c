@@ -101,7 +101,8 @@ int load_plugin(const char *name) {
     }
     
     // Get plugin execute function
-    json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = dlsym(handle, "plugin_execute");
+    json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = 
+        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))dlsym(handle, "plugin_execute");
     if (!execute) {
         fprintf(stderr, "Error getting plugin_execute for %s: %s\n", name, dlerror());
         dlclose(handle);
@@ -109,7 +110,7 @@ int load_plugin(const char *name) {
     }
     
     // Add to runtime plugins
-    runtime->plugins = realloc(runtime->plugins, sizeof(Plugin) * (runtime->plugin_count + 1));
+    runtime->plugins = realloc(runtime->plugins, sizeof(Plugin) * (size_t)(runtime->plugin_count + 1));
     runtime->plugins[runtime->plugin_count].name = strdup(name);
     runtime->plugins[runtime->plugin_count].handle = handle;
     runtime->plugins[runtime->plugin_count].execute = execute;
@@ -131,6 +132,7 @@ Plugin *find_plugin(const char *name) {
 json_t *create_request_json(struct MHD_Connection *connection, 
                            const char *url, const char *method,
                            const char *upload_data, size_t *upload_data_size) {
+    (void)connection; // Suppress unused parameter warning
     json_t *request = json_object();
     
     // Set method
@@ -170,7 +172,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
     while (step) {
         if (strcmp(step->plugin, "result") == 0) {
             // Handle result step
-            ASTNode *result_node = (ASTNode*)step->value;
+            ASTNode *result_node = (ASTNode*)(uintptr_t)step->value;
             
             // Determine which condition to execute based on current state
             ResultCondition *condition = result_node->data.result_step.conditions;
@@ -330,6 +332,9 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                          const char *version, const char *upload_data,
                          size_t *upload_data_size, void **con_cls) {
     
+    (void)cls; // Suppress unused parameter warning
+    (void)version; // Suppress unused parameter warning
+    
     if (*con_cls == NULL) {
         *con_cls = (void *)1;
         return MHD_YES;
@@ -385,7 +390,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                         // Add JSON content type header
                         MHD_add_response_header(mhd_response, "Content-Type", "application/json");
                         
-                        (void)MHD_queue_response(connection, response_code, mhd_response);
+                        (void)MHD_queue_response(connection, (unsigned int)response_code, mhd_response);
                         MHD_destroy_response(mhd_response);
                         
                         // json_decref(final_response);
@@ -394,7 +399,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                         const char *error_response = "{\"error\": \"Internal server error\"}";
                         struct MHD_Response *mhd_response = 
                             MHD_create_response_from_buffer(strlen(error_response),
-                                                           (void*)error_response,
+                                                           (void*)(uintptr_t)error_response,
                                                            MHD_RESPMEM_PERSISTENT);
                         (void)MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, mhd_response);
                         MHD_destroy_response(mhd_response);
@@ -413,7 +418,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     const char *response = "{\"error\": \"Not found\"}";
     struct MHD_Response *mhd_response = 
         MHD_create_response_from_buffer(strlen(response),
-                                       (void*)response,
+                                       (void*)(uintptr_t)response,
                                        MHD_RESPMEM_PERSISTENT);
     (void)MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, mhd_response);
     MHD_destroy_response(mhd_response);

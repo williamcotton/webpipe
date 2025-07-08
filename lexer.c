@@ -231,4 +231,4 @@ Token *lexer_tokenize(const char *source, int *token_count) {
   *token_count = count;
   lexer_free(lexer);
   return tokens;
-} 
+}

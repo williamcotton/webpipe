@@ -335,6 +335,14 @@ void stringify_node(FILE *out, ASTNode *node, int level) {
     fprintf(out, "%s %s = `%s`\n", node->data.var_assign.plugin,
             node->data.var_assign.name, node->data.var_assign.value);
     break;
+
+  case AST_PIPELINE_STEP:
+    // This case is not used in the current implementation
+    break;
+
+  case AST_RESULT_STEP:
+    // This case is not used in the current implementation
+    break;
   }
 }
 
@@ -385,6 +393,10 @@ void free_ast(ASTNode *node) {
 
   case AST_RESULT_STEP:
     free_result_conditions(node->data.result_step.conditions);
+    break;
+
+  case AST_PIPELINE_STEP:
+    // This case is not used in the current implementation
     break;
   }
 

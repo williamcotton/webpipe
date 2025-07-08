@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 // Arena allocation function types for plugins
 typedef void *(*arena_alloc_func)(void *arena, size_t size);
@@ -23,6 +24,14 @@ static const char *pg_port = "5432";
 static const char *pg_dbname = "express-test";
 static const char *pg_user = "postgres";
 static const char *pg_password = "postgres";
+
+// Function prototypes
+static int pg_plugin_init(void);
+static void pg_plugin_cleanup(void);
+static json_t *pg_result_to_json(PGresult *result);
+static json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func);
+json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *sql);
+static void plugin_destructor(void);
 
 // Initialize PostgreSQL connection (thread-safe)
 int pg_plugin_init() {
@@ -169,10 +178,10 @@ json_t *execute_sql(const char *sql, json_t *params, void *arena,
 
   if (params && json_is_array(params)) {
     // Parameterized query
-    int param_count = json_array_size(params);
+    size_t param_count = json_array_size(params);
     const char **param_values = alloc_func(arena, sizeof(char *) * param_count);
 
-    for (int i = 0; i < param_count; i++) {
+    for (size_t i = 0; i < param_count; i++) {
       json_t *param = json_array_get(params, i);
 
       if (json_is_string(param)) {
@@ -194,7 +203,7 @@ json_t *execute_sql(const char *sql, json_t *params, void *arena,
       }
     }
 
-    result = PQexecParams(pg_connection, sql, param_count, NULL, param_values,
+    result = PQexecParams(pg_connection, sql, (int)param_count, NULL, param_values,
                           NULL, NULL, 0);
   } else {
     // Simple query
@@ -235,3 +244,4 @@ json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func,
 
 // Plugin cleanup function called when plugin is unloaded
 __attribute__((destructor)) void plugin_destructor() { pg_plugin_cleanup(); }
+
