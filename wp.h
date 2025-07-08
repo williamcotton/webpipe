@@ -107,6 +107,11 @@ typedef struct {
 
 // Function declarations
 char *strdup_safe(const char *s);
+void set_current_arena(MemoryArena *arena);
+MemoryArena *get_current_arena(void);
+MemoryArena *arena_create(size_t size);
+void *arena_alloc(MemoryArena *arena, size_t size);
+void arena_free(MemoryArena *arena);
 Lexer *lexer_new(const char *source);
 void lexer_free(Lexer *lexer);
 char lexer_peek(Lexer *lexer);

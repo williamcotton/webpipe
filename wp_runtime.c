@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 // Include the existing wp.c definitions
 #include "wp.h"
@@ -631,15 +632,40 @@ void arena_free(MemoryArena *arena) {
     free(arena);
 }
 
+// Thread-local storage for current arena
+static pthread_key_t current_arena_key;
+static pthread_once_t arena_key_once = PTHREAD_ONCE_INIT;
+
+static void arena_key_init(void) {
+    pthread_key_create(&current_arena_key, NULL);
+}
+
+// Set current arena for this thread
+void set_current_arena(MemoryArena *arena) {
+    pthread_once(&arena_key_once, arena_key_init);
+    pthread_setspecific(current_arena_key, arena);
+}
+
+// Get current arena for this thread
+MemoryArena *get_current_arena(void) {
+    pthread_once(&arena_key_once, arena_key_init);
+    return pthread_getspecific(current_arena_key);
+}
+
 // Custom jansson allocator functions
 static void *jansson_arena_malloc(size_t size) {
-    // This would need access to current request arena
-    return malloc(size); // Fallback for now
+    MemoryArena *arena = get_current_arena();
+    if (arena) {
+        return arena_alloc(arena, size);
+    }
+    return malloc(size); // Fallback
 }
 
 static void jansson_arena_free(void *ptr) {
-    // Arena memory is freed all at once
-    free(ptr); // Fallback for now
+    // Arena memory is freed all at once, so we don't need to do anything here
+    // But we can't use free() because the pointer might be from the arena
+    // When arena is NULL, this means we're in cleanup phase and should ignore
+    (void)ptr; // Suppress unused parameter warning
 }
 
 // Plugin loading and management
@@ -765,7 +791,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
                     int result = execute_pipeline_with_result(selected_condition->pipeline, 
                                                             current, arena, &condition_result, &temp_code);
                     if (result == 0 && condition_result) {
-                        json_decref(current);
+                        // json_decref(current);
                         current = condition_result;
                     }
                 }
@@ -778,7 +804,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         Plugin *plugin = find_plugin(step->plugin);
         if (!plugin) {
             fprintf(stderr, "Plugin not found: %s\n", step->plugin);
-            json_decref(current);
+            // json_decref(current);
             return -1;
         }
         
@@ -794,11 +820,11 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         json_t *result = plugin->execute(current, arena, config);
         if (!result) {
             fprintf(stderr, "Plugin %s failed\n", step->plugin);
-            json_decref(current);
+            // json_decref(current);
             return -1;
         }
         
-        json_decref(current);
+        // json_decref(current);
         current = result;
         step = step->next;
     }
@@ -812,7 +838,7 @@ int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena
     int response_code;
     int result = execute_pipeline_with_result(pipeline, request, arena, &response, &response_code);
     if (response) {
-        json_decref(response);
+        // json_decref(response);
     }
     return result;
 }
@@ -856,6 +882,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     }
     
     MemoryArena *arena = arena_create(1024 * 1024); // 1MB arena
+    set_current_arena(arena); // Set arena for this thread
     
     json_t *request = create_request_json(connection, url, method, 
                                          upload_data, upload_data_size);
@@ -875,8 +902,10 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                                                             request, arena, &final_response, &response_code);
                     
                     if (result == 0 && final_response) {
-                        // Convert JSON response to string
+                        // Convert JSON response to string - use regular malloc to avoid arena issues
+                        set_current_arena(NULL); // Temporarily disable arena for json_dumps
                         char *response_str = json_dumps(final_response, JSON_COMPACT);
+                        set_current_arena(arena); // Re-enable arena
                         
                         struct MHD_Response *mhd_response = 
                             MHD_create_response_from_buffer(strlen(response_str),
@@ -889,7 +918,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                         (void)MHD_queue_response(connection, response_code, mhd_response);
                         MHD_destroy_response(mhd_response);
                         
-                        json_decref(final_response);
+                        // json_decref(final_response);
                     } else {
                         // Error in pipeline execution
                         const char *error_response = "{\"error\": \"Internal server error\"}";
@@ -901,7 +930,8 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                         MHD_destroy_response(mhd_response);
                     }
                     
-                    json_decref(request);
+                    // Clear current arena before freeing to prevent jansson from accessing freed memory
+                    set_current_arena(NULL);
                     arena_free(arena);
                     return MHD_YES;
                 }
@@ -918,7 +948,8 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     (void)MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, mhd_response);
     MHD_destroy_response(mhd_response);
     
-    json_decref(request);
+    // Clear current arena before freeing to prevent jansson from accessing freed memory
+    set_current_arena(NULL);
     arena_free(arena);
     return MHD_YES;
 }
@@ -934,6 +965,9 @@ int wp_runtime_init(const char *wp_file) {
     runtime->plugins = NULL;
     runtime->plugin_count = 0;
     runtime->variables = json_object();
+    
+    // Set up jansson to use arena allocators
+    json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
     
     // Parse wp file
     FILE *file = fopen(wp_file, "r");
@@ -1040,7 +1074,7 @@ void wp_runtime_cleanup() {
         }
         free(runtime->plugins);
         
-        json_decref(runtime->variables);
+        // json_decref(runtime->variables);
         free_ast(runtime->program);
         free(runtime);
     }
