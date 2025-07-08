@@ -1,5 +1,0 @@
----
-triple:          'arm64-apple-darwin'
-binary-path:     wp_runtime_debug
-relocations:     []
-...

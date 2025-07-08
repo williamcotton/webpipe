@@ -1,1 +1,7 @@
 wp
+wp_debug
+wp_runtime
+wp_runtime_debug
+*.so
+build/
+*dSYM/
