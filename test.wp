@@ -7,3 +7,6 @@ pg articlesQuery = `select * from articles`
 
 GET /articles
   |> pg: articlesQuery
+
+GET /test
+  |> jq: `.`
