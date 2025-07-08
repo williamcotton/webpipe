@@ -1,258 +1,236 @@
 #include <jansson.h>
 #include <jq.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 
-// Memory arena type (forward declaration)
-typedef struct MemoryArena MemoryArena;
+// Hash table for caching
+#define HASH_TABLE_SIZE 256
+#define HASH_MASK (HASH_TABLE_SIZE - 1)
 
-// Arena allocation function types
-typedef void* (*arena_alloc_func)(void* arena, size_t size);
-typedef void (*arena_free_func)(void* arena);
+typedef struct jq_cache_entry {
+  char *filter;
+  jq_state *jq;
+  struct jq_cache_entry *next;
+  pthread_mutex_t mutex; // Per-entry mutex for thread safety
+} jq_cache_entry;
 
-// Thread-local storage for jq state
+// Global cache with mutex protection
+static jq_cache_entry *jq_cache[HASH_TABLE_SIZE];
+static pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int cache_initialized = 0;
+
+static uint32_t hash_string(const char *str) {
+  uint32_t hash = 5381;
+  int c;
+  while ((c = *str++)) {
+    hash = ((hash << 5) + hash) + c;
+  }
+  return hash;
+}
+
+static void init_cache(void) {
+  pthread_mutex_lock(&cache_mutex);
+  if (!cache_initialized) {
+    memset(jq_cache, 0, sizeof(jq_cache));
+    cache_initialized = 1;
+  }
+  pthread_mutex_unlock(&cache_mutex);
+}
+
+static jq_state *get_cached_jq(const char *filter) {
+  if (!cache_initialized) {
+    init_cache();
+  }
+
+  uint32_t hash = hash_string(filter) & HASH_MASK;
+
+  // First, try to find existing entry without holding the global lock
+  jq_cache_entry *entry = jq_cache[hash];
+  while (entry) {
+    if (strcmp(entry->filter, filter) == 0) {
+      return entry->jq;
+    }
+    entry = entry->next;
+  }
+
+  // Not found, need to create new entry
+  pthread_mutex_lock(&cache_mutex);
+
+  // Check again in case another thread just added it
+  entry = jq_cache[hash];
+  while (entry) {
+    if (strcmp(entry->filter, filter) == 0) {
+      pthread_mutex_unlock(&cache_mutex);
+      return entry->jq;
+    }
+    entry = entry->next;
+  }
+
+  // Create new entry
+  entry = malloc(sizeof(jq_cache_entry));
+  entry->filter = strdup(filter);
+  entry->jq = jq_init();
+  pthread_mutex_init(&entry->mutex, NULL);
+
+  if (!jq_compile(entry->jq, filter)) {
+    pthread_mutex_destroy(&entry->mutex);
+    jq_teardown(&entry->jq);
+    free(entry->filter);
+    free(entry);
+    pthread_mutex_unlock(&cache_mutex);
+    return NULL;
+  }
+
+  // Add to cache
+  entry->next = jq_cache[hash];
+  jq_cache[hash] = entry;
+
+  pthread_mutex_unlock(&cache_mutex);
+
+  return entry->jq;
+}
+
+// Thread-local execution state
 typedef struct {
-    jq_state *jq;
-    const char *last_program;  // Just store the pointer, don't copy
-    int initialized;
-} ThreadLocalJQ;
+  jv value;
+  int valid;
+} jq_result;
 
-static pthread_key_t jq_tls_key;
-static pthread_once_t jq_tls_once = PTHREAD_ONCE_INIT;
+static __thread jq_result thread_result;
 
-// Initialize thread-local storage key
-static void jq_tls_init(void) {
-    pthread_key_create(&jq_tls_key, NULL);
+// Minimal conversion functions
+static jv json_to_jv(json_t *j) {
+  if (!j)
+    return jv_null();
+
+  switch (json_typeof(j)) {
+  case JSON_NULL:
+    return jv_null();
+  case JSON_TRUE:
+    return jv_true();
+  case JSON_FALSE:
+    return jv_false();
+  case JSON_INTEGER:
+    return jv_number(json_integer_value(j));
+  case JSON_REAL:
+    return jv_number(json_real_value(j));
+  case JSON_STRING:
+    return jv_string(json_string_value(j));
+  case JSON_ARRAY: {
+    jv arr = jv_array();
+    size_t i;
+    json_t *v;
+    json_array_foreach(j, i, v) { arr = jv_array_append(arr, json_to_jv(v)); }
+    return arr;
+  }
+  case JSON_OBJECT: {
+    jv obj = jv_object();
+    const char *k;
+    json_t *v;
+    json_object_foreach(j, k, v) {
+      obj = jv_object_set(obj, jv_string(k), json_to_jv(v));
+    }
+    return obj;
+  }
+  }
+  return jv_null();
 }
 
-// Get thread-local jq state
-static ThreadLocalJQ* get_thread_local_jq(void) {
-    pthread_once(&jq_tls_once, jq_tls_init);
-    ThreadLocalJQ *tls = pthread_getspecific(jq_tls_key);
-    if (!tls) {
-        tls = calloc(1, sizeof(ThreadLocalJQ));
-        pthread_setspecific(jq_tls_key, tls);
+static json_t *jv_to_json(jv v) {
+  switch (jv_get_kind(v)) {
+  case JV_KIND_INVALID:
+    jv_free(v);
+    return NULL;
+  case JV_KIND_NULL:
+    jv_free(v);
+    return json_null();
+  case JV_KIND_FALSE:
+    jv_free(v);
+    return json_false();
+  case JV_KIND_TRUE:
+    jv_free(v);
+    return json_true();
+  case JV_KIND_NUMBER: {
+    double d = jv_number_value(v);
+    jv_free(v);
+    return json_real(d);
+  }
+  case JV_KIND_STRING: {
+    const char *s = jv_string_value(v);
+    json_t *r = json_string(s);
+    jv_free(v);
+    return r;
+  }
+  case JV_KIND_ARRAY: {
+    json_t *arr = json_array();
+    jv_array_foreach(v, i, el) { json_array_append_new(arr, jv_to_json(el)); }
+    jv_free(v);
+    return arr;
+  }
+  case JV_KIND_OBJECT: {
+    json_t *obj = json_object();
+    jv_object_foreach(v, k, val) {
+      json_object_set_new(obj, jv_string_value(k), jv_to_json(val));
+      jv_free(k);
     }
-    if (!tls->initialized) {
-        tls->jq = jq_init();
-        tls->last_program = NULL;
-        tls->initialized = 1;
-    }
-    return tls;
+    jv_free(v);
+    return obj;
+  }
+  }
+  return NULL;
 }
 
-// Cleanup thread-local storage
-static void cleanup_thread_local_jq(void *data) {
-    ThreadLocalJQ *tls = (ThreadLocalJQ*)data;
-    if (tls) {
-        if (tls->jq) {
-            jq_teardown(&tls->jq);
-        }
-        free(tls);
-    }
-}
+// The actual plugin function
+json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func,
+                       const char *filter) {
+  (void)arena;
+  (void)alloc;
+  (void)free_func;
 
-// Convert jansson to jv
-static jv jansson_to_jv(json_t *json) {
-    switch (json_typeof(json)) {
-    case JSON_OBJECT: {
-        jv obj = jv_object();
-        const char *key;
-        json_t *value;
-        json_object_foreach(json, key, value) {
-            jv val = jansson_to_jv(value);
-            if (!jv_is_valid(val)) {
-                jv_free(obj);
-                return val;
-            }
-            obj = jv_object_set(obj, jv_string(key), val);
-        }
-        return obj;
-    }
-    case JSON_ARRAY: {
-        jv arr = jv_array();
-        size_t index;
-        json_t *value;
-        json_array_foreach(json, index, value) {
-            jv val = jansson_to_jv(value);
-            if (!jv_is_valid(val)) {
-                jv_free(arr);
-                return val;
-            }
-            arr = jv_array_append(arr, val);
-        }
-        return arr;
-    }
-    case JSON_STRING:
-        return jv_string(json_string_value(json));
-    case JSON_INTEGER: {
-        json_int_t val = json_integer_value(json);
-        return jv_number((double)val);
-    }
-    case JSON_REAL:
-        return jv_number(json_real_value(json));
-    case JSON_TRUE:
-        return jv_true();
-    case JSON_FALSE:
-        return jv_false();
-    case JSON_NULL:
-        return jv_null();
-    default:
-        return jv_invalid();
-    }
-}
+  jq_state *jq = get_cached_jq(filter);
+  if (!jq) {
+    json_t *error = json_object();
+    json_object_set_new(error, "error",
+                        json_string("Failed to compile JQ filter"));
+    return error;
+  }
 
-// Convert jv to jansson
-static json_t *jv_to_jansson(jv value) {
-    if (!jv_is_valid(value)) {
-        jv_free(value);
-        return NULL;
-    }
+  // Find the cache entry to get its mutex
+  uint32_t hash = hash_string(filter) & HASH_MASK;
+  jq_cache_entry *entry = jq_cache[hash];
+  while (entry && strcmp(entry->filter, filter) != 0) {
+    entry = entry->next;
+  }
 
-    json_t *result = NULL;
-    switch (jv_get_kind(value)) {
-    case JV_KIND_OBJECT: {
-        result = json_object();
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wconditional-uninitialized"
-        jv_object_foreach(value, k, v) {
-            const char *key_str = jv_string_value(k);
-            json_t *json_val = jv_to_jansson(v);
-            if (json_val) {
-                json_object_set_new(result, key_str, json_val);
-            }
-            jv_free(k);
-        }
-#pragma clang diagnostic pop
-        break;
-    }
-    case JV_KIND_ARRAY: {
-        result = json_array();
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wconditional-uninitialized"
-        jv_array_foreach(value, i, v) {
-            json_t *json_val = jv_to_jansson(v);
-            if (json_val) {
-                json_array_append_new(result, json_val);
-            }
-        }
-#pragma clang diagnostic pop
-        break;
-    }
-    case JV_KIND_STRING:
-        result = json_string(jv_string_value(value));
-        break;
-    case JV_KIND_NUMBER:
-        result = json_real(jv_number_value(value));
-        break;
-    case JV_KIND_TRUE:
-        result = json_true();
-        break;
-    case JV_KIND_FALSE:
-        result = json_false();
-        break;
-    case JV_KIND_NULL:
-        result = json_null();
-        break;
-    case JV_KIND_INVALID:
-        break;
-    }
-    
-    jv_free(value);
-    return result;
-}
+  if (!entry) {
+    json_t *error = json_object();
+    json_object_set_new(error, "error", json_string("Cache entry disappeared"));
+    return error;
+  }
 
-// Process jq filter
-static jv process_jq_filter(jq_state *jq, json_t *input_json) {
-    if (!jq || !input_json) return jv_invalid();
+  // Lock the entry for exclusive use
+  pthread_mutex_lock(&entry->mutex);
 
-    jv input = jansson_to_jv(input_json);
-    
-    if (!jv_is_valid(input)) {
-        jv jv_error = jv_invalid_get_msg(input);
-        if (jv_is_valid(jv_error)) {
-            fprintf(stderr, "JSON conversion error: %s\n", jv_string_value(jv_error));
-            jv_free(jv_error);
-        }
-        return jv_invalid();
-    }
+  jv in = json_to_jv(input);
+  jq_start(jq, in, 0);
 
-    jq_start(jq, input, 0);  // input is consumed here
-    
-    jv filtered_result = jq_next(jq);
+  jv out = jq_next(jq);
 
-    if (!jv_is_valid(filtered_result)) {
-        jv jv_error = jv_invalid_get_msg(filtered_result);
-        if (jv_is_valid(jv_error)) {
-            fprintf(stderr, "JQ execution error: %s\n", jv_string_value(jv_error));
-            jv_free(jv_error);
-        }
-        return filtered_result;  // Already invalid and freed
-    }
+  // Drain any additional results
+  jv extra;
+  while (jv_is_valid(extra = jq_next(jq))) {
+    jv_free(extra);
+  }
 
-    // Drain any remaining results to prevent memory leaks
-    jv next_result;
-    while (jv_is_valid(next_result = jq_next(jq))) {
-        jv_free(next_result);
-    }
-    jv_free(next_result);  // Free the invalid result that ended the loop
+  pthread_mutex_unlock(&entry->mutex);
 
-    return filtered_result;
-}
+  if (!jv_is_valid(out)) {
+    json_t *error = json_object();
+    json_object_set_new(error, "error", json_string("JQ execution failed"));
+    return error;
+  }
 
-// Plugin execute function
-json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *jq_program) {
-    ThreadLocalJQ *tls = get_thread_local_jq();
-    if (!tls || !tls->jq) {
-        fprintf(stderr, "jq: Failed to get thread-local jq state\n");
-        json_t *result = json_object();
-        json_object_set_new(result, "error", json_string("Failed to get JQ state"));
-        return result;
-    }
-    // Copy program string into arena for jq_compile (if needed)
-    size_t len = strlen(jq_program);
-    char *arena_program = alloc_func(arena, len + 1);
-    if (!arena_program) {
-        json_t *result = json_object();
-        json_object_set_new(result, "error", json_string("Arena OOM for jq program"));
-        return result;
-    }
-    memcpy(arena_program, jq_program, len);
-    arena_program[len] = '\0';
-    // Check if we need to recompile (program changed or first time)
-    if (!tls->last_program || strcmp(tls->last_program, arena_program) != 0) {
-        tls->last_program = arena_program;
-        if (jq_compile(tls->jq, arena_program) == 0) {
-            fprintf(stderr, "jq: Failed to compile program: %s\n", arena_program);
-            json_t *result = json_object();
-            json_object_set_new(result, "error", json_string("Failed to compile JQ program"));
-            return result;
-        }
-    }
-    jv filtered_jv = process_jq_filter(tls->jq, input);
-    if (!jv_is_valid(filtered_jv)) {
-        json_t *result = json_object();
-        json_object_set_new(result, "error", json_string("Failed to process JQ filter"));
-        return result;
-    }
-    json_t *result = jv_to_jansson(filtered_jv);  // This frees filtered_jv
-    if (!result) {
-        json_t *error_result = json_object();
-        json_object_set_new(error_result, "error", json_string("Failed to convert JQ result to JSON"));
-        return error_result;
-    }
-    return result;
-}
-
-// Plugin cleanup function called when plugin is unloaded
-__attribute__((destructor))
-void plugin_destructor() {
-    // Cleanup thread-local storage for current thread
-    ThreadLocalJQ *tls = pthread_getspecific(jq_tls_key);
-    if (tls) {
-        cleanup_thread_local_jq(tls);
-        pthread_setspecific(jq_tls_key, NULL);
-    }
+  return jv_to_json(out);
 }
