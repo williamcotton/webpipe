@@ -163,9 +163,29 @@ json_t *create_request_json(struct MHD_Connection *connection,
     return request;
 }
 
+// Helper function to check if JSON has errors array
+static bool has_errors(json_t *json) {
+    json_t *errors = json_object_get(json, "errors");
+    return errors != NULL && json_is_array(errors) && json_array_size(errors) > 0;
+}
+
+// Helper function to get first error type
+static const char *get_first_error_type(json_t *json) {
+    json_t *errors = json_object_get(json, "errors");
+    if (!errors || !json_is_array(errors)) return NULL;
+    
+    json_t *first_error = json_array_get(errors, 0);
+    if (!first_error) return NULL;
+    
+    json_t *type_json = json_object_get(first_error, "type");
+    if (!type_json || !json_is_string(type_json)) return NULL;
+    
+    return json_string_value(type_json);
+}
+
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
                                 json_t **final_response, int *response_code) {
-    json_t *current = json_incref(request);
+    json_t *current = request;
     *response_code = 200; // Default
     
     PipelineStep *step = pipeline;
@@ -178,21 +198,34 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             ResultCondition *condition = result_node->data.result_step.conditions;
             ResultCondition *selected_condition = NULL;
             
-            // Check for error conditions first
-            json_t *error = json_object_get(current, "error");
-            if (error && json_is_string(error)) {
-                // Look for error condition
-                while (condition) {
-                    if (strcmp(condition->condition_name, "error") == 0 ||
-                        strcmp(condition->condition_name, "validationError") == 0) {
-                        selected_condition = condition;
-                        break;
+            // Check for error conditions first using new standardized format
+            if (has_errors(current)) {
+                const char *error_type = get_first_error_type(current);
+                if (error_type) {
+                    // Look for matching error condition
+                    while (condition) {
+                        if (strcmp(condition->condition_name, error_type) == 0) {
+                            selected_condition = condition;
+                            break;
+                        }
+                        condition = condition->next;
                     }
-                    condition = condition->next;
+                    
+                    // If no specific error condition found, look for "default" condition
+                    if (!selected_condition) {
+                        condition = result_node->data.result_step.conditions;
+                        while (condition) {
+                            if (strcmp(condition->condition_name, "default") == 0) {
+                                selected_condition = condition;
+                                break;
+                            }
+                            condition = condition->next;
+                        }
+                    }
                 }
             }
             
-            // If no error condition found, use default "ok" condition
+            // If no error condition found, use "ok" condition
             if (!selected_condition) {
                 condition = result_node->data.result_step.conditions;
                 while (condition) {
@@ -245,6 +278,66 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             fprintf(stderr, "Plugin %s failed\n", step->plugin);
             // json_decref(current);
             return -1;
+        }
+        
+        // Check for errors after each step and jump to result block if found
+        if (has_errors(result)) {
+            // Find the result step in the remaining pipeline
+            PipelineStep *remaining_step = step->next;
+            while (remaining_step) {
+                if (strcmp(remaining_step->plugin, "result") == 0) {
+                    // Execute result step with error
+                    ASTNode *result_node = (ASTNode*)(uintptr_t)remaining_step->value;
+                    
+                    ResultCondition *condition = result_node->data.result_step.conditions;
+                    ResultCondition *selected_condition = NULL;
+                    
+                    const char *error_type = get_first_error_type(result);
+                    if (error_type) {
+                        // Look for matching error condition
+                        while (condition) {
+                            if (strcmp(condition->condition_name, error_type) == 0) {
+                                selected_condition = condition;
+                                break;
+                            }
+                            condition = condition->next;
+                        }
+                        
+                        // If no specific error condition found, look for "default" condition
+                        if (!selected_condition) {
+                            condition = result_node->data.result_step.conditions;
+                            while (condition) {
+                                if (strcmp(condition->condition_name, "default") == 0) {
+                                    selected_condition = condition;
+                                    break;
+                                }
+                                condition = condition->next;
+                            }
+                        }
+                    }
+                    
+                    if (selected_condition) {
+                        *response_code = selected_condition->status_code;
+                        
+                        // Execute the selected condition's pipeline
+                        if (selected_condition->pipeline) {
+                            json_t *condition_result = NULL;
+                            int temp_code;
+                            int exec_result = execute_pipeline_with_result(selected_condition->pipeline, 
+                                                                    result, arena, &condition_result, &temp_code);
+                            if (exec_result == 0 && condition_result) {
+                                current = condition_result;
+                            }
+                        } else {
+                            current = result;
+                        }
+                    }
+                    
+                    *final_response = current;
+                    return 0;
+                }
+                remaining_step = remaining_step->next;
+            }
         }
         
         // json_decref(current);

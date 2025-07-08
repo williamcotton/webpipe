@@ -13,3 +13,87 @@ GET /test
 
 GET /test2
   |> lua: `return request`
+
+GET /test3
+  |> jq: `{message: "Hello World", status: "success"}`
+  |> result
+    ok(200):
+      |> jq: `{
+        success: true,
+        data: .message,
+        timestamp: now
+      }`
+    default(500):
+      |> jq: `{
+        error: "Something went wrong",
+        timestamp: now
+      }`
+
+GET /test4
+  |> jq: `{
+    errors: [
+      {
+        type: "validationError",
+        field: "email",
+        message: "Email is required",
+        code: "FIELD_REQUIRED"
+      }
+    ]
+  }`
+  |> result
+    ok(200):
+      |> jq: `{success: true}`
+    validationError(400):
+      |> jq: `{
+        error: "Validation failed",
+        field: .errors[0].field,
+        message: .errors[0].message,
+        code: .errors[0].code
+      }`
+    default(500):
+      |> jq: `{error: "Internal server error"}`
+
+GET /test5
+  |> jq: `{
+    errors: [
+      {
+        type: "authRequired",
+        header: "Authorization",
+        expected: "Bearer <token>",
+        provided: null
+      }
+    ]
+  }`
+  |> result
+    ok(200):
+      |> jq: `{success: true, data: .result}`
+    authRequired(401):
+      |> jq: `{
+        error: "Authentication required",
+        header: .errors[0].header,
+        expected: .errors[0].expected,
+        provided: .errors[0].provided
+      }`
+    default(500):
+      |> jq: `{error: "Internal server error"}`
+
+GET /test6
+  |> jq: `{
+    errors: [
+      {
+        type: "unknownError",
+        message: "This is a custom error type not handled explicitly"
+      }
+    ]
+  }`
+  |> result
+    ok(200):
+      |> jq: `{success: true}`
+    validationError(400):
+      |> jq: `{error: "Validation error"}`
+    default(500):
+      |> jq: `{
+        error: "Unhandled error occurred",
+        type: .errors[0].type,
+        message: .errors[0].message
+      }`

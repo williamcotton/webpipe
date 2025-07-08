@@ -65,12 +65,9 @@ PipelineStep *parser_parse_pipeline(Parser *parser) {
 
     // Check for result step
     if (strcmp(plugin->value, "result") == 0) {
-      // This is a result step - parse result conditions
-      if (!parser_match(parser, TOKEN_LBRACE)) {
-        fprintf(stderr, "Expected { after result\n");
-        return head;
-      }
-
+      // This is a result step - no colon needed, parse result conditions
+      parser_consume_newlines(parser);
+      
       ASTNode *result_node = parser_parse_result_step(parser);
       
       // Create a special pipeline step for result
@@ -134,9 +131,13 @@ ASTNode *parser_parse_result_step(Parser *parser) {
   ResultCondition *head = NULL;
   ResultCondition *tail = NULL;
 
-  while (!parser_check(parser, TOKEN_RBRACE) && !parser_is_at_end(parser)) {
-    // Parse condition: name(status_code) { pipeline }
+  while (!parser_is_at_end(parser)) {
+    // Parse condition: name(status_code): pipeline
     if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+      // Check if we're at the end of the result block (next statement)
+      if (parser_check(parser, TOKEN_HTTP_METHOD) || parser_check(parser, TOKEN_EOF)) {
+        break;
+      }
       fprintf(stderr, "Expected condition name\n");
       break;
     }
@@ -160,8 +161,8 @@ ASTNode *parser_parse_result_step(Parser *parser) {
       break;
     }
 
-    if (!parser_match(parser, TOKEN_LBRACE)) {
-      fprintf(stderr, "Expected { after condition\n");
+    if (!parser_match(parser, TOKEN_COLON)) {
+      fprintf(stderr, "Expected : after condition\n");
       break;
     }
 
@@ -169,11 +170,6 @@ ASTNode *parser_parse_result_step(Parser *parser) {
 
     // Parse pipeline for this condition
     PipelineStep *pipeline = parser_parse_pipeline(parser);
-
-    if (!parser_match(parser, TOKEN_RBRACE)) {
-      fprintf(stderr, "Expected } after condition pipeline\n");
-      break;
-    }
 
     ResultCondition *condition = malloc(sizeof(ResultCondition));
     condition->condition_name = strdup_safe(condition_name->value);
@@ -192,10 +188,6 @@ ASTNode *parser_parse_result_step(Parser *parser) {
   }
 
   node->data.result_step.conditions = head;
-
-  if (!parser_match(parser, TOKEN_RBRACE)) {
-    fprintf(stderr, "Expected } at end of result step\n");
-  }
 
   return node;
 }
