@@ -1,5 +1,7 @@
 GET /page/:id
-  |> jq: `.`
+  |> jq: `{ sqlParams: [.params.id | tostring] }`
+  |> pg: `SELECT * FROM teams WHERE id = $1`
+  |> jq: `{ team: .data.rows[0] }`
 
 pg teamsQuery = `SELECT * FROM teams`
 
