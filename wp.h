@@ -134,4 +134,15 @@ void stringify_node(FILE *out, ASTNode *node, int level);
 int wp_runtime_init(const char *wp_file);
 void wp_runtime_cleanup(void);
 
+// Arena allocation function types for plugins
+typedef void* (*arena_alloc_func)(void* arena, size_t size);
+typedef void (*arena_free_func)(void* arena);
+
+// Plugin interface with arena functions
+typedef struct {
+    char *name;
+    void *handle;
+    json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config);
+} Plugin;
+
 #endif // WP_H

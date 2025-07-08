@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Arena allocation function types for plugins
+typedef void* (*arena_alloc_func)(void* arena, size_t size);
+typedef void (*arena_free_func)(void* arena);
+
 // Memory arena type (forward declaration)
 typedef struct MemoryArena MemoryArena;
 
@@ -179,20 +183,30 @@ json_t *execute_sql(const char *sql, json_t *params) {
 }
 
 // Plugin execute function
-json_t *plugin_execute(json_t *input, MemoryArena *arena, const char *sql_query) {
-    if (!pg_connection) {
-        pg_plugin_init();
+json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *sql_query) {
+    // Use the arena for any per-request allocations if needed (e.g., copying sql_query)
+    size_t len = strlen(sql_query);
+    char *arena_query = alloc_func(arena, len + 1);
+    if (!arena_query) {
+        json_t *result = json_object();
+        json_object_set_new(result, "error", json_string("Arena OOM for SQL query"));
+        return result;
     }
+    memcpy(arena_query, sql_query, len);
+    arena_query[len] = '\0';
     
     // Look for sqlParams in input
     json_t *sql_params = json_object_get(input, "sqlParams");
     
     // Execute query
-    json_t *result = execute_sql(sql_query, sql_params);
+    json_t *result = execute_sql(arena_query, sql_params);
     
     // Create response by copying input and adding data
     json_t *response = json_deep_copy(input);
     json_object_set_new(response, "data", result);
+    
+    // Free the arena_query allocated in this function
+    free_func(arena);
     
     return response;
 }

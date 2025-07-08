@@ -591,11 +591,12 @@ void free_tokens(Token *tokens, int count) {
 // Memory arena functions - definition moved to wp.h
 
 // Plugin interface
-typedef struct {
-    char *name;
-    void *handle;
-    json_t *(*execute)(json_t *input, MemoryArena *arena, const char *config);
-} Plugin;
+// Remove this block:
+// typedef struct {
+//     char *name;
+//     void *handle;
+//     json_t *(*execute)(json_t *input, MemoryArena *arena, const char *config);
+// } Plugin;
 
 // Runtime state
 typedef struct {
@@ -668,6 +669,15 @@ static void jansson_arena_free(void *ptr) {
     (void)ptr; // Suppress unused parameter warning
 }
 
+// Wrapper functions for plugin interface
+static void *arena_alloc_wrapper(void *arena, size_t size) {
+    return arena_alloc((MemoryArena*)arena, size);
+}
+
+static void arena_free_wrapper(void *arena) {
+    arena_free((MemoryArena*)arena);
+}
+
 // Plugin loading and management
 int load_plugin(const char *name) {
     char plugin_path[256];
@@ -680,7 +690,7 @@ int load_plugin(const char *name) {
     }
     
     // Get plugin execute function
-    json_t *(*execute)(json_t *, MemoryArena *, const char *) = dlsym(handle, "plugin_execute");
+    json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = dlsym(handle, "plugin_execute");
     if (!execute) {
         fprintf(stderr, "Error getting plugin_execute for %s: %s\n", name, dlerror());
         dlclose(handle);
@@ -817,7 +827,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             }
         }
         
-        json_t *result = plugin->execute(current, arena, config);
+        json_t *result = plugin->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config);
         if (!result) {
             fprintf(stderr, "Plugin %s failed\n", step->plugin);
             // json_decref(current);

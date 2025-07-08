@@ -8,13 +8,15 @@
 // Memory arena type (forward declaration)
 typedef struct MemoryArena MemoryArena;
 
-// Thread-local storage for jq state and compiled programs
+// Arena allocation function types
+typedef void* (*arena_alloc_func)(void* arena, size_t size);
+typedef void (*arena_free_func)(void* arena);
+
+// Thread-local storage for jq state
 typedef struct {
     jq_state *jq;
     const char *last_program;  // Just store the pointer, don't copy
     int initialized;
-    // Simple result cache for identical inputs
-    json_t *last_result;
 } ThreadLocalJQ;
 
 static pthread_key_t jq_tls_key;
@@ -36,7 +38,6 @@ static ThreadLocalJQ* get_thread_local_jq(void) {
     if (!tls->initialized) {
         tls->jq = jq_init();
         tls->last_program = NULL;
-        tls->last_result = NULL;
         tls->initialized = 1;
     }
     return tls;
@@ -49,135 +50,200 @@ static void cleanup_thread_local_jq(void *data) {
         if (tls->jq) {
             jq_teardown(&tls->jq);
         }
-        if (tls->last_result) {
-            json_decref(tls->last_result);
-        }
         free(tls);
     }
 }
 
-// Optimized conversion functions
-json_t *jv_to_jansson(jv value) {
-    switch (jv_get_kind(value)) {
-        case JV_KIND_NULL:
-            return json_null();
-        case JV_KIND_FALSE:
-            return json_false();
-        case JV_KIND_TRUE:
-            return json_true();
-        case JV_KIND_NUMBER:
-            return json_real(jv_number_value(value));
-        case JV_KIND_STRING: {
-            const char *str = jv_string_value(value);
-            json_t *result = json_string(str);
-            return result;
-        }
-        case JV_KIND_ARRAY: {
-            json_t *array = json_array();
-            jv_array_foreach(value, i, item) {
-                json_array_append_new(array, jv_to_jansson(item));
-            }
-            return array;
-        }
-        case JV_KIND_OBJECT: {
-            json_t *object = json_object();
-            jv_object_foreach(value, key, val) {
-                const char *key_str = jv_string_value(key);
-                json_object_set_new(object, key_str, jv_to_jansson(val));
-            }
-            return object;
-        }
-        default:
-            return json_null();
-    }
-}
-
-jv jansson_to_jv(json_t *json) {
-    if (json_is_null(json)) {
-        return jv_null();
-    } else if (json_is_true(json)) {
-        return jv_true();
-    } else if (json_is_false(json)) {
-        return jv_false();
-    } else if (json_is_number(json)) {
-        return jv_number(json_number_value(json));
-    } else if (json_is_string(json)) {
-        return jv_string(json_string_value(json));
-    } else if (json_is_array(json)) {
-        jv array = jv_array();
-        size_t index;
-        json_t *value;
-        json_array_foreach(json, index, value) {
-            array = jv_array_append(array, jansson_to_jv(value));
-        }
-        return array;
-    } else if (json_is_object(json)) {
-        jv object = jv_object();
+// Convert jansson to jv
+static jv jansson_to_jv(json_t *json) {
+    switch (json_typeof(json)) {
+    case JSON_OBJECT: {
+        jv obj = jv_object();
         const char *key;
         json_t *value;
         json_object_foreach(json, key, value) {
-            object = jv_object_set(object, jv_string(key), jansson_to_jv(value));
+            jv val = jansson_to_jv(value);
+            if (!jv_is_valid(val)) {
+                jv_free(obj);
+                return val;
+            }
+            obj = jv_object_set(obj, jv_string(key), val);
         }
-        return object;
+        return obj;
     }
-    return jv_null();
+    case JSON_ARRAY: {
+        jv arr = jv_array();
+        size_t index;
+        json_t *value;
+        json_array_foreach(json, index, value) {
+            jv val = jansson_to_jv(value);
+            if (!jv_is_valid(val)) {
+                jv_free(arr);
+                return val;
+            }
+            arr = jv_array_append(arr, val);
+        }
+        return arr;
+    }
+    case JSON_STRING:
+        return jv_string(json_string_value(json));
+    case JSON_INTEGER: {
+        json_int_t val = json_integer_value(json);
+        return jv_number((double)val);
+    }
+    case JSON_REAL:
+        return jv_number(json_real_value(json));
+    case JSON_TRUE:
+        return jv_true();
+    case JSON_FALSE:
+        return jv_false();
+    case JSON_NULL:
+        return jv_null();
+    default:
+        return jv_invalid();
+    }
+}
+
+// Convert jv to jansson
+static json_t *jv_to_jansson(jv value) {
+    if (!jv_is_valid(value)) {
+        jv_free(value);
+        return NULL;
+    }
+
+    json_t *result = NULL;
+    switch (jv_get_kind(value)) {
+    case JV_KIND_OBJECT: {
+        result = json_object();
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wconditional-uninitialized"
+        jv_object_foreach(value, k, v) {
+            const char *key_str = jv_string_value(k);
+            json_t *json_val = jv_to_jansson(v);
+            if (json_val) {
+                json_object_set_new(result, key_str, json_val);
+            }
+            jv_free(k);
+        }
+#pragma clang diagnostic pop
+        break;
+    }
+    case JV_KIND_ARRAY: {
+        result = json_array();
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wconditional-uninitialized"
+        jv_array_foreach(value, i, v) {
+            json_t *json_val = jv_to_jansson(v);
+            if (json_val) {
+                json_array_append_new(result, json_val);
+            }
+        }
+#pragma clang diagnostic pop
+        break;
+    }
+    case JV_KIND_STRING:
+        result = json_string(jv_string_value(value));
+        break;
+    case JV_KIND_NUMBER:
+        result = json_real(jv_number_value(value));
+        break;
+    case JV_KIND_TRUE:
+        result = json_true();
+        break;
+    case JV_KIND_FALSE:
+        result = json_false();
+        break;
+    case JV_KIND_NULL:
+        result = json_null();
+        break;
+    case JV_KIND_INVALID:
+        break;
+    }
+    
+    jv_free(value);
+    return result;
+}
+
+// Process jq filter
+static jv process_jq_filter(jq_state *jq, json_t *input_json) {
+    if (!jq || !input_json) return jv_invalid();
+
+    jv input = jansson_to_jv(input_json);
+    
+    if (!jv_is_valid(input)) {
+        jv jv_error = jv_invalid_get_msg(input);
+        if (jv_is_valid(jv_error)) {
+            fprintf(stderr, "JSON conversion error: %s\n", jv_string_value(jv_error));
+            jv_free(jv_error);
+        }
+        return jv_invalid();
+    }
+
+    jq_start(jq, input, 0);  // input is consumed here
+    
+    jv filtered_result = jq_next(jq);
+
+    if (!jv_is_valid(filtered_result)) {
+        jv jv_error = jv_invalid_get_msg(filtered_result);
+        if (jv_is_valid(jv_error)) {
+            fprintf(stderr, "JQ execution error: %s\n", jv_string_value(jv_error));
+            jv_free(jv_error);
+        }
+        return filtered_result;  // Already invalid and freed
+    }
+
+    // Drain any remaining results to prevent memory leaks
+    jv next_result;
+    while (jv_is_valid(next_result = jq_next(jq))) {
+        jv_free(next_result);
+    }
+    jv_free(next_result);  // Free the invalid result that ended the loop
+
+    return filtered_result;
 }
 
 // Plugin execute function
-json_t *plugin_execute(json_t *input, MemoryArena *arena, const char *jq_program) {
+json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *jq_program) {
     ThreadLocalJQ *tls = get_thread_local_jq();
     if (!tls || !tls->jq) {
         fprintf(stderr, "jq: Failed to get thread-local jq state\n");
-        return NULL;
+        json_t *result = json_object();
+        json_object_set_new(result, "error", json_string("Failed to get JQ state"));
+        return result;
     }
-    
+    // Copy program string into arena for jq_compile (if needed)
+    size_t len = strlen(jq_program);
+    char *arena_program = alloc_func(arena, len + 1);
+    if (!arena_program) {
+        json_t *result = json_object();
+        json_object_set_new(result, "error", json_string("Arena OOM for jq program"));
+        return result;
+    }
+    memcpy(arena_program, jq_program, len);
+    arena_program[len] = '\0';
     // Check if we need to recompile (program changed or first time)
-    if (!tls->last_program || strcmp(tls->last_program, jq_program) != 0) {
-        // Clear cache
-        if (tls->last_result) {
-            json_decref(tls->last_result);
-            tls->last_result = NULL;
-        }
-        
-        // Store the program pointer (it's stable during the request)
-        tls->last_program = jq_program;
-        
-        // Compile new program
-        if (jq_compile(tls->jq, jq_program) == 0) {
-            fprintf(stderr, "jq: Failed to compile program: %s\n", jq_program);
-            return NULL;
+    if (!tls->last_program || strcmp(tls->last_program, arena_program) != 0) {
+        tls->last_program = arena_program;
+        if (jq_compile(tls->jq, arena_program) == 0) {
+            fprintf(stderr, "jq: Failed to compile program: %s\n", arena_program);
+            json_t *result = json_object();
+            json_object_set_new(result, "error", json_string("Failed to compile JQ program"));
+            return result;
         }
     }
-    
-    // For simple cases like identity (`.`), we can cache the result
-    // This is a simple optimization for common cases
-    if (strcmp(jq_program, ".") == 0 && tls->last_result) {
-        return json_incref(tls->last_result);
+    jv filtered_jv = process_jq_filter(tls->jq, input);
+    if (!jv_is_valid(filtered_jv)) {
+        json_t *result = json_object();
+        json_object_set_new(result, "error", json_string("Failed to process JQ filter"));
+        return result;
     }
-    
-    // Convert input to jv
-    jv jv_input = jansson_to_jv(input);
-    
-    // Execute jq program
-    jq_start(tls->jq, jv_input, 0);
-    
-    jv result = jq_next(tls->jq);
-    json_t *output = NULL;
-    
-    if (jv_is_valid(result)) {
-        output = jv_to_jansson(result);
-        jv_free(result);
-        
-        // Cache the result for identity operations
-        if (strcmp(jq_program, ".") == 0) {
-            if (tls->last_result) {
-                json_decref(tls->last_result);
-            }
-            tls->last_result = json_incref(output);
-        }
+    json_t *result = jv_to_jansson(filtered_jv);  // This frees filtered_jv
+    if (!result) {
+        json_t *error_result = json_object();
+        json_object_set_new(error_result, "error", json_string("Failed to convert JQ result to JSON"));
+        return error_result;
     }
-    
-    return output;
+    return result;
 }
 
 // Plugin cleanup function called when plugin is unloaded

@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Arena allocation function types for plugins
+typedef void* (*arena_alloc_func)(void* arena, size_t size);
+typedef void (*arena_free_func)(void* arena);
+
 // Memory arena type (forward declaration)
 typedef struct MemoryArena MemoryArena;
 
@@ -107,7 +111,17 @@ json_t *lua_to_jansson(lua_State *L, int index) {
 }
 
 // Plugin execute function
-json_t *plugin_execute(json_t *input, MemoryArena *arena, const char *lua_code) {
+json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code) {
+    // Use the arena for any per-request allocations if needed (e.g., copying lua_code)
+    size_t len = strlen(lua_code);
+    char *arena_code = alloc_func(arena, len + 1);
+    if (!arena_code) {
+        json_t *result = json_object();
+        json_object_set_new(result, "error", json_string("Arena OOM for lua code"));
+        return result;
+    }
+    memcpy(arena_code, lua_code, len);
+    arena_code[len] = '\0';
     // Create a new Lua state for each execution (thread-safe)
     lua_State *L = luaL_newstate();
     if (!L) {
@@ -121,24 +135,24 @@ json_t *plugin_execute(json_t *input, MemoryArena *arena, const char *lua_code) 
     lua_setglobal(L, "request");
     
     // Execute lua code
-    if (luaL_dostring(L, lua_code) != LUA_OK) {
-        const char *error = lua_tostring(L, -1);
-        fprintf(stderr, "lua: Execution error: %s\n", error);
-        lua_pop(L, 1);
+    if (luaL_dostring(L, arena_code) != LUA_OK) {
+        const char *err = lua_tostring(L, -1);
+        json_t *result = json_object();
+        json_object_set_new(result, "error", json_string(err ? err : "Lua error"));
         lua_close(L);
-        return NULL;
+        return result;
     }
     
     // Get result from stack
-    json_t *result = NULL;
+    json_t *output = NULL;
     if (lua_gettop(L) > 0) {
-        result = lua_to_jansson(L, -1);
+        output = lua_to_jansson(L, -1);
         lua_pop(L, 1);
     } else {
         // No return value, return the original input
-        result = json_incref(input);
+        output = json_incref(input);
     }
     
     lua_close(L);
-    return result;
+    return output;
 }
