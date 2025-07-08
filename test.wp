@@ -3,10 +3,10 @@ GET /page/:id
   |> lua: `return { title }`
   |> pg: `select * from items`
 
-pg articlesQuery = `select * from articles`
+pg teamsQuery = `SELECT * FROM teams`
 
-GET /articles
-  |> pg: articlesQuery
+GET /teams
+  |> pg: teamsQuery
 
 GET /test
   |> jq: `.`
