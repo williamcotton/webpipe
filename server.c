@@ -429,6 +429,83 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     return MHD_YES;
 }
 
+// Function to collect unique plugin names from AST
+void collect_plugin_names_from_ast(ASTNode *node, char **plugin_names, int *plugin_count, int max_plugins) {
+    if (!node) return;
+    
+    switch (node->type) {
+        case AST_PROGRAM:
+            for (int i = 0; i < node->data.program.statement_count; i++) {
+                collect_plugin_names_from_ast(node->data.program.statements[i], plugin_names, plugin_count, max_plugins);
+            }
+            break;
+            
+        case AST_ROUTE_DEFINITION:
+            // Collect plugins from the main pipeline
+            PipelineStep *step = node->data.route_def.pipeline;
+            while (step) {
+                // Skip "result" as it's built-in
+                if (strcmp(step->plugin, "result") != 0) {
+                    // Check if plugin is already in the list
+                    bool found = false;
+                    for (int i = 0; i < *plugin_count; i++) {
+                        if (strcmp(plugin_names[i], step->plugin) == 0) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found && *plugin_count < max_plugins) {
+                        plugin_names[*plugin_count] = strdup(step->plugin);
+                        (*plugin_count)++;
+                    }
+                }
+                
+                // If this is a result step, collect plugins from its conditions
+                if (strcmp(step->plugin, "result") == 0) {
+                    ASTNode *result_node = (ASTNode*)(uintptr_t)step->value;
+                    ResultCondition *condition = result_node->data.result_step.conditions;
+                    while (condition) {
+                        PipelineStep *condition_step = condition->pipeline;
+                        while (condition_step) {
+                            // Skip "result" as it's built-in
+                            if (strcmp(condition_step->plugin, "result") != 0) {
+                                // Check if plugin is already in the list
+                                bool found = false;
+                                for (int i = 0; i < *plugin_count; i++) {
+                                    if (strcmp(plugin_names[i], condition_step->plugin) == 0) {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (!found && *plugin_count < max_plugins) {
+                                    plugin_names[*plugin_count] = strdup(condition_step->plugin);
+                                    (*plugin_count)++;
+                                }
+                            }
+                            condition_step = condition_step->next;
+                        }
+                        condition = condition->next;
+                    }
+                }
+                
+                step = step->next;
+            }
+            break;
+            
+        case AST_VARIABLE_ASSIGNMENT:
+            // Variable assignments don't contain pipeline steps
+            break;
+            
+        case AST_RESULT_STEP:
+            // This case is handled in the route definition case
+            break;
+            
+        case AST_PIPELINE_STEP:
+            // This case is not used in the current implementation
+            break;
+    }
+}
+
 // Runtime initialization
 int wp_runtime_init(const char *wp_file) {
     printf("Initializing runtime\n");
@@ -479,24 +556,25 @@ int wp_runtime_init(const char *wp_file) {
         }
     }
     
+    // Collect and load required plugins from AST
+    printf("Analyzing AST for required plugins...\n");
+    char *plugin_names[64]; // Max 64 plugins
+    int plugin_count = 0;
+    
+    collect_plugin_names_from_ast(runtime->program, plugin_names, &plugin_count, 64);
+    
+    printf("Found %d unique plugins in AST\n", plugin_count);
+    
     // Load required plugins
     printf("Loading plugins...\n");
-    if (load_plugin("jq") != 0) {
-        printf("Warning: Failed to load jq plugin\n");
-    } else {
-        printf("Loaded jq plugin successfully\n");
-    }
-    
-    if (load_plugin("lua") != 0) {
-        printf("Warning: Failed to load lua plugin\n");
-    } else {
-        printf("Loaded lua plugin successfully\n");
-    }
-    
-    if (load_plugin("pg") != 0) {
-        printf("Warning: Failed to load pg plugin\n");
-    } else {
-        printf("Loaded pg plugin successfully\n");
+    for (int i = 0; i < plugin_count; i++) {
+        printf("Loading plugin: %s\n", plugin_names[i]);
+        if (load_plugin(plugin_names[i]) != 0) {
+            printf("Warning: Failed to load %s plugin\n", plugin_names[i]);
+        } else {
+            printf("Loaded %s plugin successfully\n", plugin_names[i]);
+        }
+        free(plugin_names[i]); // Free the strdup'd name
     }
     
     // Start HTTP server

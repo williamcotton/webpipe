@@ -165,6 +165,7 @@ void free_result_conditions(ResultCondition *conditions);
 // Server internal function declarations
 int load_plugin(const char *name);
 Plugin *find_plugin(const char *name);
+void collect_plugin_names_from_ast(ASTNode *node, char **plugin_names, int *plugin_count, int max_plugins);
 json_t *create_request_json(struct MHD_Connection *connection, 
                            const char *url, const char *method,
                            const char *upload_data, size_t *upload_data_size);
