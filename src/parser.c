@@ -407,7 +407,14 @@ void free_pipeline(PipelineStep *pipeline) {
   while (pipeline) {
     PipelineStep *next = pipeline->next;
     free(pipeline->plugin);
-    free(pipeline->value);
+    
+    // Handle result steps specially - value is an ASTNode*, not a malloc'd string
+    if (pipeline->plugin && strcmp(pipeline->plugin, "result") == 0) {
+      free_ast((ASTNode*)pipeline->value);
+    } else {
+      free(pipeline->value);
+    }
+    
     free(pipeline);
     pipeline = next;
   }

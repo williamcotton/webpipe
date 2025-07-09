@@ -1,0 +1,32 @@
+# Test routes for testing
+pg testQuery = `SELECT 1 as test_value`
+
+GET /test/simple
+  |> jq: `{ message: "Hello, test!" }`
+
+GET /test/param/:id
+  |> jq: `{ id: .params.id, message: "Parameter test" }`
+
+GET /test/chain
+  |> jq: `{ value: 42 }`
+  |> lua: `return { squared = request.value * request.value }`
+  |> jq: `{ result: .squared, message: "Chain test complete" }`
+
+GET /test/database
+  |> jq: `{ sqlParams: [] }`
+  |> pg: testQuery
+  |> jq: `{ data: .data, message: "Database test" }`
+
+GET /test/error
+  |> jq: `{ errors: [{ type: "testError", message: "Test error" }] }`
+  |> result
+    ok(200):
+      |> jq: `{ success: true }`
+    testError(400):
+      |> jq: `{ error: "Test error occurred" }`
+    default(500):
+      |> jq: `{ error: "Unknown error" }`
+
+POST /test/body
+  |> jq: `{ name: .body.name, email: .body.email }`
+  |> lua: `return { processed = true, name = request.name, email = request.email }`

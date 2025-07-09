@@ -24,24 +24,53 @@ static WPRuntime *runtime = NULL;
 
 // Memory arena functions
 MemoryArena *arena_create(size_t size) {
+    if (size == 0) {
+        return NULL;
+    }
+    
     MemoryArena *arena = malloc(sizeof(MemoryArena));
+    if (!arena) {
+        return NULL;
+    }
+    
     arena->memory = malloc(size);
+    if (!arena->memory) {
+        free(arena);
+        return NULL;
+    }
+    
     arena->size = size;
     arena->used = 0;
     return arena;
 }
 
 void *arena_alloc(MemoryArena *arena, size_t size) {
+    if (!arena || size == 0) {
+        return NULL;
+    }
+    
+    // Check if arena was already freed (defensive programming)
+    if (!arena->memory) {
+        return NULL;
+    }
+    
     if (arena->used + size > arena->size) {
         return NULL; // Out of memory
     }
+    
     void *ptr = arena->memory + arena->used;
     arena->used += size;
     return ptr;
 }
 
 void arena_free(MemoryArena *arena) {
-    free(arena->memory);
+    if (!arena) {
+        return;
+    }
+    if (arena->memory) {
+        free(arena->memory);
+        arena->memory = NULL; // Mark as freed
+    }
     free(arena);
 }
 
@@ -113,7 +142,7 @@ MemoryArena *get_current_arena(void) {
 // Custom jansson allocator functions
 static void *jansson_arena_malloc(size_t size) {
     MemoryArena *arena = get_current_arena();
-    if (arena) {
+    if (arena && arena->memory) {  // Check if arena is valid
         void *ptr = arena_alloc(arena, size);
         if (ptr) {
             return ptr;
@@ -121,7 +150,7 @@ static void *jansson_arena_malloc(size_t size) {
         // Arena is full, fallback to malloc
         fprintf(stderr, "WARNING: Arena full, falling back to malloc for size=%zu\n", size);
     }
-    // Fallback to malloc
+    // Fallback to malloc if no arena or arena is full/invalid
     return malloc(size);
 }
 
@@ -141,6 +170,12 @@ static void arena_free_wrapper(void *arena) {
 
 // Plugin loading and management
 int load_plugin(const char *name) {
+    // Check if runtime is initialized
+    if (!runtime) {
+        fprintf(stderr, "Error: Runtime not initialized\n");
+        return -1;
+    }
+    
     char plugin_path[256];
     snprintf(plugin_path, sizeof(plugin_path), "./plugins/%s.so", name);
     
@@ -170,6 +205,11 @@ int load_plugin(const char *name) {
 }
 
 Plugin *find_plugin(const char *name) {
+    // Check if runtime is initialized
+    if (!runtime) {
+        return NULL;
+    }
+    
     for (int i = 0; i < runtime->plugin_count; i++) {
         if (strcmp(runtime->plugins[i].name, name) == 0) {
             return &runtime->plugins[i];
@@ -515,13 +555,19 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     
     if (*con_cls == NULL) {
         MemoryArena *arena = arena_create(1024 * 1024 * 5); // 5MB arena
+        if (!arena) {
+            return MHD_NO;
+        }
         set_current_arena(arena); // Set arena for this thread IMMEDIATELY
         *con_cls = arena; // Store arena in connection context for cleanup
         return MHD_YES;
     }
     
     MemoryArena *arena = (MemoryArena *)*con_cls;
-    set_current_arena(arena); // Ensure arena is set for this thread
+    if (!arena) {
+        return MHD_NO;
+    }
+    set_current_arena(arena); // ALWAYS set arena for this thread on each request
     
     json_t *request = create_request_json(connection, url, method, 
                                          upload_data, upload_data_size);

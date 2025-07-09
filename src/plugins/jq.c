@@ -242,10 +242,13 @@ static __thread int plugin_allocator_initialized = 0;
 // Plugin jansson allocator
 static void *plugin_jansson_malloc(size_t size) {
   if (current_plugin_arena && current_plugin_alloc_func) {
-    return current_plugin_alloc_func(current_plugin_arena, size);
+    void *ptr = current_plugin_alloc_func(current_plugin_arena, size);
+    if (ptr) {
+      return ptr;
+    }
   }
-  // Should not happen - fail gracefully
-  return NULL;
+  // Fallback to malloc if no arena available or allocation failed
+  return malloc(size);
 }
 
 static void plugin_jansson_free(void *ptr) {
@@ -319,6 +322,10 @@ json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func,
     return error;
   }
 
+  // Clear thread-local arena references to prevent use-after-free
+  current_plugin_arena = NULL;
+  current_plugin_alloc_func = NULL;
+  
   return result;
 }
 

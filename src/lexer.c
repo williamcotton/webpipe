@@ -49,7 +49,7 @@ char lexer_advance(Lexer *lexer) {
 }
 
 void lexer_skip_whitespace(Lexer *lexer) {
-  while (isspace(lexer_peek(lexer)) && lexer_peek(lexer) != '\n') {
+  while (isspace(lexer_peek(lexer))) {
     lexer_advance(lexer);
   }
 }
@@ -67,8 +67,17 @@ Token lexer_read_string(Lexer *lexer) {
   lexer_advance(lexer); // Skip opening backtick
   int start = lexer->current;
 
-  while (lexer_peek(lexer) != '`' && lexer_peek(lexer) != '\0') {
-    lexer_advance(lexer);
+  while (lexer_peek(lexer) != '\0') {
+    if (lexer_peek(lexer) == '\\') {
+      lexer_advance(lexer); // Skip escape character
+      if (lexer_peek(lexer) != '\0') {
+        lexer_advance(lexer); // Skip escaped character
+      }
+    } else if (lexer_peek(lexer) == '`') {
+      break;
+    } else {
+      lexer_advance(lexer);
+    }
   }
 
   int length = lexer->current - start;
@@ -97,7 +106,8 @@ Token lexer_read_identifier(Lexer *lexer) {
 
   TokenType type = TOKEN_IDENTIFIER;
   if (strcmp(value, "GET") == 0 || strcmp(value, "POST") == 0 ||
-      strcmp(value, "PUT") == 0 || strcmp(value, "DELETE") == 0) {
+      strcmp(value, "PUT") == 0 || strcmp(value, "DELETE") == 0 ||
+      strcmp(value, "PATCH") == 0) {
     type = TOKEN_HTTP_METHOD;
   }
 
@@ -112,7 +122,7 @@ Token lexer_read_route(Lexer *lexer) {
   while (lexer_peek(lexer) != '\0' && lexer_peek(lexer) != '\n' &&
          lexer_peek(lexer) != ' ' && lexer_peek(lexer) != '\t') {
     char c = lexer_peek(lexer);
-    if (isalnum(c) || c == '/' || c == ':' || c == '-' || c == '_') {
+    if (isalnum(c) || c == '/' || c == ':' || c == '-' || c == '_' || c == '.') {
       lexer_advance(lexer);
     } else {
       break;
@@ -147,7 +157,10 @@ Token lexer_read_number(Lexer *lexer) {
 }
 
 Token lexer_next_token(Lexer *lexer) {
-  lexer_skip_whitespace(lexer);
+  // Skip whitespace except newlines
+  while (isspace(lexer_peek(lexer)) && lexer_peek(lexer) != '\n') {
+    lexer_advance(lexer);
+  }
 
   char c = lexer_peek(lexer);
 
@@ -156,8 +169,15 @@ Token lexer_next_token(Lexer *lexer) {
   }
 
   if (c == '\n') {
+    int line = lexer->line;
+    int column = lexer->column;
     lexer_advance(lexer);
-    return lexer_make_token(lexer, TOKEN_NEWLINE, "\n");
+    Token token;
+    token.type = TOKEN_NEWLINE;
+    token.value = strdup_safe("\n");
+    token.line = line;
+    token.column = column;
+    return token;
   }
 
   if (c == '|' && lexer->source[lexer->current + 1] == '>') {
