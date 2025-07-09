@@ -114,11 +114,15 @@ MemoryArena *get_current_arena(void) {
 static void *jansson_arena_malloc(size_t size) {
     MemoryArena *arena = get_current_arena();
     if (arena) {
-        return arena_alloc(arena, size);
+        void *ptr = arena_alloc(arena, size);
+        if (ptr) {
+            return ptr;
+        }
+        // Arena is full, fallback to malloc
+        fprintf(stderr, "WARNING: Arena full, falling back to malloc for size=%zu\n", size);
     }
-    // Instead of malloc fallback, fail gracefully
-    fprintf(stderr, "ERROR: jansson allocation without arena context, size=%zu\n", size);
-    return NULL;
+    // Fallback to malloc
+    return malloc(size);
 }
 
 static void jansson_arena_free(void *ptr) {
@@ -183,6 +187,7 @@ static void request_completed(void *cls, struct MHD_Connection *connection,
     
     if (*con_cls != NULL) {
         MemoryArena *arena = (MemoryArena *)*con_cls;
+        // Set arena to NULL BEFORE freeing to prevent any further allocations
         set_current_arena(NULL);
         arena_free(arena);
         *con_cls = NULL;
@@ -429,6 +434,11 @@ int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena
 }
 
 bool match_route(const char *pattern, const char *url, json_t *params) {
+    // Check for null params
+    if (!params) {
+        return false;
+    }
+    
     // Skip leading slash if present
     if (url[0] == '/') {
         url++;
@@ -473,9 +483,15 @@ bool match_route(const char *pattern, const char *url, json_t *params) {
             char *endptr = NULL;
             long val = strtol(url_parts[i], &endptr, 10);
             if (*endptr == '\0') {
-                json_object_set_new(params, param_name, json_integer(val));
+                json_t *int_val = json_integer(val);
+                if (int_val) {
+                    json_object_set_new(params, param_name, int_val);
+                }
             } else {
-                json_object_set_new(params, param_name, json_string(url_parts[i]));
+                json_t *str_val = json_string(url_parts[i]);
+                if (str_val) {
+                    json_object_set_new(params, param_name, str_val);
+                }
             }
         } else if (strcmp(pattern_parts[i], url_parts[i]) != 0) {
             free(pattern_copy);
@@ -498,7 +514,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     (void)version; // Suppress unused parameter warning
     
     if (*con_cls == NULL) {
-        MemoryArena *arena = arena_create(1024 * 1024); // 1MB arena
+        MemoryArena *arena = arena_create(1024 * 1024 * 5); // 5MB arena
         set_current_arena(arena); // Set arena for this thread IMMEDIATELY
         *con_cls = arena; // Store arena in connection context for cleanup
         return MHD_YES;
@@ -519,7 +535,9 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                 if (match_route(stmt->data.route_def.route, url, params)) {
                     // If pipeline is empty, return the request object as the response
                     if (!stmt->data.route_def.pipeline) {
+                        // Convert JSON response to string - use arena allocator
                         char *response_str = json_dumps(request, JSON_COMPACT);
+                        
                         struct MHD_Response *mhd_response =
                             MHD_create_response_from_buffer(
                                 strlen(response_str), (void *)response_str,
@@ -537,7 +555,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                                                             request, arena, &final_response, &response_code);
                     
                     if (result == 0 && final_response) {
-                        // Convert JSON response to string - keep arena active
+                        // Convert JSON response to string - use arena allocator
                         char *response_str = json_dumps(final_response, JSON_COMPACT);
 
                         struct MHD_Response *mhd_response =
@@ -678,7 +696,7 @@ int wp_runtime_init(const char *wp_file) {
     // Use runtime arena for JSON variables
     set_current_arena(runtime->parse_ctx->runtime_arena);
     
-    // Set up jansson to use arena allocators
+    // Set up jansson to use arena allocators once at startup
     json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
 
     runtime->variables = json_object();

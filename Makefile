@@ -6,7 +6,8 @@ CFLAGS = -Wall -Wextra -std=c99 -g -O0 -fno-omit-frame-pointer $(BASE_CFLAGS)
 LDFLAGS = -lmicrohttpd -ljansson -ldl
 
 # Directories
-PLUGIN_DIR = plugins
+SRC_DIR = src
+PLUGIN_DIR = $(SRC_DIR)/plugins
 BUILD_DIR = build
 
 # Main target - single wp executable in build directory
@@ -17,15 +18,15 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 # Main wp executable
-$(BUILD_DIR)/wp: $(BUILD_DIR) wp.c lexer.c parser.c server.c wp.h
-	$(CC) $(CFLAGS) -o $@ wp.c lexer.c parser.c server.c $(LDFLAGS) -fsanitize=address
+$(BUILD_DIR)/wp: $(BUILD_DIR) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/wp.h
+	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(LDFLAGS) -fsanitize=address
 
 # Debug target - single wp executable in build directory
 debug: $(BUILD_DIR)/wp-debug plugins
 
 # Debug executable
-$(BUILD_DIR)/wp-debug: $(BUILD_DIR) wp.c lexer.c parser.c server.c wp.h
-	$(CC) $(CFLAGS) -o $@ wp.c lexer.c parser.c server.c $(LDFLAGS)
+$(BUILD_DIR)/wp-debug: $(BUILD_DIR) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/wp.h
+	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(LDFLAGS)
 	codesign -s - -v -f --entitlements debug.plist ./build/wp-debug
 
 leaks: $(BUILD_DIR)/wp-debug
