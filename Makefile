@@ -2,8 +2,8 @@
 BASE_CFLAGS = $(shell cat compile_flags.txt | tr '\n' ' ')
 
 CC = clang
-CFLAGS = -Wall -Wextra -std=c99 -g -O0 -fsanitize=address -fno-omit-frame-pointer $(BASE_CFLAGS)
-LDFLAGS = -lmicrohttpd -ljansson -ldl -fsanitize=address
+CFLAGS = -Wall -Wextra -std=c99 -g -O0 -fno-omit-frame-pointer $(BASE_CFLAGS)
+LDFLAGS = -lmicrohttpd -ljansson -ldl
 
 # Directories
 PLUGIN_DIR = plugins
@@ -18,7 +18,18 @@ $(BUILD_DIR):
 
 # Main wp executable
 $(BUILD_DIR)/wp: $(BUILD_DIR) wp.c lexer.c parser.c server.c wp.h
+	$(CC) $(CFLAGS) -o $@ wp.c lexer.c parser.c server.c $(LDFLAGS) -fsanitize=address
+
+# Debug target - single wp executable in build directory
+debug: $(BUILD_DIR)/wp-debug plugins
+
+# Debug executable
+$(BUILD_DIR)/wp-debug: $(BUILD_DIR) wp.c lexer.c parser.c server.c wp.h
 	$(CC) $(CFLAGS) -o $@ wp.c lexer.c parser.c server.c $(LDFLAGS)
+	codesign -s - -v -f --entitlements debug.plist ./build/wp-debug
+
+leaks: $(BUILD_DIR)/wp-debug
+	leaks --atExit -- ./build/wp-debug test.wp
 
 # Plugin targets
 plugins: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so

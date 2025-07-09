@@ -10,6 +10,16 @@ Parser *parser_new(Token *tokens, int token_count) {
   parser->tokens = tokens;
   parser->token_count = token_count;
   parser->current = 0;
+  parser->ctx = NULL;  // No arena context for backward compatibility
+  return parser;
+}
+
+Parser *parser_new_with_context(Token *tokens, int token_count, ParseContext *ctx) {
+  Parser *parser = malloc(sizeof(Parser));
+  parser->tokens = tokens;
+  parser->token_count = token_count;
+  parser->current = 0;
+  parser->ctx = ctx;
   return parser;
 }
 
@@ -71,8 +81,14 @@ PipelineStep *parser_parse_pipeline(Parser *parser) {
       ASTNode *result_node = parser_parse_result_step(parser);
       
       // Create a special pipeline step for result
-      PipelineStep *step = malloc(sizeof(PipelineStep));
-      step->plugin = strdup_safe("result");
+      PipelineStep *step;
+      if (parser->ctx && parser->ctx->parse_arena) {
+        step = arena_alloc(parser->ctx->parse_arena, sizeof(PipelineStep));
+        step->plugin = arena_strdup(parser->ctx->parse_arena, "result");
+      } else {
+        step = malloc(sizeof(PipelineStep));
+        step->plugin = strdup_safe("result");
+      }
       step->value = (char*)result_node; // Store result node as value
       step->is_variable = false;
       step->next = NULL;
@@ -97,16 +113,31 @@ PipelineStep *parser_parse_pipeline(Parser *parser) {
     bool is_variable = false;
 
     if (parser_check(parser, TOKEN_STRING)) {
-      value = strdup_safe(parser_advance(parser)->value);
+      if (parser->ctx && parser->ctx->parse_arena) {
+        value = arena_strdup(parser->ctx->parse_arena, parser_advance(parser)->value);
+      } else {
+        value = strdup_safe(parser_advance(parser)->value);
+      }
       is_variable = false;
     } else if (parser_check(parser, TOKEN_IDENTIFIER)) {
-      value = strdup_safe(parser_advance(parser)->value);
+      if (parser->ctx && parser->ctx->parse_arena) {
+        value = arena_strdup(parser->ctx->parse_arena, parser_advance(parser)->value);
+      } else {
+        value = strdup_safe(parser_advance(parser)->value);
+      }
       is_variable = true;
     }
 
-    PipelineStep *step = malloc(sizeof(PipelineStep));
-    step->plugin = strdup_safe(plugin->value);
-    step->value = value;
+    PipelineStep *step;
+    if (parser->ctx && parser->ctx->parse_arena) {
+      step = arena_alloc(parser->ctx->parse_arena, sizeof(PipelineStep));
+      step->plugin = arena_strdup(parser->ctx->parse_arena, plugin->value);
+      step->value = value; // Already allocated in arena above
+    } else {
+      step = malloc(sizeof(PipelineStep));
+      step->plugin = strdup_safe(plugin->value);
+      step->value = value;
+    }
     step->is_variable = is_variable;
     step->next = NULL;
 
@@ -124,7 +155,12 @@ PipelineStep *parser_parse_pipeline(Parser *parser) {
 }
 
 ASTNode *parser_parse_result_step(Parser *parser) {
-  ASTNode *node = malloc(sizeof(ASTNode));
+  ASTNode *node;
+  if (parser->ctx && parser->ctx->parse_arena) {
+    node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+  } else {
+    node = malloc(sizeof(ASTNode));
+  }
   node->type = AST_RESULT_STEP;
   node->data.result_step.conditions = NULL;
 
@@ -171,8 +207,15 @@ ASTNode *parser_parse_result_step(Parser *parser) {
     // Parse pipeline for this condition
     PipelineStep *pipeline = parser_parse_pipeline(parser);
 
-    ResultCondition *condition = malloc(sizeof(ResultCondition));
-    condition->condition_name = strdup_safe(condition_name->value);
+    ResultCondition *condition;
+    if (parser->ctx && parser->ctx->parse_arena) {
+      condition = arena_alloc(parser->ctx->parse_arena, sizeof(ResultCondition));
+      condition->condition_name = arena_strdup(parser->ctx->parse_arena, condition_name->value);
+    } else {
+      // Fallback for backward compatibility
+      condition = malloc(sizeof(ResultCondition));
+      condition->condition_name = strdup_safe(condition_name->value);
+    }
     condition->status_code = atoi(status_code->value);
     condition->pipeline = pipeline;
     condition->next = NULL;
@@ -205,10 +248,17 @@ ASTNode *parser_parse_route_definition(Parser *parser) {
 
   PipelineStep *pipeline = parser_parse_pipeline(parser);
 
-  ASTNode *node = malloc(sizeof(ASTNode));
+  ASTNode *node;
+  if (parser->ctx && parser->ctx->parse_arena) {
+    node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+    node->data.route_def.method = arena_strdup(parser->ctx->parse_arena, method->value);
+    node->data.route_def.route = arena_strdup(parser->ctx->parse_arena, route->value);
+  } else {
+    node = malloc(sizeof(ASTNode));
+    node->data.route_def.method = strdup_safe(method->value);
+    node->data.route_def.route = strdup_safe(route->value);
+  }
   node->type = AST_ROUTE_DEFINITION;
-  node->data.route_def.method = strdup_safe(method->value);
-  node->data.route_def.route = strdup_safe(route->value);
   node->data.route_def.pipeline = pipeline;
 
   return node;
@@ -230,11 +280,19 @@ ASTNode *parser_parse_variable_assignment(Parser *parser) {
 
   Token *value = parser_advance(parser);
 
-  ASTNode *node = malloc(sizeof(ASTNode));
+  ASTNode *node;
+  if (parser->ctx && parser->ctx->parse_arena) {
+    node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+    node->data.var_assign.plugin = arena_strdup(parser->ctx->parse_arena, plugin->value);
+    node->data.var_assign.name = arena_strdup(parser->ctx->parse_arena, name->value);
+    node->data.var_assign.value = arena_strdup(parser->ctx->parse_arena, value->value);
+  } else {
+    node = malloc(sizeof(ASTNode));
+    node->data.var_assign.plugin = strdup_safe(plugin->value);
+    node->data.var_assign.name = strdup_safe(name->value);
+    node->data.var_assign.value = strdup_safe(value->value);
+  }
   node->type = AST_VARIABLE_ASSIGNMENT;
-  node->data.var_assign.plugin = strdup_safe(plugin->value);
-  node->data.var_assign.name = strdup_safe(name->value);
-  node->data.var_assign.value = strdup_safe(value->value);
 
   return node;
 }
@@ -262,9 +320,15 @@ ASTNode *parser_parse_statement(Parser *parser) {
 }
 
 ASTNode *parser_parse(Parser *parser) {
-  ASTNode *program = malloc(sizeof(ASTNode));
+  ASTNode *program;
+  if (parser->ctx && parser->ctx->parse_arena) {
+    program = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+    program->data.program.statements = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode *) * 100);
+  } else {
+    program = malloc(sizeof(ASTNode));
+    program->data.program.statements = malloc(sizeof(ASTNode *) * 100);
+  }
   program->type = AST_PROGRAM;
-  program->data.program.statements = malloc(sizeof(ASTNode *) * 100);
   program->data.program.statement_count = 0;
 
   while (!parser_is_at_end(parser)) {

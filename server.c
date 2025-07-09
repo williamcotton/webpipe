@@ -16,6 +16,7 @@ typedef struct {
     Plugin *plugins;
     int plugin_count;
     json_t *variables;
+    ParseContext *parse_ctx;
 } WPRuntime;
 
 // Global runtime instance
@@ -42,6 +43,58 @@ void *arena_alloc(MemoryArena *arena, size_t size) {
 void arena_free(MemoryArena *arena) {
     free(arena->memory);
     free(arena);
+}
+
+// Arena string allocation functions
+char *arena_strdup(MemoryArena *arena, const char *str) {
+    if (!str) return NULL;
+    
+    size_t len = strlen(str);
+    char *copy = arena_alloc(arena, len + 1);
+    if (copy) {
+        strcpy(copy, str);
+    }
+    return copy;
+}
+
+char *arena_strndup(MemoryArena *arena, const char *str, size_t n) {
+    if (!str) return NULL;
+    
+    size_t len = strlen(str);
+    if (len > n) len = n;
+    
+    char *copy = arena_alloc(arena, len + 1);
+    if (copy) {
+        strncpy(copy, str, len);
+        copy[len] = '\0';
+    }
+    return copy;
+}
+
+// Parse context management
+ParseContext *parse_context_create(void) {
+    ParseContext *ctx = malloc(sizeof(ParseContext));
+    if (!ctx) return NULL;
+    
+    ctx->parse_arena = arena_create(1024 * 1024);    // 1MB for parsing
+    ctx->runtime_arena = arena_create(256 * 1024);   // 256KB for runtime data
+    
+    if (!ctx->parse_arena || !ctx->runtime_arena) {
+        if (ctx->parse_arena) arena_free(ctx->parse_arena);
+        if (ctx->runtime_arena) arena_free(ctx->runtime_arena);
+        free(ctx);
+        return NULL;
+    }
+    
+    return ctx;
+}
+
+void parse_context_destroy(ParseContext *ctx) {
+    if (!ctx) return;
+    
+    if (ctx->parse_arena) arena_free(ctx->parse_arena);
+    if (ctx->runtime_arena) arena_free(ctx->runtime_arena);
+    free(ctx);
 }
 
 // Thread-local storage for current arena
@@ -609,11 +662,21 @@ int wp_runtime_init(const char *wp_file) {
     runtime = malloc(sizeof(WPRuntime));
     runtime->plugins = NULL;
     runtime->plugin_count = 0;
-    runtime->variables = json_object();
+    runtime->parse_ctx = parse_context_create();
+    if (!runtime->parse_ctx) {
+        fprintf(stderr, "Error: Could not create parse context\n");
+        free(runtime);
+        return -1;
+    }
+    
+    // Use runtime arena for JSON variables
+    set_current_arena(runtime->parse_ctx->runtime_arena);
     
     // Set up jansson to use arena allocators
     json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
-    
+
+    runtime->variables = json_object();
+
     // Parse wp file
     FILE *file = fopen(wp_file, "r");
     if (!file) {
@@ -635,7 +698,7 @@ int wp_runtime_init(const char *wp_file) {
     // Tokenize and parse
     int token_count;
     Token *tokens = lexer_tokenize(source, &token_count);
-    Parser *parser = parser_new(tokens, token_count);
+    Parser *parser = parser_new_with_context(tokens, token_count, runtime->parse_ctx);
     runtime->program = parser_parse(parser);
 
     printf("Parsed program\n");
@@ -720,8 +783,9 @@ void wp_runtime_cleanup() {
         }
         free(runtime->plugins);
         
-        // json_decref(runtime->variables);
-        free_ast(runtime->program);
+        // Free parse context (this frees ALL parser memory automatically)
+        parse_context_destroy(runtime->parse_ctx);
+        
         free(runtime);
     }
 } 

@@ -16,6 +16,12 @@ typedef struct MemoryArena {
     size_t used;
 } MemoryArena;
 
+// Parse context for arena-based parser memory management
+typedef struct ParseContext {
+    MemoryArena *parse_arena;    // For AST nodes, strings, conditions
+    MemoryArena *runtime_arena;  // For long-lived runtime data
+} ParseContext;
+
 // Token types
 typedef enum {
   TOKEN_EOF,
@@ -104,6 +110,7 @@ typedef struct {
   Token *tokens;
   int token_count;
   int current;
+  ParseContext *ctx;  // Parse context for arena allocation
 } Parser;
 
 // Arena allocation function types for plugins
@@ -124,6 +131,10 @@ MemoryArena *get_current_arena(void);
 MemoryArena *arena_create(size_t size);
 void *arena_alloc(MemoryArena *arena, size_t size);
 void arena_free(MemoryArena *arena);
+char *arena_strdup(MemoryArena *arena, const char *str);
+char *arena_strndup(MemoryArena *arena, const char *str, size_t n);
+ParseContext *parse_context_create(void);
+void parse_context_destroy(ParseContext *ctx);
 Lexer *lexer_new(const char *source);
 void lexer_free(Lexer *lexer);
 char lexer_peek(Lexer *lexer);
@@ -137,6 +148,7 @@ Token lexer_read_number(Lexer *lexer);
 Token lexer_next_token(Lexer *lexer);
 Token *lexer_tokenize(const char *source, int *token_count);
 Parser *parser_new(Token *tokens, int token_count);
+Parser *parser_new_with_context(Token *tokens, int token_count, ParseContext *ctx);
 void parser_free(Parser *parser);
 ASTNode *parser_parse(Parser *parser);
 ASTNode *parser_parse_result_step(Parser *parser);
