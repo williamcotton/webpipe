@@ -141,7 +141,13 @@ static jv json_to_jv(json_t *j) {
   return jv_null();
 }
 
-static json_t *jv_to_json(jv v) {
+
+// Arena allocation function type
+typedef void* (*arena_alloc_func)(void* arena, size_t size);
+typedef void (*arena_free_func)(void* arena);
+
+// Arena-aware JSON construction to avoid global allocator conflicts
+static json_t *jv_to_json_with_arena(jv v, void *arena, arena_alloc_func alloc_func) {
   switch (jv_get_kind(v)) {
   case JV_KIND_INVALID:
     jv_free(v);
@@ -161,21 +167,64 @@ static json_t *jv_to_json(jv v) {
     return json_real(d);
   }
   case JV_KIND_STRING: {
-    const char *s = jv_string_value(v);
-    json_t *r = json_string(s);
+    const char *str = jv_string_value(v);
+    size_t len = strlen(str);
+    if (!arena || !alloc_func) {
+      json_t *result = json_string(str);  // Fallback - will cause leak
+      jv_free(v);
+      return result;
+    }
+    char *arena_str = alloc_func(arena, len + 1);
+    if (!arena_str) {
+      json_t *result = json_string(str);  // Fallback - will cause leak
+      jv_free(v);
+      return result;
+    }
+    strcpy(arena_str, str);
+    
+    json_t *result = json_string(arena_str);  // Uses plugin's arena allocator
     jv_free(v);
-    return r;
+    return result;
   }
   case JV_KIND_ARRAY: {
-    json_t *arr = json_array();
-    jv_array_foreach(v, i, el) { json_array_append_new(arr, jv_to_json(el)); }
+    json_t *arr = json_array();  // Uses main program's arena allocator
+    jv_array_foreach(v, i, el) { 
+      json_t *json_el = jv_to_json_with_arena(el, arena, alloc_func);
+      if (json_el) {
+        json_array_append_new(arr, json_el);
+      }
+    }
     jv_free(v);
     return arr;
   }
   case JV_KIND_OBJECT: {
-    json_t *obj = json_object();
+    json_t *obj = json_object();  // Should use main program's arena allocator
     jv_object_foreach(v, k, val) {
-      json_object_set_new(obj, jv_string_value(k), jv_to_json(val));
+      const char *key_str = jv_string_value(k);
+      size_t key_len = strlen(key_str);
+      if (!arena || !alloc_func) {
+        json_t *json_val = jv_to_json_with_arena(val, arena, alloc_func);
+        if (json_val) {
+          json_object_set_new(obj, key_str, json_val);  // Will cause leak
+        }
+        jv_free(k);
+        continue;
+      }
+      char *arena_key = alloc_func(arena, key_len + 1);
+      if (!arena_key) {
+        json_t *json_val = jv_to_json_with_arena(val, arena, alloc_func);
+        if (json_val) {
+          json_object_set_new(obj, key_str, json_val);  // Will cause leak
+        }
+        jv_free(k);
+        continue;
+      }
+      strcpy(arena_key, key_str);
+      
+      json_t *json_val = jv_to_json_with_arena(val, arena, alloc_func);
+      if (json_val) {
+        json_object_set_new(obj, arena_key, json_val);
+      }
       jv_free(k);
     }
     jv_free(v);
@@ -185,13 +234,42 @@ static json_t *jv_to_json(jv v) {
   return NULL;
 }
 
+// Thread-local plugin arena context
+static __thread void *current_plugin_arena = NULL;
+static __thread arena_alloc_func current_plugin_alloc_func = NULL;
+static __thread int plugin_allocator_initialized = 0;
+
+// Plugin jansson allocator
+static void *plugin_jansson_malloc(size_t size) {
+  if (current_plugin_arena && current_plugin_alloc_func) {
+    return current_plugin_alloc_func(current_plugin_arena, size);
+  }
+  // Should not happen - fail gracefully
+  return NULL;
+}
+
+static void plugin_jansson_free(void *ptr) {
+  // Arena memory is freed all at once, so no-op
+  (void)ptr;
+}
+
 // The actual plugin function
 json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func,
                        const char *filter) {
-  (void)arena;
-  (void)alloc;
-  (void)free_func;
-
+  // Set up thread-local arena context
+  current_plugin_arena = arena;
+  current_plugin_alloc_func = (arena_alloc_func)alloc;
+  
+  // Set up jansson allocator for this plugin only once per thread
+  if (!plugin_allocator_initialized) {
+    json_set_alloc_funcs(plugin_jansson_malloc, plugin_jansson_free);
+    plugin_allocator_initialized = 1;
+  }
+  
+  // Use arena for string allocation in jv_to_json_with_arena
+  arena_alloc_func alloc_func = (arena_alloc_func)alloc;
+  (void)free_func; // Not used - arena is freed all at once
+  
   jq_state *jq = get_cached_jq(filter);
   if (!jq) {
     json_t *error = json_object();
@@ -227,14 +305,20 @@ json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func,
     jv_free(extra);
   }
 
+  // Convert jv to json while still holding the lock to prevent race conditions
+  json_t *result = NULL;
+  if (jv_is_valid(out)) {
+    result = jv_to_json_with_arena(out, arena, alloc_func);
+  }
+
   pthread_mutex_unlock(&entry->mutex);
 
-  if (!jv_is_valid(out)) {
+  if (!result) {
     json_t *error = json_object();
     json_object_set_new(error, "error", json_string("JQ execution failed"));
     return error;
   }
 
-  return jv_to_json(out);
+  return result;
 }
 

@@ -98,23 +98,16 @@ void parse_context_destroy(ParseContext *ctx) {
 }
 
 // Thread-local storage for current arena
-static pthread_key_t current_arena_key;
-static pthread_once_t arena_key_once = PTHREAD_ONCE_INIT;
-
-static void arena_key_init(void) {
-    pthread_key_create(&current_arena_key, NULL);
-}
+_Thread_local MemoryArena *currentArena = NULL;
 
 // Set current arena for this thread
 void set_current_arena(MemoryArena *arena) {
-    pthread_once(&arena_key_once, arena_key_init);
-    pthread_setspecific(current_arena_key, arena);
+    currentArena = arena;
 }
 
 // Get current arena for this thread
 MemoryArena *get_current_arena(void) {
-    pthread_once(&arena_key_once, arena_key_init);
-    return pthread_getspecific(current_arena_key);
+    return currentArena;
 }
 
 // Custom jansson allocator functions
@@ -123,14 +116,14 @@ static void *jansson_arena_malloc(size_t size) {
     if (arena) {
         return arena_alloc(arena, size);
     }
-    return malloc(size); // Fallback
+    // Instead of malloc fallback, fail gracefully
+    fprintf(stderr, "ERROR: jansson allocation without arena context, size=%zu\n", size);
+    return NULL;
 }
 
 static void jansson_arena_free(void *ptr) {
     // Arena memory is freed all at once, so we don't need to do anything here
-    // But we can't use free() because the pointer might be from the arena
-    // When arena is NULL, this means we're in cleanup phase and should ignore
-    (void)ptr; // Suppress unused parameter warning
+    (void)ptr;
 }
 
 // Wrapper functions for plugin interface
@@ -179,6 +172,21 @@ Plugin *find_plugin(const char *name) {
         }
     }
     return NULL;
+}
+
+// Request completion callback for arena cleanup
+static void request_completed(void *cls, struct MHD_Connection *connection,
+                              void **con_cls, enum MHD_RequestTerminationCode toe) {
+    (void)cls;
+    (void)connection;
+    (void)toe;
+    
+    if (*con_cls != NULL) {
+        MemoryArena *arena = (MemoryArena *)*con_cls;
+        set_current_arena(NULL);
+        arena_free(arena);
+        *con_cls = NULL;
+    }
 }
 
 // HTTP request handling
@@ -299,6 +307,8 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
                     int temp_code;
                     int result = execute_pipeline_with_result(selected_condition->pipeline, 
                                                             current, arena, &condition_result, &temp_code);
+                    // Ensure arena context is still set after recursive execution
+                    set_current_arena(arena);
                     if (result == 0 && condition_result) {
                         // json_decref(current);
                         current = condition_result;
@@ -326,7 +336,11 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             }
         }
         
+        // Ensure arena context is set before plugin execution
+        set_current_arena(arena);
         json_t *result = plugin->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config);
+        // Ensure arena context is still set after plugin execution
+        set_current_arena(arena);
         if (!result) {
             fprintf(stderr, "Plugin %s failed\n", step->plugin);
             // json_decref(current);
@@ -378,6 +392,8 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
                             int temp_code;
                             int exec_result = execute_pipeline_with_result(selected_condition->pipeline, 
                                                                     result, arena, &condition_result, &temp_code);
+                            // Ensure arena context is still set after recursive execution
+                            set_current_arena(arena);
                             if (exec_result == 0 && condition_result) {
                                 current = condition_result;
                             }
@@ -482,12 +498,14 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     (void)version; // Suppress unused parameter warning
     
     if (*con_cls == NULL) {
-        *con_cls = (void *)1;
+        MemoryArena *arena = arena_create(1024 * 1024); // 1MB arena
+        set_current_arena(arena); // Set arena for this thread IMMEDIATELY
+        *con_cls = arena; // Store arena in connection context for cleanup
         return MHD_YES;
     }
     
-    MemoryArena *arena = arena_create(1024 * 1024); // 1MB arena
-    set_current_arena(arena); // Set arena for this thread
+    MemoryArena *arena = (MemoryArena *)*con_cls;
+    set_current_arena(arena); // Ensure arena is set for this thread
     
     json_t *request = create_request_json(connection, url, method, 
                                          upload_data, upload_data_size);
@@ -501,18 +519,14 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                 if (match_route(stmt->data.route_def.route, url, params)) {
                     // If pipeline is empty, return the request object as the response
                     if (!stmt->data.route_def.pipeline) {
-                        set_current_arena(NULL);
                         char *response_str = json_dumps(request, JSON_COMPACT);
-                        set_current_arena(arena);
-                        struct MHD_Response *mhd_response = 
-                            MHD_create_response_from_buffer(strlen(response_str),
-                                                           (void*)response_str,
-                                                           MHD_RESPMEM_MUST_FREE);
+                        struct MHD_Response *mhd_response =
+                            MHD_create_response_from_buffer(
+                                strlen(response_str), (void *)response_str,
+                                MHD_RESPMEM_PERSISTENT);
                         MHD_add_response_header(mhd_response, "Content-Type", "application/json");
                         (void)MHD_queue_response(connection, 200, mhd_response);
                         MHD_destroy_response(mhd_response);
-                        set_current_arena(NULL);
-                        arena_free(arena);
                         return MHD_YES;
                     }
                     // Execute pipeline with result handling
@@ -523,16 +537,14 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                                                             request, arena, &final_response, &response_code);
                     
                     if (result == 0 && final_response) {
-                        // Convert JSON response to string - use regular malloc to avoid arena issues
-                        set_current_arena(NULL); // Temporarily disable arena for json_dumps
+                        // Convert JSON response to string - keep arena active
                         char *response_str = json_dumps(final_response, JSON_COMPACT);
-                        set_current_arena(arena); // Re-enable arena
-                        
-                        struct MHD_Response *mhd_response = 
-                            MHD_create_response_from_buffer(strlen(response_str),
-                                                           (void*)response_str,
-                                                           MHD_RESPMEM_MUST_FREE);
-                        
+
+                        struct MHD_Response *mhd_response =
+                            MHD_create_response_from_buffer(
+                                strlen(response_str), (void *)response_str,
+                                MHD_RESPMEM_PERSISTENT);
+
                         // Add JSON content type header
                         MHD_add_response_header(mhd_response, "Content-Type", "application/json");
                         
@@ -551,9 +563,6 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                         MHD_destroy_response(mhd_response);
                     }
                     
-                    // Clear current arena before freeing to prevent jansson from accessing freed memory
-                    set_current_arena(NULL);
-                    arena_free(arena);
                     return MHD_YES;
                 }
             }
@@ -569,9 +578,6 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     (void)MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, mhd_response);
     MHD_destroy_response(mhd_response);
     
-    // Clear current arena before freeing to prevent jansson from accessing freed memory
-    set_current_arena(NULL);
-    arena_free(arena);
     return MHD_YES;
 }
 
@@ -740,6 +746,7 @@ int wp_runtime_init(const char *wp_file) {
     runtime->daemon = MHD_start_daemon(MHD_USE_THREAD_PER_CONNECTION,
                                       8080, NULL, NULL,
                                       &handle_request, NULL,
+                                      MHD_OPTION_NOTIFY_COMPLETED, request_completed, NULL,
                                       MHD_OPTION_END);
     
     if (!runtime->daemon) {
@@ -750,6 +757,7 @@ int wp_runtime_init(const char *wp_file) {
         runtime->daemon = MHD_start_daemon(MHD_USE_THREAD_PER_CONNECTION,
                                           8081, NULL, NULL,
                                           &handle_request, NULL,
+                                          MHD_OPTION_NOTIFY_COMPLETED, request_completed, NULL,
                                           MHD_OPTION_END);
         
         if (!runtime->daemon) {

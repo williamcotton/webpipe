@@ -51,7 +51,7 @@ int pg_plugin_init() {
   // Try to connect
   char conninfo[512];
   snprintf(conninfo, sizeof(conninfo),
-           "host=%s port=%s dbname=%s user=%s password=%s", pg_host, pg_port,
+           "host=%s port=%s dbname=%s user=%s password=%s gssencmode=disable", pg_host, pg_port,
            pg_dbname, pg_user, pg_password);
 
   PGconn *new_conn = PQconnectdb(conninfo);
