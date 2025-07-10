@@ -113,3 +113,9 @@ GET /test-sql-error
       }`
     default(500):
       |> jq: `{error: "Internal server error"}`
+
+POST /users
+  |> jq: `{
+    name: .body.name,
+    email: .body.email
+  }`

@@ -226,10 +226,20 @@ static void request_completed(void *cls, struct MHD_Connection *connection,
     (void)toe;
     
     if (*con_cls != NULL) {
-        MemoryArena *arena = (MemoryArena *)*con_cls;
-        // Set arena to NULL BEFORE freeing to prevent any further allocations
-        set_current_arena(NULL);
-        arena_free(arena);
+        // Check if it's a PostData structure or just an arena
+        // We can distinguish by checking if the first 8 bytes look like a valid arena pointer
+        PostData *post_data = (PostData *)*con_cls;
+        if (post_data && post_data->arena) {
+            // It's a PostData structure, free the arena
+            MemoryArena *arena = post_data->arena;
+            set_current_arena(NULL);
+            arena_free(arena);
+        } else {
+            // It's just an arena pointer (for non-POST requests)
+            MemoryArena *arena = (MemoryArena *)*con_cls;
+            set_current_arena(NULL);
+            arena_free(arena);
+        }
         *con_cls = NULL;
     }
 }
@@ -237,7 +247,7 @@ static void request_completed(void *cls, struct MHD_Connection *connection,
 // HTTP request handling
 json_t *create_request_json(struct MHD_Connection *connection, 
                            const char *url, const char *method,
-                           const char *upload_data, size_t *upload_data_size) {
+                           const char *upload_data, size_t upload_data_size) {
     (void)connection; // Suppress unused parameter warning
     json_t *request = json_object();
     
@@ -256,8 +266,16 @@ json_t *create_request_json(struct MHD_Connection *connection,
     json_object_set_new(request, "query", query);
     
     // Set body if present
-    if (upload_data && *upload_data_size > 0) {
-        json_object_set_new(request, "body", json_string(upload_data));
+    if (upload_data && upload_data_size > 0) {
+        // Try to parse as JSON first
+        json_error_t error;
+        json_t *json_body = json_loadb(upload_data, upload_data_size, 0, &error);
+        if (json_body) {
+            json_object_set_new(request, "body", json_body);
+        } else {
+            // If not valid JSON, store as string
+            json_object_set_new(request, "body", json_stringn(upload_data, upload_data_size));
+        }
     } else {
         json_object_set_new(request, "body", json_null());
     }
@@ -552,10 +570,143 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
             return MHD_NO;
         }
         set_current_arena(arena); // Set arena for this thread IMMEDIATELY
-        *con_cls = arena; // Store arena in connection context for cleanup
+        
+        // For POST requests, we need to collect the data
+        if (strcmp(method, "POST") == 0) {
+            PostData *post_data = arena_alloc(arena, sizeof(PostData));
+            if (!post_data) {
+                arena_free(arena);
+                return MHD_NO;
+            }
+            post_data->arena = arena;
+            post_data->post_data = NULL;
+            post_data->post_data_size = 0;
+            post_data->post_data_capacity = 0;
+            *con_cls = post_data;
+        } else {
+            *con_cls = arena;
+        }
         return MHD_YES;
     }
     
+    // Handle POST data collection
+    if (strcmp(method, "POST") == 0) {
+        PostData *post_data = (PostData *)*con_cls;
+        if (!post_data || !post_data->arena) {
+            return MHD_NO;
+        }
+        set_current_arena(post_data->arena);
+        
+        // If we have upload data, collect it
+        if (*upload_data_size > 0) {
+            // Ensure we have enough capacity
+            size_t new_size = post_data->post_data_size + *upload_data_size;
+            if (new_size > post_data->post_data_capacity) {
+                size_t new_capacity = new_size + 1024; // Add some buffer
+                char *new_buffer = arena_alloc(post_data->arena, new_capacity);
+                if (!new_buffer) {
+                    return MHD_NO;
+                }
+                if (post_data->post_data) {
+                    memcpy(new_buffer, post_data->post_data, post_data->post_data_size);
+                }
+                post_data->post_data = new_buffer;
+                post_data->post_data_capacity = new_capacity;
+            }
+            
+            // Append new data
+            memcpy(post_data->post_data + post_data->post_data_size, upload_data, *upload_data_size);
+            post_data->post_data_size += *upload_data_size;
+            *upload_data_size = 0; // Mark as consumed
+            
+            return MHD_YES; // Continue receiving data
+        }
+        
+        // No more data to receive, process the request
+        json_t *request = create_request_json(connection, url, method, 
+                                             post_data->post_data, post_data->post_data_size);
+        
+        // Continue with normal request processing...
+        MemoryArena *arena = post_data->arena;
+        set_current_arena(arena);
+        
+        // Process the request normally from here
+        // Find matching route
+        for (int i = 0; i < runtime->program->data.program.statement_count; i++) {
+            ASTNode *stmt = runtime->program->data.program.statements[i];
+            if (stmt->type == AST_ROUTE_DEFINITION) {
+                if (strcmp(stmt->data.route_def.method, method) == 0) {
+                    json_t *params = json_object_get(request, "params");
+                    if (match_route(stmt->data.route_def.route, url, params)) {
+                        // If pipeline is empty, return the request object as the response
+                        if (!stmt->data.route_def.pipeline) {
+                            // Ensure arena context is set for JSON serialization
+                            set_current_arena(arena);
+                            // Convert JSON response to string - use arena allocator
+                            char *response_str = json_dumps(request, JSON_COMPACT);
+                            
+                            struct MHD_Response *mhd_response =
+                                MHD_create_response_from_buffer(
+                                    strlen(response_str), (void *)response_str,
+                                    MHD_RESPMEM_PERSISTENT);
+                            MHD_add_response_header(mhd_response, "Content-Type", "application/json");
+                            (void)MHD_queue_response(connection, 200, mhd_response);
+                            MHD_destroy_response(mhd_response);
+                            return MHD_YES;
+                        }
+                        // Execute pipeline with result handling
+                        json_t *final_response = NULL;
+                        int response_code = 200;
+                        
+                        int result = execute_pipeline_with_result(stmt->data.route_def.pipeline, 
+                                                                request, arena, &final_response, &response_code);
+                        
+                        if (result == 0 && final_response) {
+                            // Ensure arena context is set for JSON serialization
+                            set_current_arena(arena);
+                            // Convert JSON response to string - use arena allocator
+                            char *response_str = json_dumps(final_response, JSON_COMPACT);
+
+                            struct MHD_Response *mhd_response =
+                                MHD_create_response_from_buffer(
+                                    strlen(response_str), (void *)response_str,
+                                    MHD_RESPMEM_PERSISTENT);
+
+                            // Add JSON content type header
+                            MHD_add_response_header(mhd_response, "Content-Type", "application/json");
+                            
+                            (void)MHD_queue_response(connection, (unsigned int)response_code, mhd_response);
+                            MHD_destroy_response(mhd_response);
+                        } else {
+                            // Error in pipeline execution
+                            const char *error_response = "{\"error\": \"Internal server error\"}";
+                            struct MHD_Response *mhd_response = 
+                                MHD_create_response_from_buffer(strlen(error_response),
+                                                               (void*)(uintptr_t)error_response,
+                                                               MHD_RESPMEM_PERSISTENT);
+                            (void)MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, mhd_response);
+                            MHD_destroy_response(mhd_response);
+                        }
+                        
+                        return MHD_YES;
+                    }
+                }
+            }
+        }
+        
+        // No route found
+        const char *response = "{\"error\": \"Not found\"}";
+        struct MHD_Response *mhd_response = 
+            MHD_create_response_from_buffer(strlen(response),
+                                           (void*)(uintptr_t)response,
+                                           MHD_RESPMEM_PERSISTENT);
+        (void)MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, mhd_response);
+        MHD_destroy_response(mhd_response);
+        
+        return MHD_YES;
+    }
+    
+    // Handle non-POST requests
     MemoryArena *arena = (MemoryArena *)*con_cls;
     if (!arena) {
         return MHD_NO;
@@ -563,7 +714,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     set_current_arena(arena); // ALWAYS set arena for this thread on each request
     
     json_t *request = create_request_json(connection, url, method, 
-                                         upload_data, upload_data_size);
+                                         upload_data, *upload_data_size);
     
     // Find matching route
     for (int i = 0; i < runtime->program->data.program.statement_count; i++) {

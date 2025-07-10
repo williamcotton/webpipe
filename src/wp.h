@@ -174,13 +174,21 @@ void stringify_pipeline(FILE *out, PipelineStep *pipeline, int level);
 void free_pipeline(PipelineStep *pipeline);
 void free_result_conditions(ResultCondition *conditions);
 
+// Structure to hold POST data during processing
+typedef struct {
+    MemoryArena *arena;
+    char *post_data;
+    size_t post_data_size;
+    size_t post_data_capacity;
+} PostData;
+
 // Server internal function declarations
 int load_plugin(const char *name);
 Plugin *find_plugin(const char *name);
 void collect_plugin_names_from_ast(ASTNode *node, char **plugin_names, int *plugin_count, int max_plugins);
 json_t *create_request_json(struct MHD_Connection *connection, 
                            const char *url, const char *method,
-                           const char *upload_data, size_t *upload_data_size);
+                           const char *upload_data, size_t upload_data_size);
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
                                 json_t **final_response, int *response_code);
 int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena);
