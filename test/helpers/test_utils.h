@@ -84,4 +84,12 @@ void restore_memory_functions(void);
 void simulate_plugin_failure(const char *plugin_name);
 void restore_plugin_functions(void);
 
+// Test-safe runtime initialization
+int init_test_runtime(const char *wp_file);
+void cleanup_test_runtime(void);
+
+// Test runtime access - forward declaration  
+struct WPRuntime;
+extern struct WPRuntime *test_runtime;
+
 #endif // TEST_UTILS_H

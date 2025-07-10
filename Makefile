@@ -84,7 +84,7 @@ $(BUILD_DIR)/test_server: $(BUILD_DIR) $(TEST_DIR)/system/test_server.c $(TEST_C
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
 
 $(BUILD_DIR)/test_e2e: $(BUILD_DIR) $(TEST_DIR)/system/test_e2e.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_e2e.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_e2e.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS) -lcurl
 
 $(BUILD_DIR)/test_perf: $(BUILD_DIR) $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
@@ -98,19 +98,71 @@ TEST_ALL_BINS = $(TEST_UNIT_BINS) $(TEST_INTEGRATION_BINS) $(TEST_SYSTEM_BINS)
 # Test commands
 test: $(TEST_ALL_BINS)
 	@echo "Running all tests..."
-	@for test in $(TEST_ALL_BINS); do echo "Running $$test"; $$test; done
+	@failed=0; \
+	for test in $(TEST_ALL_BINS); do \
+		echo "Running $$test"; \
+		if ! $$test; then \
+			echo "$$test FAILED"; \
+			failed=1; \
+		fi; \
+	done; \
+	if [ $$failed -eq 1 ]; then \
+		echo "Some tests failed!"; \
+		exit 1; \
+	else \
+		echo "All tests passed!"; \
+	fi
 
 test-unit: $(TEST_UNIT_BINS)
 	@echo "Running unit tests..."
-	@for test in $(TEST_UNIT_BINS); do echo "Running $$test"; $$test; done
+	@failed=0; \
+	for test in $(TEST_UNIT_BINS); do \
+		echo "Running $$test"; \
+		if ! $$test; then \
+			echo "$$test FAILED"; \
+			failed=1; \
+		fi; \
+	done; \
+	if [ $$failed -eq 1 ]; then \
+		echo "Some unit tests failed!"; \
+		exit 1; \
+	else \
+		echo "All unit tests passed!"; \
+	fi
 
 test-integration: $(TEST_INTEGRATION_BINS)
 	@echo "Running integration tests..."
-	@for test in $(TEST_INTEGRATION_BINS); do echo "Running $$test"; $$test; done
+	@failed=0; \
+	for test in $(TEST_INTEGRATION_BINS); do \
+		echo "Running $$test"; \
+		if ! $$test; then \
+			echo "$$test FAILED"; \
+			failed=1; \
+		fi; \
+	done; \
+	if [ $$failed -eq 1 ]; then \
+		echo "Some integration tests failed!"; \
+		exit 1; \
+	else \
+		echo "All integration tests passed!"; \
+	fi
 
 test-system: $(TEST_SYSTEM_BINS)
 	@echo "Running system tests..."
-	@for test in $(TEST_SYSTEM_BINS); do echo "Running $$test"; $$test; done
+	@failed=0; \
+	for test in $(TEST_SYSTEM_BINS); do \
+		echo "Running $$test"; \
+		if ! $$test; then \
+			echo "$$test FAILED"; \
+			failed=1; \
+		fi; \
+	done; \
+	if [ $$failed -eq 1 ]; then \
+		echo "Some system tests failed!"; \
+		exit 1; \
+	else \
+		echo "All system tests passed!"; \
+	fi
 
 test-perf: $(BUILD_DIR)/test_perf
 	@echo "Running performance tests..."

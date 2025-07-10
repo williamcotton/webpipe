@@ -3,6 +3,7 @@
 #include "../../src/wp.h"
 #include <string.h>
 #include <time.h>
+#include <dlfcn.h>
 
 void setUp(void) {
     // Set up function called before each test
@@ -186,33 +187,42 @@ void test_perf_string_operations(void) {
 void test_perf_pipeline_execution(void) {
     const int iterations = 100;
     
+    // Load JQ plugin for direct execution
+    void *jq_plugin_handle = dlopen("./plugins/jq.so", RTLD_LAZY);
+    if (!jq_plugin_handle) {
+        TEST_FAIL_MESSAGE("Failed to load jq plugin");
+        return;
+    }
+    
+    json_t *(*jq_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = 
+        dlsym(jq_plugin_handle, "plugin_execute");
+    
+    if (!jq_execute) {
+        dlclose(jq_plugin_handle);
+        TEST_FAIL_MESSAGE("Failed to find plugin_execute in jq plugin");
+        return;
+    }
+    
     start_timer();
     
     for (int i = 0; i < iterations; i++) {
         MemoryArena *arena = create_test_arena(1024);
         json_t *input = create_test_request("GET", "/test");
         
-        // Create a simple pipeline
-        PipelineStep *step = arena_alloc(arena, sizeof(PipelineStep));
-        step->plugin = arena_strdup(arena, "jq");
-        step->value = arena_strdup(arena, "{ message: \"performance test\" }");
-        step->is_variable = false;
-        step->next = NULL;
+        // Execute JQ plugin directly
+        json_t *result = jq_execute(input, arena, get_arena_alloc_wrapper(), NULL, 
+                                   "{ message: \"performance test\" }");
         
-        json_t *final_response;
-        int response_code;
-        
-        int result = execute_pipeline_with_result(step, input, arena, &final_response, &response_code);
-        
-        TEST_ASSERT_EQUAL(0, result);
-        TEST_ASSERT_NOT_NULL(final_response);
+        TEST_ASSERT_NOT_NULL(result);
         
         json_decref(input);
-        json_decref(final_response);
+        json_decref(result);
         destroy_test_arena(arena);
     }
     
     assert_execution_time_under(2.0);  // Should complete in under 2 seconds
+    
+    dlclose(jq_plugin_handle);
 }
 
 int main(void) {

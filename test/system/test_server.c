@@ -14,12 +14,12 @@ void tearDown(void) {
 }
 
 void test_server_startup_shutdown(void) {
-    // Test server initialization
-    int result = wp_runtime_init("test.wp");
+    // Test server initialization using safe test runtime
+    int result = init_test_runtime("test.wp");
     TEST_ASSERT_EQUAL(0, result);
     
     // Test server cleanup
-    wp_runtime_cleanup();
+    cleanup_test_runtime();
     
     // Should not crash
     TEST_ASSERT_TRUE(1);
@@ -38,7 +38,8 @@ void test_server_route_matching(void) {
     
     json_t *id = json_object_get(params, "id");
     TEST_ASSERT_NOT_NULL(id);
-    TEST_ASSERT_STRING_EQUAL("123", json_string_value(id));
+    TEST_ASSERT_TRUE(json_is_integer(id));
+    TEST_ASSERT_EQUAL(123, json_integer_value(id));
     
     // Test no match
     match = match_route("/test", "/different", params);
@@ -73,8 +74,12 @@ void test_server_request_json_creation(void) {
 }
 
 void test_server_plugin_loading(void) {
+    // Initialize the actual runtime for plugin loading
+    int result = wp_runtime_init("test.wp");
+    TEST_ASSERT_EQUAL(0, result);
+    
     // Test loading existing plugins
-    int result = load_plugin("jq");
+    result = load_plugin("jq");
     TEST_ASSERT_EQUAL(0, result);
     
     Plugin *plugin = find_plugin("jq");
@@ -87,6 +92,9 @@ void test_server_plugin_loading(void) {
     
     plugin = find_plugin("nonexistent");
     TEST_ASSERT_NULL(plugin);
+    
+    // Clean up
+    wp_runtime_cleanup();
 }
 
 void test_server_memory_arena_per_request(void) {

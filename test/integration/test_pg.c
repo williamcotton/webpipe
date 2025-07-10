@@ -3,19 +3,49 @@
 #include "../../src/wp.h"
 #include <string.h>
 
-// Mock pg plugin function for testing
-static json_t *pg_plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
-    // For testing, just return a mock response
-    (void)arena; (void)alloc_func; (void)free_func; (void)config;
-    return json_incref(input);
+// Load the actual pg plugin
+#include <dlfcn.h>
+static void *pg_plugin_handle = NULL;
+static json_t *(*pg_plugin_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = NULL;
+
+static int load_pg_plugin(void) {
+    if (pg_plugin_handle) return 0; // Already loaded
+    
+    pg_plugin_handle = dlopen("./plugins/pg.so", RTLD_LAZY);
+    if (!pg_plugin_handle) {
+        fprintf(stderr, "Failed to load pg plugin: %s\n", dlerror());
+        return -1;
+    }
+    
+    pg_plugin_execute = dlsym(pg_plugin_handle, "plugin_execute");
+    if (!pg_plugin_execute) {
+        fprintf(stderr, "Failed to find plugin_execute in pg plugin: %s\n", dlerror());
+        dlclose(pg_plugin_handle);
+        pg_plugin_handle = NULL;
+        return -1;
+    }
+    
+    return 0;
+}
+
+static void unload_pg_plugin(void) {
+    if (pg_plugin_handle) {
+        dlclose(pg_plugin_handle);
+        pg_plugin_handle = NULL;
+        pg_plugin_execute = NULL;
+    }
 }
 
 void setUp(void) {
     setup_test_database();
+    if (load_pg_plugin() != 0) {
+        TEST_FAIL_MESSAGE("Failed to load pg plugin");
+    }
 }
 
 void tearDown(void) {
     teardown_test_database();
+    unload_pg_plugin();
 }
 
 void test_pg_plugin_simple_select(void) {
