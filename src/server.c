@@ -355,7 +355,6 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
                     // Ensure arena context is still set after recursive execution
                     set_current_arena(arena);
                     if (result == 0 && condition_result) {
-                        // json_decref(current);
                         current = condition_result;
                     }
                 }
@@ -368,7 +367,6 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         Plugin *plugin = find_plugin(step->plugin);
         if (!plugin) {
             fprintf(stderr, "Plugin not found: %s\n", step->plugin);
-            // json_decref(current);
             return -1;
         }
         
@@ -388,7 +386,6 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         set_current_arena(arena);
         if (!result) {
             fprintf(stderr, "Plugin %s failed\n", step->plugin);
-            // json_decref(current);
             return -1;
         }
         
@@ -454,7 +451,6 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             }
         }
         
-        // json_decref(current);
         current = result;
         step = step->next;
     }
@@ -467,9 +463,6 @@ int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena
     json_t *response = NULL;
     int response_code;
     int result = execute_pipeline_with_result(pipeline, request, arena, &response, &response_code);
-    if (response) {
-        // json_decref(response);
-    }
     return result;
 }
 
@@ -581,6 +574,8 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                 if (match_route(stmt->data.route_def.route, url, params)) {
                     // If pipeline is empty, return the request object as the response
                     if (!stmt->data.route_def.pipeline) {
+                        // Ensure arena context is set for JSON serialization
+                        set_current_arena(arena);
                         // Convert JSON response to string - use arena allocator
                         char *response_str = json_dumps(request, JSON_COMPACT);
                         
@@ -601,6 +596,8 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                                                             request, arena, &final_response, &response_code);
                     
                     if (result == 0 && final_response) {
+                        // Ensure arena context is set for JSON serialization
+                        set_current_arena(arena);
                         // Convert JSON response to string - use arena allocator
                         char *response_str = json_dumps(final_response, JSON_COMPACT);
 
@@ -614,8 +611,6 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                         
                         (void)MHD_queue_response(connection, (unsigned int)response_code, mhd_response);
                         MHD_destroy_response(mhd_response);
-                        
-                        // json_decref(final_response);
                     } else {
                         // Error in pipeline execution
                         const char *error_response = "{\"error\": \"Internal server error\"}";

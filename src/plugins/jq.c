@@ -170,13 +170,15 @@ static json_t *jv_to_json_with_arena(jv v, void *arena, arena_alloc_func alloc_f
     const char *str = jv_string_value(v);
     size_t len = strlen(str);
     if (!arena || !alloc_func) {
-      json_t *result = json_string(str);  // Fallback - will cause leak
+      // Use jansson's current allocator (may be arena or malloc)
+      json_t *result = json_string(str);
       jv_free(v);
       return result;
     }
     char *arena_str = alloc_func(arena, len + 1);
     if (!arena_str) {
-      json_t *result = json_string(str);  // Fallback - will cause leak
+      // Fall back to regular jansson allocation
+      json_t *result = json_string(str);
       jv_free(v);
       return result;
     }
@@ -203,18 +205,20 @@ static json_t *jv_to_json_with_arena(jv v, void *arena, arena_alloc_func alloc_f
       const char *key_str = jv_string_value(k);
       size_t key_len = strlen(key_str);
       if (!arena || !alloc_func) {
+        // Use jansson's current allocator for key
         json_t *json_val = jv_to_json_with_arena(val, arena, alloc_func);
         if (json_val) {
-          json_object_set_new(obj, key_str, json_val);  // Will cause leak
+          json_object_set_new(obj, key_str, json_val);
         }
         jv_free(k);
         continue;
       }
       char *arena_key = alloc_func(arena, key_len + 1);
       if (!arena_key) {
+        // Fall back to regular jansson allocation
         json_t *json_val = jv_to_json_with_arena(val, arena, alloc_func);
         if (json_val) {
-          json_object_set_new(obj, key_str, json_val);  // Will cause leak
+          json_object_set_new(obj, key_str, json_val);
         }
         jv_free(k);
         continue;
@@ -234,40 +238,16 @@ static json_t *jv_to_json_with_arena(jv v, void *arena, arena_alloc_func alloc_f
   return NULL;
 }
 
-// Thread-local plugin arena context
+// Thread-local plugin arena context for internal use
 static __thread void *current_plugin_arena = NULL;
 static __thread arena_alloc_func current_plugin_alloc_func = NULL;
-static __thread int plugin_allocator_initialized = 0;
-
-// Plugin jansson allocator
-static void *plugin_jansson_malloc(size_t size) {
-  if (current_plugin_arena && current_plugin_alloc_func) {
-    void *ptr = current_plugin_alloc_func(current_plugin_arena, size);
-    if (ptr) {
-      return ptr;
-    }
-  }
-  // Fallback to malloc if no arena available or allocation failed
-  return malloc(size);
-}
-
-static void plugin_jansson_free(void *ptr) {
-  // Arena memory is freed all at once, so no-op
-  (void)ptr;
-}
 
 // The actual plugin function
 json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func,
                        const char *filter) {
-  // Set up thread-local arena context
+  // Set up thread-local arena context for string allocations
   current_plugin_arena = arena;
   current_plugin_alloc_func = (arena_alloc_func)alloc;
-  
-  // Set up jansson allocator for this plugin only once per thread
-  if (!plugin_allocator_initialized) {
-    json_set_alloc_funcs(plugin_jansson_malloc, plugin_jansson_free);
-    plugin_allocator_initialized = 1;
-  }
   
   // Use arena for string allocation in jv_to_json_with_arena
   arena_alloc_func alloc_func = (arena_alloc_func)alloc;
