@@ -253,6 +253,11 @@ json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func,
   arena_alloc_func alloc_func = (arena_alloc_func)alloc;
   (void)free_func; // Not used - arena is freed all at once
   
+  // Handle null or empty filter
+  if (!filter || strlen(filter) == 0) {
+    filter = ".";  // Default to identity filter
+  }
+  
   jq_state *jq = get_cached_jq(filter);
   if (!jq) {
     json_t *error = json_object();
