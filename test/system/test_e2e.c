@@ -55,6 +55,9 @@ static json_t *makeRequest(const char *url, const char *method, const char *data
     } else if (strcmp(method, "PUT") == 0) {
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+    } else if (strcmp(method, "PATCH") == 0) {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
     } else if (strcmp(method, "DELETE") == 0) {
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
     }
@@ -290,6 +293,136 @@ void test_e2e_concurrent_requests(void) {
     }
 }
 
+void test_e2e_post_request(void) {
+    // Test POST request with JSON body
+    long status_code;
+    json_t *response = makeRequest("http://localhost:8080/users", "POST", "{\"name\": \"John Doe\", \"email\": \"john@example.com\"}", &status_code);
+    
+    TEST_ASSERT_EQUAL(200, status_code);
+    TEST_ASSERT_NOT_NULL(response);
+    
+    json_t *method = json_object_get(response, "method");
+    json_t *name = json_object_get(response, "name");
+    json_t *email = json_object_get(response, "email");
+    json_t *action = json_object_get(response, "action");
+    
+    TEST_ASSERT_EQUAL_STRING("POST", json_string_value(method));
+    TEST_ASSERT_EQUAL_STRING("John Doe", json_string_value(name));
+    TEST_ASSERT_EQUAL_STRING("john@example.com", json_string_value(email));
+    TEST_ASSERT_EQUAL_STRING("create", json_string_value(action));
+    
+    json_decref(response);
+}
+
+void test_e2e_put_request(void) {
+    // Test PUT request with JSON body
+    long status_code;
+    json_t *response = makeRequest("http://localhost:8080/users/123", "PUT", "{\"name\": \"Jane Doe\", \"email\": \"jane@example.com\"}", &status_code);
+    
+    TEST_ASSERT_EQUAL(200, status_code);
+    TEST_ASSERT_NOT_NULL(response);
+    
+    json_t *method = json_object_get(response, "method");
+    json_t *id = json_object_get(response, "id");
+    json_t *name = json_object_get(response, "name");
+    json_t *email = json_object_get(response, "email");
+    json_t *action = json_object_get(response, "action");
+    
+    TEST_ASSERT_EQUAL_STRING("PUT", json_string_value(method));
+    TEST_ASSERT_TRUE(json_is_number(id));
+    TEST_ASSERT_EQUAL(123, (int)json_number_value(id));
+    TEST_ASSERT_EQUAL_STRING("Jane Doe", json_string_value(name));
+    TEST_ASSERT_EQUAL_STRING("jane@example.com", json_string_value(email));
+    TEST_ASSERT_EQUAL_STRING("update", json_string_value(action));
+    
+    json_decref(response);
+}
+
+void test_e2e_patch_request(void) {
+    // Test PATCH request with JSON body
+    long status_code;
+    json_t *response = makeRequest("http://localhost:8080/users/456", "PATCH", "{\"email\": \"newemail@example.com\"}", &status_code);
+    
+    TEST_ASSERT_EQUAL(200, status_code);
+    TEST_ASSERT_NOT_NULL(response);
+    
+    json_t *method = json_object_get(response, "method");
+    json_t *id = json_object_get(response, "id");
+    json_t *body = json_object_get(response, "body");
+    json_t *action = json_object_get(response, "action");
+    
+    TEST_ASSERT_EQUAL_STRING("PATCH", json_string_value(method));
+    TEST_ASSERT_TRUE(json_is_number(id));
+    TEST_ASSERT_EQUAL(456, (int)json_number_value(id));
+    TEST_ASSERT_EQUAL_STRING("partial_update", json_string_value(action));
+    
+    // Check that body contains the patch data
+    TEST_ASSERT_NOT_NULL(body);
+    json_t *email = json_object_get(body, "email");
+    TEST_ASSERT_EQUAL_STRING("newemail@example.com", json_string_value(email));
+    
+    json_decref(response);
+}
+
+void test_e2e_body_handling(void) {
+    // Test that POST, PUT, and PATCH all handle body data correctly
+    long status_code;
+    
+    // Test POST with body
+    json_t *response = makeRequest("http://localhost:8080/test-body", "POST", "{\"test\": \"post data\"}", &status_code);
+    TEST_ASSERT_EQUAL(200, status_code);
+    TEST_ASSERT_NOT_NULL(response);
+    
+    json_t *method = json_object_get(response, "method");
+    json_t *hasBody = json_object_get(response, "hasBody");
+    json_t *body = json_object_get(response, "body");
+    
+    TEST_ASSERT_EQUAL_STRING("POST", json_string_value(method));
+    TEST_ASSERT_TRUE(json_is_true(hasBody));
+    TEST_ASSERT_NOT_NULL(body);
+    
+    json_t *test_val = json_object_get(body, "test");
+    TEST_ASSERT_EQUAL_STRING("post data", json_string_value(test_val));
+    
+    json_decref(response);
+    
+    // Test PUT with body
+    response = makeRequest("http://localhost:8080/test-body", "PUT", "{\"test\": \"put data\"}", &status_code);
+    TEST_ASSERT_EQUAL(200, status_code);
+    TEST_ASSERT_NOT_NULL(response);
+    
+    method = json_object_get(response, "method");
+    hasBody = json_object_get(response, "hasBody");
+    body = json_object_get(response, "body");
+    
+    TEST_ASSERT_EQUAL_STRING("PUT", json_string_value(method));
+    TEST_ASSERT_TRUE(json_is_true(hasBody));
+    TEST_ASSERT_NOT_NULL(body);
+    
+    test_val = json_object_get(body, "test");
+    TEST_ASSERT_EQUAL_STRING("put data", json_string_value(test_val));
+    
+    json_decref(response);
+    
+    // Test PATCH with body
+    response = makeRequest("http://localhost:8080/test-body", "PATCH", "{\"test\": \"patch data\"}", &status_code);
+    TEST_ASSERT_EQUAL(200, status_code);
+    TEST_ASSERT_NOT_NULL(response);
+    
+    method = json_object_get(response, "method");
+    hasBody = json_object_get(response, "hasBody");
+    body = json_object_get(response, "body");
+    
+    TEST_ASSERT_EQUAL_STRING("PATCH", json_string_value(method));
+    TEST_ASSERT_TRUE(json_is_true(hasBody));
+    TEST_ASSERT_NOT_NULL(body);
+    
+    test_val = json_object_get(body, "test");
+    TEST_ASSERT_EQUAL_STRING("patch data", json_string_value(test_val));
+    
+    json_decref(response);
+}
+
 int main(void) {
     // Initialize curl
     curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -306,6 +439,10 @@ int main(void) {
     RUN_TEST(test_e2e_invalid_route);
     RUN_TEST(test_e2e_invalid_method);
     RUN_TEST(test_e2e_concurrent_requests);
+    RUN_TEST(test_e2e_post_request);
+    RUN_TEST(test_e2e_put_request);
+    RUN_TEST(test_e2e_patch_request);
+    RUN_TEST(test_e2e_body_handling);
     
     // Cleanup curl
     curl_global_cleanup();

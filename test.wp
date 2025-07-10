@@ -116,6 +116,46 @@ GET /test-sql-error
 
 POST /users
   |> jq: `{
+    method: .method,
     name: .body.name,
-    email: .body.email
+    email: .body.email,
+    action: "create"
+  }`
+
+PUT /users/:id
+  |> jq: `{
+    method: .method,
+    id: .params.id,
+    name: .body.name,
+    email: .body.email,
+    action: "update"
+  }`
+
+PATCH /users/:id
+  |> jq: `{
+    method: .method,
+    id: .params.id,
+    body: .body,
+    action: "partial_update"
+  }`
+
+POST /test-body
+  |> jq: `{
+    method: .method,
+    body: .body,
+    hasBody: (.body != null)
+  }`
+
+PUT /test-body
+  |> jq: `{
+    method: .method,
+    body: .body,
+    hasBody: (.body != null)
+  }`
+
+PATCH /test-body
+  |> jq: `{
+    method: .method,
+    body: .body,
+    hasBody: (.body != null)
   }`

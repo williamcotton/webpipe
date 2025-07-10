@@ -570,8 +570,8 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
         }
         set_current_arena(arena); // Set arena for this thread IMMEDIATELY
         
-        // For POST requests, we need to collect the data
-        if (strcmp(method, "POST") == 0) {
+        // For POST, PUT, and PATCH requests, we need to collect the data
+        if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0 || strcmp(method, "PATCH") == 0) {
             PostData *post_data = arena_alloc(arena, sizeof(PostData));
             if (!post_data) {
                 arena_free(arena);
@@ -589,8 +589,8 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
         return MHD_YES;
     }
     
-    // Handle POST data collection
-    if (strcmp(method, "POST") == 0) {
+    // Handle POST, PUT, and PATCH data collection
+    if (strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0 || strcmp(method, "PATCH") == 0) {
         PostData *post_data = (PostData *)*con_cls;
         if (!post_data || !post_data->arena) {
             return MHD_NO;
