@@ -176,11 +176,14 @@ void free_result_conditions(ResultCondition *conditions);
 
 // Structure to hold POST data during processing
 typedef struct {
+    uint32_t magic;  // Magic number to identify PostData structures
     MemoryArena *arena;
     char *post_data;
     size_t post_data_size;
     size_t post_data_capacity;
 } PostData;
+
+#define POST_DATA_MAGIC 0x504F5354  // "POST" in ASCII
 
 // Server internal function declarations
 int load_plugin(const char *name);

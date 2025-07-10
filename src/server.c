@@ -226,10 +226,9 @@ static void request_completed(void *cls, struct MHD_Connection *connection,
     (void)toe;
     
     if (*con_cls != NULL) {
-        // Check if it's a PostData structure or just an arena
-        // We can distinguish by checking if the first 8 bytes look like a valid arena pointer
+        // Check if it's a PostData structure by checking the magic number
         PostData *post_data = (PostData *)*con_cls;
-        if (post_data && post_data->arena) {
+        if (post_data->magic == POST_DATA_MAGIC) {
             // It's a PostData structure, free the arena
             MemoryArena *arena = post_data->arena;
             set_current_arena(NULL);
@@ -578,6 +577,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
                 arena_free(arena);
                 return MHD_NO;
             }
+            post_data->magic = POST_DATA_MAGIC;
             post_data->arena = arena;
             post_data->post_data = NULL;
             post_data->post_data_size = 0;

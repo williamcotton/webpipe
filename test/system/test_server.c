@@ -49,7 +49,7 @@ void test_server_route_matching(void) {
 }
 
 void test_server_request_json_creation(void) {
-    json_t *request = create_request_json(NULL, "/test", "GET", NULL, NULL);
+    json_t *request = create_request_json(NULL, "/test", "GET", NULL, 0);
     
     TEST_ASSERT_NOT_NULL(request);
     
@@ -101,7 +101,7 @@ void test_server_memory_arena_per_request(void) {
     MemoryArena *arena = arena_create(1024);
     
     // Simulate request processing
-    json_t *request = create_request_json(NULL, "/test", "GET", NULL, NULL);
+    json_t *request = create_request_json(NULL, "/test", "GET", NULL, 0);
     
     size_t initial_used = arena->used;
     

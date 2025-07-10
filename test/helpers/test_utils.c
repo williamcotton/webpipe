@@ -256,7 +256,7 @@ int simulate_http_request(const char *method, const char *url, const char *body 
     }
     
     // Create request JSON
-    json_t *request = create_request_json(NULL, url, method, NULL, NULL);
+    json_t *request = create_request_json(NULL, url, method, NULL, 0);
     if (!request) {
         return -1;
     }
