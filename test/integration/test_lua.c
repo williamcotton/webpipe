@@ -396,7 +396,7 @@ void test_lua_plugin_null_config(void) {
     
     json_t *input = create_test_request("GET", "/test");
     
-    json_t *output = lua_plugin_execute(input, arena, arena_alloc, NULL, NULL);
+    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
     
     // Should handle null config gracefully
     TEST_ASSERT_NOT_NULL(output);

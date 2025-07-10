@@ -17,6 +17,7 @@ typedef struct MemoryArena MemoryArena;
 // Function prototypes
 static void jansson_to_lua(lua_State *L, json_t *json);
 static json_t *lua_to_jansson(lua_State *L, int index);
+static json_t *lua_to_jansson_with_depth(lua_State *L, int index, int depth);
 json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code);
 
 // Conversion functions
@@ -70,7 +71,12 @@ void jansson_to_lua(lua_State *L, json_t *json) {
   }
 }
 
-json_t *lua_to_jansson(lua_State *L, int index) {
+json_t *lua_to_jansson_with_depth(lua_State *L, int index, int depth) {
+    // Prevent infinite recursion and stack overflow
+    if (depth > 20) {
+        return json_string("[max depth exceeded]");
+    }
+    
     if (lua_type(L, index) == LUA_TNIL) {
         return json_null();
     } else if (lua_type(L, index) == LUA_TBOOLEAN) {
@@ -93,10 +99,17 @@ json_t *lua_to_jansson(lua_State *L, int index) {
         lua_pushnil(L);
         while (lua_next(L, abs_index) != 0) {
             if (lua_type(L, -2) == LUA_TNUMBER) {
-                lua_Number num_val = lua_tonumber(L, -2);
-                int idx = (int)num_val;
-                if (idx > max_index) max_index = idx;
-                count++;
+                // Use lua_isinteger if available (Lua 5.3+), otherwise check if it's a whole number
+                if (lua_isinteger(L, -2)) {
+                    int idx = (int)lua_tointeger(L, -2);
+                    if (idx > 0 && idx > max_index) max_index = idx;
+                    count++;
+                } else {
+                    // Non-integer numeric key, treat as object
+                    is_array = false;
+                    lua_pop(L, 1);
+                    break;
+                }
             } else {
                 is_array = false;
                 lua_pop(L, 1);
@@ -105,26 +118,36 @@ json_t *lua_to_jansson(lua_State *L, int index) {
             lua_pop(L, 1);
         }
         
-        if (is_array && count == max_index) {
-            // It's an array
+        if (is_array && count > 0 && count == max_index) {
+            // It's an array (but not empty)
             json_t *array = json_array();
             for (int i = 1; i <= max_index; i++) {
                 lua_pushnumber(L, i);
                 lua_gettable(L, abs_index);
-                json_array_append_new(array, lua_to_jansson(L, -1));
+                json_array_append_new(array, lua_to_jansson_with_depth(L, -1, depth + 1));
                 lua_pop(L, 1);
             }
             return array;
         } else {
-            // It's an object
+            // It's an object (or empty table)
             json_t *object = json_object();
             lua_pushnil(L);
             while (lua_next(L, abs_index) != 0) {
-                const char *key = lua_tostring(L, -2);
-                if (key) {
-                    json_object_set_new(object, key, lua_to_jansson(L, -1));
+                // Only process string keys, and do it safely
+                if (lua_type(L, -2) == LUA_TSTRING) {
+                    // Copy the key to avoid modifying the original during iteration
+                    lua_pushvalue(L, -2);
+                    const char *key = lua_tostring(L, -1);
+                    json_t *value = lua_to_jansson_with_depth(L, -2, depth + 1);
+                    if (key && value) {
+                        json_object_set_new(object, key, value);
+                    } else if (value) {
+                        json_decref(value);
+                    }
+                    lua_pop(L, 1); // Remove the copied key
                 }
-                lua_pop(L, 1);
+                // Skip numeric keys to avoid lua_next corruption
+                lua_pop(L, 1); // Remove the value
             }
             return object;
         }
@@ -132,25 +155,67 @@ json_t *lua_to_jansson(lua_State *L, int index) {
     return json_null();
 }
 
+json_t *lua_to_jansson(lua_State *L, int index) {
+    return lua_to_jansson_with_depth(L, index, 0);
+}
+
+// Lua panic handler to prevent crashes
+static int lua_panic_handler(lua_State *L) {
+    const char *msg = lua_tostring(L, -1);
+    fprintf(stderr, "Lua PANIC: %s\n", msg ? msg : "unknown error");
+    return 0; // Don't call abort()
+}
+
 // Plugin execute function
 json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code) {
   (void)free_func; // Suppress unused parameter warning
+    
+    // Handle null or empty lua_code
+    if (!lua_code || strlen(lua_code) == 0) {
+        // Return the input as-is for empty/null code
+        return input ? json_incref(input) : json_null();
+    }
+    
     // Use the arena for any per-request allocations if needed (e.g., copying lua_code)
     size_t len = strlen(lua_code);
-    char *arena_code = alloc_func(arena, len + 1);
-    if (!arena_code) {
-        json_t *result = json_object();
-        json_object_set_new(result, "error", json_string("Arena OOM for lua code"));
-        return result;
+    char *arena_code = NULL;
+    
+    if (alloc_func && arena) {
+        arena_code = alloc_func(arena, len + 1);
+        if (!arena_code) {
+            json_t *result = json_object();
+            json_object_set_new(result, "error", json_string("Arena OOM for lua code"));
+            return result;
+        }
+        memcpy(arena_code, lua_code, len);
+        arena_code[len] = '\0';
+    } else {
+        // Fallback to regular allocation if no arena
+        arena_code = malloc(len + 1);
+        if (!arena_code) {
+            json_t *result = json_object();
+            json_object_set_new(result, "error", json_string("OOM for lua code"));
+            return result;
+        }
+        memcpy(arena_code, lua_code, len);
+        arena_code[len] = '\0';
     }
-    memcpy(arena_code, lua_code, len);
-    arena_code[len] = '\0';
+    
+    bool free_arena_code = !alloc_func || !arena;  // Track if we need to free
+    
     // Create a new Lua state for each execution (thread-safe)
     lua_State *L = luaL_newstate();
     if (!L) {
         fprintf(stderr, "lua: Failed to create new Lua state\n");
+        if (free_arena_code) {
+            free(arena_code);
+        }
         return NULL;
     }
+    
+    // Set a panic handler to prevent crashes
+    lua_atpanic(L, lua_panic_handler);
+    
     luaL_openlibs(L);
     
     // Push input as 'request' global variable
@@ -163,6 +228,9 @@ json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, 
         json_t *result = json_object();
         json_object_set_new(result, "error", json_string(err ? err : "Lua error"));
         lua_close(L);
+        if (free_arena_code) {
+            free(arena_code);
+        }
         return result;
     }
     
@@ -177,5 +245,8 @@ json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, 
     }
     
     lua_close(L);
+    if (free_arena_code) {
+        free(arena_code);
+    }
     return output;
 }
