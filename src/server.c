@@ -307,6 +307,86 @@ static const char *get_first_error_type(json_t *json) {
     return json_string_value(type_json);
 }
 
+// Helper function to send JSON response
+static enum MHD_Result send_json_response(struct MHD_Connection *connection, 
+                                         json_t *json_data, int status_code) {
+    char *response_str = json_dumps(json_data, JSON_COMPACT);
+    
+    struct MHD_Response *mhd_response =
+        MHD_create_response_from_buffer(
+            strlen(response_str), (void *)response_str,
+            MHD_RESPMEM_PERSISTENT);
+    
+    MHD_add_response_header(mhd_response, "Content-Type", "application/json");
+    (void)MHD_queue_response(connection, (unsigned int)status_code, mhd_response);
+    MHD_destroy_response(mhd_response);
+    
+    return MHD_YES;
+}
+
+// Helper function to send error response
+static enum MHD_Result send_error_response(struct MHD_Connection *connection, 
+                                          const char *error_msg, int status_code) {
+    struct MHD_Response *mhd_response = 
+        MHD_create_response_from_buffer(strlen(error_msg),
+                                       (void*)(uintptr_t)error_msg,
+                                       MHD_RESPMEM_PERSISTENT);
+    (void)MHD_queue_response(connection, (unsigned int)status_code, mhd_response);
+    MHD_destroy_response(mhd_response);
+    return MHD_YES;
+}
+
+// Helper function to process a matched route
+static enum MHD_Result process_route(struct MHD_Connection *connection,
+                                    ASTNode *route_stmt, json_t *request, 
+                                    MemoryArena *arena) {
+    // If pipeline is empty, return the request object as the response
+    if (!route_stmt->data.route_def.pipeline) {
+        set_current_arena(arena);
+        return send_json_response(connection, request, 200);
+    }
+    
+    // Execute pipeline with result handling
+    json_t *final_response = NULL;
+    int response_code = 200;
+    
+    int result = execute_pipeline_with_result(route_stmt->data.route_def.pipeline, 
+                                            request, arena, &final_response, &response_code);
+    
+    if (result == 0 && final_response) {
+        set_current_arena(arena);
+        return send_json_response(connection, final_response, response_code);
+    } else {
+        // Error in pipeline execution
+        return send_error_response(connection, 
+                                 "{\"error\": \"Internal server error\"}", 
+                                 MHD_HTTP_INTERNAL_SERVER_ERROR);
+    }
+}
+
+// Helper function to find and process matching route
+static enum MHD_Result find_and_process_route(struct MHD_Connection *connection,
+                                             const char *url, const char *method,
+                                             json_t *request, MemoryArena *arena) {
+    // Find matching route
+    for (int i = 0; i < runtime->program->data.program.statement_count; i++) {
+        ASTNode *stmt = runtime->program->data.program.statements[i];
+        if (stmt->type == AST_ROUTE_DEFINITION) {
+            if (strcmp(stmt->data.route_def.method, method) == 0) {
+                json_t *params = json_object_get(request, "params");
+                if (match_route(stmt->data.route_def.route, url, params)) {
+                    return process_route(connection, stmt, request, arena);
+                }
+            }
+        }
+    }
+    
+    // No route found
+    return send_error_response(connection, 
+                             "{\"error\": \"Not found\"}", 
+                             MHD_HTTP_NOT_FOUND);
+}
+
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
                                 json_t **final_response, int *response_code) {
     json_t *current = request;
@@ -631,80 +711,8 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
         MemoryArena *arena = post_data->arena;
         set_current_arena(arena);
         
-        // Process the request normally from here
-        // Find matching route
-        for (int i = 0; i < runtime->program->data.program.statement_count; i++) {
-            ASTNode *stmt = runtime->program->data.program.statements[i];
-            if (stmt->type == AST_ROUTE_DEFINITION) {
-                if (strcmp(stmt->data.route_def.method, method) == 0) {
-                    json_t *params = json_object_get(request, "params");
-                    if (match_route(stmt->data.route_def.route, url, params)) {
-                        // If pipeline is empty, return the request object as the response
-                        if (!stmt->data.route_def.pipeline) {
-                            // Ensure arena context is set for JSON serialization
-                            set_current_arena(arena);
-                            // Convert JSON response to string - use arena allocator
-                            char *response_str = json_dumps(request, JSON_COMPACT);
-                            
-                            struct MHD_Response *mhd_response =
-                                MHD_create_response_from_buffer(
-                                    strlen(response_str), (void *)response_str,
-                                    MHD_RESPMEM_PERSISTENT);
-                            MHD_add_response_header(mhd_response, "Content-Type", "application/json");
-                            (void)MHD_queue_response(connection, 200, mhd_response);
-                            MHD_destroy_response(mhd_response);
-                            return MHD_YES;
-                        }
-                        // Execute pipeline with result handling
-                        json_t *final_response = NULL;
-                        int response_code = 200;
-                        
-                        int result = execute_pipeline_with_result(stmt->data.route_def.pipeline, 
-                                                                request, arena, &final_response, &response_code);
-                        
-                        if (result == 0 && final_response) {
-                            // Ensure arena context is set for JSON serialization
-                            set_current_arena(arena);
-                            // Convert JSON response to string - use arena allocator
-                            char *response_str = json_dumps(final_response, JSON_COMPACT);
-
-                            struct MHD_Response *mhd_response =
-                                MHD_create_response_from_buffer(
-                                    strlen(response_str), (void *)response_str,
-                                    MHD_RESPMEM_PERSISTENT);
-
-                            // Add JSON content type header
-                            MHD_add_response_header(mhd_response, "Content-Type", "application/json");
-                            
-                            (void)MHD_queue_response(connection, (unsigned int)response_code, mhd_response);
-                            MHD_destroy_response(mhd_response);
-                        } else {
-                            // Error in pipeline execution
-                            const char *error_response = "{\"error\": \"Internal server error\"}";
-                            struct MHD_Response *mhd_response = 
-                                MHD_create_response_from_buffer(strlen(error_response),
-                                                               (void*)(uintptr_t)error_response,
-                                                               MHD_RESPMEM_PERSISTENT);
-                            (void)MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, mhd_response);
-                            MHD_destroy_response(mhd_response);
-                        }
-                        
-                        return MHD_YES;
-                    }
-                }
-            }
-        }
-        
-        // No route found
-        const char *response = "{\"error\": \"Not found\"}";
-        struct MHD_Response *mhd_response = 
-            MHD_create_response_from_buffer(strlen(response),
-                                           (void*)(uintptr_t)response,
-                                           MHD_RESPMEM_PERSISTENT);
-        (void)MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, mhd_response);
-        MHD_destroy_response(mhd_response);
-        
-        return MHD_YES;
+        // Process the request using the extracted helper function
+        return find_and_process_route(connection, url, method, request, arena);
     }
     
     // Handle non-POST requests
@@ -717,79 +725,8 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     json_t *request = create_request_json(connection, url, method, 
                                          upload_data, *upload_data_size);
     
-    // Find matching route
-    for (int i = 0; i < runtime->program->data.program.statement_count; i++) {
-        ASTNode *stmt = runtime->program->data.program.statements[i];
-        if (stmt->type == AST_ROUTE_DEFINITION) {
-            if (strcmp(stmt->data.route_def.method, method) == 0) {
-                json_t *params = json_object_get(request, "params");
-                if (match_route(stmt->data.route_def.route, url, params)) {
-                    // If pipeline is empty, return the request object as the response
-                    if (!stmt->data.route_def.pipeline) {
-                        // Ensure arena context is set for JSON serialization
-                        set_current_arena(arena);
-                        // Convert JSON response to string - use arena allocator
-                        char *response_str = json_dumps(request, JSON_COMPACT);
-                        
-                        struct MHD_Response *mhd_response =
-                            MHD_create_response_from_buffer(
-                                strlen(response_str), (void *)response_str,
-                                MHD_RESPMEM_PERSISTENT);
-                        MHD_add_response_header(mhd_response, "Content-Type", "application/json");
-                        (void)MHD_queue_response(connection, 200, mhd_response);
-                        MHD_destroy_response(mhd_response);
-                        return MHD_YES;
-                    }
-                    // Execute pipeline with result handling
-                    json_t *final_response = NULL;
-                    int response_code = 200;
-                    
-                    int result = execute_pipeline_with_result(stmt->data.route_def.pipeline, 
-                                                            request, arena, &final_response, &response_code);
-                    
-                    if (result == 0 && final_response) {
-                        // Ensure arena context is set for JSON serialization
-                        set_current_arena(arena);
-                        // Convert JSON response to string - use arena allocator
-                        char *response_str = json_dumps(final_response, JSON_COMPACT);
-
-                        struct MHD_Response *mhd_response =
-                            MHD_create_response_from_buffer(
-                                strlen(response_str), (void *)response_str,
-                                MHD_RESPMEM_PERSISTENT);
-
-                        // Add JSON content type header
-                        MHD_add_response_header(mhd_response, "Content-Type", "application/json");
-                        
-                        (void)MHD_queue_response(connection, (unsigned int)response_code, mhd_response);
-                        MHD_destroy_response(mhd_response);
-                    } else {
-                        // Error in pipeline execution
-                        const char *error_response = "{\"error\": \"Internal server error\"}";
-                        struct MHD_Response *mhd_response = 
-                            MHD_create_response_from_buffer(strlen(error_response),
-                                                           (void*)(uintptr_t)error_response,
-                                                           MHD_RESPMEM_PERSISTENT);
-                        (void)MHD_queue_response(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, mhd_response);
-                        MHD_destroy_response(mhd_response);
-                    }
-                    
-                    return MHD_YES;
-                }
-            }
-        }
-    }
-    
-    // No route found
-    const char *response = "{\"error\": \"Not found\"}";
-    struct MHD_Response *mhd_response = 
-        MHD_create_response_from_buffer(strlen(response),
-                                       (void*)(uintptr_t)response,
-                                       MHD_RESPMEM_PERSISTENT);
-    (void)MHD_queue_response(connection, MHD_HTTP_NOT_FOUND, mhd_response);
-    MHD_destroy_response(mhd_response);
-    
-    return MHD_YES;
+    // Process the request using the extracted helper function
+    return find_and_process_route(connection, url, method, request, arena);
 }
 
 // Function to collect unique plugin names from AST
