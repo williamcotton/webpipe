@@ -12,7 +12,7 @@ void tearDown(void) {
     // Tear down function called after each test
 }
 
-void test_plugin_interface_basic(void) {
+static void test_plugin_interface_basic(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
     
     TEST_ASSERT_NOT_NULL(plugin);
@@ -23,7 +23,7 @@ void test_plugin_interface_basic(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_execute_passthrough(void) {
+static void test_plugin_execute_passthrough(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
@@ -41,7 +41,7 @@ void test_plugin_execute_passthrough(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_execute_with_arena(void) {
+static void test_plugin_execute_with_arena(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
@@ -59,7 +59,7 @@ void test_plugin_execute_with_arena(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_execute_error_handling(void) {
+static void test_plugin_execute_error_handling(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_error);
     MemoryArena *arena = create_test_arena(1024);
     
@@ -89,7 +89,7 @@ void test_plugin_execute_error_handling(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_execute_with_config(void) {
+static void test_plugin_execute_with_config(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
@@ -106,11 +106,11 @@ void test_plugin_execute_with_config(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_execute_null_input(void) {
+static void test_plugin_execute_null_input(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
-    json_t *output = plugin->execute(NULL, arena, arena_alloc, NULL, NULL);
+    json_t *output = plugin->execute(NULL, arena, get_arena_alloc_wrapper(), NULL, NULL);
     
     // Should handle null input gracefully
     TEST_ASSERT_NULL(output);
@@ -119,13 +119,13 @@ void test_plugin_execute_null_input(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_execute_null_arena(void) {
+static void test_plugin_execute_null_arena(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
     
     json_t *input = json_object();
     json_object_set_new(input, "test", json_string("value"));
     
-    json_t *output = plugin->execute(input, NULL, arena_alloc, NULL, NULL);
+    json_t *output = plugin->execute(input, NULL, get_arena_alloc_wrapper(), NULL, NULL);
     
     // Should handle null arena gracefully
     TEST_ASSERT_NOT_NULL(output);
@@ -135,7 +135,7 @@ void test_plugin_execute_null_arena(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_load_function(void) {
+static void test_plugin_load_function(void) {
     // Test plugin loading functionality
     // This would test the actual dynamic library loading
     
@@ -144,14 +144,14 @@ void test_plugin_load_function(void) {
     TEST_ASSERT_NOT_EQUAL(0, result);  // Should fail for non-existent plugin
 }
 
-void test_plugin_find_function(void) {
+static void test_plugin_find_function(void) {
     // Test plugin finding functionality
     
     Plugin *plugin = find_plugin("nonexistent");
     TEST_ASSERT_NULL(plugin);  // Should return NULL for non-existent plugin
 }
 
-void test_plugin_arena_alloc_function(void) {
+static void test_plugin_arena_alloc_function(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     void *ptr = arena_alloc(arena, 100);
@@ -161,7 +161,7 @@ void test_plugin_arena_alloc_function(void) {
     destroy_test_arena(arena);
 }
 
-void test_plugin_memory_management(void) {
+static void test_plugin_memory_management(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
@@ -182,7 +182,7 @@ void test_plugin_memory_management(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_concurrent_execution(void) {
+static void test_plugin_concurrent_execution(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
     MemoryArena *arena1 = create_test_arena(1024);
     MemoryArena *arena2 = create_test_arena(1024);
@@ -194,8 +194,8 @@ void test_plugin_concurrent_execution(void) {
     json_object_set_new(input2, "thread", json_string("2"));
     
     // Simulate concurrent execution
-    json_t *output1 = plugin->execute(input1, arena1, arena_alloc, NULL, "config1");
-    json_t *output2 = plugin->execute(input2, arena2, arena_alloc, NULL, "config2");
+    json_t *output1 = plugin->execute(input1, arena1, get_arena_alloc_wrapper(), NULL, "config1");
+    json_t *output2 = plugin->execute(input2, arena2, get_arena_alloc_wrapper(), NULL, "config2");
     
     TEST_ASSERT_NOT_NULL(output1);
     TEST_ASSERT_NOT_NULL(output2);
@@ -209,7 +209,7 @@ void test_plugin_concurrent_execution(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_json_preservation(void) {
+static void test_plugin_json_preservation(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
@@ -227,7 +227,7 @@ void test_plugin_json_preservation(void) {
     int num_inputs = sizeof(inputs) / sizeof(inputs[0]);
     
     for (int i = 0; i < num_inputs; i++) {
-        json_t *output = plugin->execute(inputs[i], arena, arena_alloc, NULL, NULL);
+        json_t *output = plugin->execute(inputs[i], arena, get_arena_alloc_wrapper(), NULL, NULL);
         
         TEST_ASSERT_NOT_NULL(output);
         TEST_ASSERT_JSON_EQUAL(inputs[i], output);
@@ -244,7 +244,7 @@ void test_plugin_json_preservation(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_complex_json_handling(void) {
+static void test_plugin_complex_json_handling(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
@@ -279,7 +279,7 @@ void test_plugin_complex_json_handling(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_error_propagation(void) {
+static void test_plugin_error_propagation(void) {
     Plugin *plugin = create_mock_plugin("test", mock_plugin_error);
     MemoryArena *arena = create_test_arena(1024);
     
@@ -312,7 +312,7 @@ void test_plugin_error_propagation(void) {
     destroy_mock_plugin(plugin);
 }
 
-void test_plugin_name_collision_handling(void) {
+static void test_plugin_name_collision_handling(void) {
     Plugin *plugin1 = create_mock_plugin("test", mock_plugin_passthrough);
     Plugin *plugin2 = create_mock_plugin("test", mock_plugin_error);
     
@@ -327,7 +327,7 @@ void test_plugin_name_collision_handling(void) {
     destroy_mock_plugin(plugin2);
 }
 
-void test_plugin_registry_operations(void) {
+static void test_plugin_registry_operations(void) {
     // Test plugin registry operations
     // This would test the actual plugin registration system
     

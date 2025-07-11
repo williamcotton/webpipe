@@ -13,7 +13,7 @@ void tearDown(void) {
     // Tear down function called after each test
 }
 
-void test_perf_arena_allocation(void) {
+static void test_perf_arena_allocation(void) {
     const int iterations = 10000;
     
     start_timer();
@@ -33,7 +33,7 @@ void test_perf_arena_allocation(void) {
     assert_execution_time_under(5.0);  // Should complete in under 5 seconds
 }
 
-void test_perf_lexer_tokenization(void) {
+static void test_perf_lexer_tokenization(void) {
     const char *source = "GET /test\n  |> jq: `{ message: \"hello\" }`\n\nPOST /users\n  |> jq: `{ user: .body }`";
     const int iterations = 1000;
     
@@ -49,7 +49,7 @@ void test_perf_lexer_tokenization(void) {
     assert_execution_time_under(2.0);  // Should complete in under 2 seconds
 }
 
-void test_perf_parser_parsing(void) {
+static void test_perf_parser_parsing(void) {
     const char *source = "GET /test\n  |> jq: `{ message: \"hello\" }`\n\nPOST /users\n  |> jq: `{ user: .body }`";
     const int iterations = 1000;
     
@@ -64,7 +64,7 @@ void test_perf_parser_parsing(void) {
     assert_execution_time_under(3.0);  // Should complete in under 3 seconds
 }
 
-void test_perf_json_operations(void) {
+static void test_perf_json_operations(void) {
     const int iterations = 10000;
     
     start_timer();
@@ -91,7 +91,7 @@ void test_perf_json_operations(void) {
     assert_execution_time_under(2.0);  // Should complete in under 2 seconds
 }
 
-void test_perf_plugin_execution(void) {
+static void test_perf_plugin_execution(void) {
     const int iterations = 1000;
     MemoryArena *arena = create_test_arena(1024 * 1024);  // 1MB arena
     
@@ -115,7 +115,7 @@ void test_perf_plugin_execution(void) {
     destroy_test_arena(arena);
 }
 
-void test_perf_memory_usage(void) {
+static void test_perf_memory_usage(void) {
     const int iterations = 1000;
     
     start_timer();
@@ -136,7 +136,7 @@ void test_perf_memory_usage(void) {
     assert_execution_time_under(2.0);  // Should complete in under 2 seconds
 }
 
-void test_perf_concurrent_arena_access(void) {
+static void test_perf_concurrent_arena_access(void) {
     const int iterations = 1000;
     MemoryArena *arena = create_test_arena(1024 * 1024);  // 1MB arena
     
@@ -163,7 +163,7 @@ void test_perf_concurrent_arena_access(void) {
     destroy_test_arena(arena);
 }
 
-void test_perf_string_operations(void) {
+static void test_perf_string_operations(void) {
     const int iterations = 10000;
     MemoryArena *arena = create_test_arena(1024 * 1024);  // 1MB arena
     
@@ -184,23 +184,23 @@ void test_perf_string_operations(void) {
     destroy_test_arena(arena);
 }
 
-void test_perf_pipeline_execution(void) {
+static void test_perf_pipeline_execution(void) {
     const int iterations = 100;
     
     // Load JQ plugin for direct execution
     void *jq_plugin_handle = dlopen("./plugins/jq.so", RTLD_LAZY);
     if (!jq_plugin_handle) {
         TEST_FAIL_MESSAGE("Failed to load jq plugin");
-        return;
     }
     
+    void *plugin_func = dlsym(jq_plugin_handle, "plugin_execute");
     json_t *(*jq_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = 
-        dlsym(jq_plugin_handle, "plugin_execute");
+        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
+        (uintptr_t)plugin_func;
     
-    if (!jq_execute) {
+    if (!plugin_func) {
         dlclose(jq_plugin_handle);
         TEST_FAIL_MESSAGE("Failed to find plugin_execute in jq plugin");
-        return;
     }
     
     start_timer();

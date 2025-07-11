@@ -1,7 +1,10 @@
 #include "../unity/unity.h"
 #include "../helpers/test_utils.h"
 #include "../../src/wp.h"
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
 #include <curl/curl.h>
+#pragma clang diagnostic pop
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -34,6 +37,8 @@ static size_t writeCallback(void *contents, size_t size, size_t nmemb, void *use
 }
 
 // Helper to make HTTP requests and return JSON response
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
 static json_t *makeRequest(const char *url, const char *method, const char *data, long *status_code_out) {
     CURL *curl = curl_easy_init();
     if (!curl) return NULL;
@@ -84,6 +89,7 @@ static json_t *makeRequest(const char *url, const char *method, const char *data
 
     return json;
 }
+#pragma clang diagnostic pop
 
 // Start the WP server in background
 static int startServer(void) {
@@ -148,7 +154,7 @@ void tearDown(void) {
     stopServer();
 }
 
-void test_e2e_simple_route(void) {
+static void test_e2e_simple_route(void) {
     // Test the /test route
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/test", "GET", NULL, &status_code);
@@ -163,7 +169,7 @@ void test_e2e_simple_route(void) {
     json_decref(response);
 }
 
-void test_e2e_parameterized_route(void) {
+static void test_e2e_parameterized_route(void) {
     // Test the /page/:id route
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/page/123", "GET", NULL, &status_code);
@@ -177,7 +183,7 @@ void test_e2e_parameterized_route(void) {
     json_decref(response);
 }
 
-void test_e2e_result_step_success(void) {
+static void test_e2e_result_step_success(void) {
     // Test the /test3 route with result step
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/test3", "GET", NULL, &status_code);
@@ -192,7 +198,7 @@ void test_e2e_result_step_success(void) {
     json_decref(response);
 }
 
-void test_e2e_result_step_validation_error(void) {
+static void test_e2e_result_step_validation_error(void) {
     // Test the /test4 route with validation error
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/test4", "GET", NULL, &status_code);
@@ -207,7 +213,7 @@ void test_e2e_result_step_validation_error(void) {
     json_decref(response);
 }
 
-void test_e2e_result_step_sql_error(void) {
+static void test_e2e_result_step_sql_error(void) {
     // Test the /test-sql-error route
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/test-sql-error", "GET", NULL, &status_code);
@@ -222,7 +228,7 @@ void test_e2e_result_step_sql_error(void) {
     json_decref(response);
 }
 
-void test_e2e_variable_usage(void) {
+static void test_e2e_variable_usage(void) {
     // Test the /teams route that uses teamsQuery variable
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/teams", "GET", NULL, &status_code);
@@ -240,7 +246,7 @@ void test_e2e_variable_usage(void) {
     json_decref(response);
 }
 
-void test_e2e_pipeline_chain(void) {
+static void test_e2e_pipeline_chain(void) {
     // Test a multi-step pipeline
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/page/123", "GET", NULL, &status_code);
@@ -255,7 +261,7 @@ void test_e2e_pipeline_chain(void) {
     json_decref(response);
 }
 
-void test_e2e_invalid_route(void) {
+static void test_e2e_invalid_route(void) {
     // Test non-existent route
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/nonexistent", "GET", NULL, &status_code);
@@ -267,7 +273,7 @@ void test_e2e_invalid_route(void) {
     }
 }
 
-void test_e2e_invalid_method(void) {
+static void test_e2e_invalid_method(void) {
     // Test invalid HTTP method - but most servers accept any method, so just test that we get a response
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/test", "INVALID", NULL, &status_code);
@@ -280,7 +286,7 @@ void test_e2e_invalid_method(void) {
     }
 }
 
-void test_e2e_concurrent_requests(void) {
+static void test_e2e_concurrent_requests(void) {
     // Test concurrent request handling by making multiple requests
     for (int i = 0; i < 5; i++) {
         long status_code;
@@ -293,7 +299,7 @@ void test_e2e_concurrent_requests(void) {
     }
 }
 
-void test_e2e_post_request(void) {
+static void test_e2e_post_request(void) {
     // Test POST request with JSON body
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/users", "POST", "{\"name\": \"John Doe\", \"email\": \"john@example.com\"}", &status_code);
@@ -314,7 +320,7 @@ void test_e2e_post_request(void) {
     json_decref(response);
 }
 
-void test_e2e_put_request(void) {
+static void test_e2e_put_request(void) {
     // Test PUT request with JSON body
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/users/123", "PUT", "{\"name\": \"Jane Doe\", \"email\": \"jane@example.com\"}", &status_code);
@@ -330,7 +336,8 @@ void test_e2e_put_request(void) {
     
     TEST_ASSERT_EQUAL_STRING("PUT", json_string_value(method));
     TEST_ASSERT_TRUE(json_is_number(id));
-    TEST_ASSERT_EQUAL(123, (int)json_number_value(id));
+    double idValue = json_number_value(id);
+    TEST_ASSERT_EQUAL(123, (int)idValue);
     TEST_ASSERT_EQUAL_STRING("Jane Doe", json_string_value(name));
     TEST_ASSERT_EQUAL_STRING("jane@example.com", json_string_value(email));
     TEST_ASSERT_EQUAL_STRING("update", json_string_value(action));
@@ -338,7 +345,7 @@ void test_e2e_put_request(void) {
     json_decref(response);
 }
 
-void test_e2e_patch_request(void) {
+static void test_e2e_patch_request(void) {
     // Test PATCH request with JSON body
     long status_code;
     json_t *response = makeRequest("http://localhost:8080/users/456", "PATCH", "{\"email\": \"newemail@example.com\"}", &status_code);
@@ -353,7 +360,8 @@ void test_e2e_patch_request(void) {
     
     TEST_ASSERT_EQUAL_STRING("PATCH", json_string_value(method));
     TEST_ASSERT_TRUE(json_is_number(id));
-    TEST_ASSERT_EQUAL(456, (int)json_number_value(id));
+    double idValue2 = json_number_value(id);
+    TEST_ASSERT_EQUAL(456, (int)idValue2);
     TEST_ASSERT_EQUAL_STRING("partial_update", json_string_value(action));
     
     // Check that body contains the patch data
@@ -364,7 +372,7 @@ void test_e2e_patch_request(void) {
     json_decref(response);
 }
 
-void test_e2e_body_handling(void) {
+static void test_e2e_body_handling(void) {
     // Test that POST, PUT, and PATCH all handle body data correctly
     long status_code;
     

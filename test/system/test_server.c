@@ -14,7 +14,7 @@ void tearDown(void) {
     // Tear down function called after each test
 }
 
-void test_server_startup_shutdown(void) {
+static void test_server_startup_shutdown(void) {
     // Test server initialization using safe test runtime
     int result = init_test_runtime("test.wp");
     TEST_ASSERT_EQUAL(0, result);
@@ -26,7 +26,7 @@ void test_server_startup_shutdown(void) {
     TEST_ASSERT_TRUE(1);
 }
 
-void test_server_route_matching(void) {
+static void test_server_route_matching(void) {
     json_t *params = json_object();
     
     // Test exact match
@@ -49,7 +49,7 @@ void test_server_route_matching(void) {
     json_decref(params);
 }
 
-void test_server_request_json_creation(void) {
+static void test_server_request_json_creation(void) {
     MemoryArena *arena = arena_create(1024 * 1024);  // Increased arena size
     set_current_arena(arena);
     
@@ -81,7 +81,7 @@ void test_server_request_json_creation(void) {
     arena_free(arena);
 }
 
-void test_server_plugin_loading(void) {
+static void test_server_plugin_loading(void) {
     // Test plugin loading by directly using dlopen/dlsym like the actual plugin loading
     void *handle = dlopen("./plugins/jq.so", RTLD_LAZY);
     TEST_ASSERT_NOT_NULL(handle);
@@ -112,7 +112,7 @@ void test_server_plugin_loading(void) {
     TEST_ASSERT_NULL(bad_handle);
 }
 
-void test_server_memory_arena_per_request(void) {
+static void test_server_memory_arena_per_request(void) {
     MemoryArena *arena = arena_create(1024 * 1024);  // Increased arena size
     
     // Set arena context for this thread before creating JSON

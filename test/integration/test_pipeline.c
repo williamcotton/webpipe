@@ -26,8 +26,10 @@ static int load_jq_plugin_for_test(void) {
         return -1;
     }
     
-    jq_plugin_execute = dlsym(jq_plugin_handle, "plugin_execute");
-    if (!jq_plugin_execute) {
+    void *plugin_func = dlsym(jq_plugin_handle, "plugin_execute");
+    jq_plugin_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
+                        (uintptr_t)plugin_func;
+    if (!plugin_func) {
         dlclose(jq_plugin_handle);
         jq_plugin_handle = NULL;
         return -1;
@@ -36,7 +38,7 @@ static int load_jq_plugin_for_test(void) {
     return 0;
 }
 
-void test_pipeline_single_step(void) {
+static void test_pipeline_single_step(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     // Load jq plugin for this test
@@ -62,7 +64,7 @@ void test_pipeline_single_step(void) {
     destroy_test_arena(arena);
 }
 
-void test_pipeline_multi_step(void) {
+static void test_pipeline_multi_step(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     // Load jq plugin for this test

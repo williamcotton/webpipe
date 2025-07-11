@@ -11,7 +11,7 @@ void tearDown(void) {
     // Tear down function called after each test
 }
 
-void test_arena_create_success(void) {
+static void test_arena_create_success(void) {
     MemoryArena *arena = arena_create(1024);
     
     TEST_ASSERT_NOT_NULL(arena);
@@ -22,13 +22,13 @@ void test_arena_create_success(void) {
     arena_free(arena);
 }
 
-void test_arena_create_zero_size(void) {
+static void test_arena_create_zero_size(void) {
     MemoryArena *arena = arena_create(0);
     
     TEST_ASSERT_NULL(arena);
 }
 
-void test_arena_create_large_size(void) {
+static void test_arena_create_large_size(void) {
     MemoryArena *arena = arena_create(1024 * 1024);
     
     TEST_ASSERT_NOT_NULL(arena);
@@ -39,7 +39,7 @@ void test_arena_create_large_size(void) {
     arena_free(arena);
 }
 
-void test_arena_alloc_success(void) {
+static void test_arena_alloc_success(void) {
     MemoryArena *arena = arena_create(1024);
     
     void *ptr1 = arena_alloc(arena, 100);
@@ -52,12 +52,12 @@ void test_arena_alloc_success(void) {
     
     // Check that pointers are different and don't overlap
     TEST_ASSERT_NOT_EQUAL(ptr1, ptr2);
-    TEST_ASSERT_TRUE(ptr2 >= ptr1 + 100);
+    TEST_ASSERT_TRUE(ptr2 >= (void*)((uintptr_t)ptr1 + 100));
     
     arena_free(arena);
 }
 
-void test_arena_alloc_insufficient_space(void) {
+static void test_arena_alloc_insufficient_space(void) {
     MemoryArena *arena = arena_create(100);
     
     void *ptr1 = arena_alloc(arena, 50);
@@ -71,7 +71,7 @@ void test_arena_alloc_insufficient_space(void) {
     arena_free(arena);
 }
 
-void test_arena_alloc_exact_fit(void) {
+static void test_arena_alloc_exact_fit(void) {
     MemoryArena *arena = arena_create(100);
     
     void *ptr = arena_alloc(arena, 100);
@@ -85,7 +85,7 @@ void test_arena_alloc_exact_fit(void) {
     arena_free(arena);
 }
 
-void test_arena_alloc_zero_size(void) {
+static void test_arena_alloc_zero_size(void) {
     MemoryArena *arena = arena_create(1024);
     
     void *ptr = arena_alloc(arena, 0);
@@ -95,12 +95,12 @@ void test_arena_alloc_zero_size(void) {
     arena_free(arena);
 }
 
-void test_arena_alloc_null_arena(void) {
+static void test_arena_alloc_null_arena(void) {
     void *ptr = arena_alloc(NULL, 100);
     TEST_ASSERT_NULL(ptr);
 }
 
-void test_arena_strdup_success(void) {
+static void test_arena_strdup_success(void) {
     MemoryArena *arena = arena_create(1024);
     const char *original = "Hello, World!";
     
@@ -114,7 +114,7 @@ void test_arena_strdup_success(void) {
     arena_free(arena);
 }
 
-void test_arena_strdup_null_string(void) {
+static void test_arena_strdup_null_string(void) {
     MemoryArena *arena = arena_create(1024);
     
     char *copy = arena_strdup(arena, NULL);
@@ -125,7 +125,7 @@ void test_arena_strdup_null_string(void) {
     arena_free(arena);
 }
 
-void test_arena_strdup_empty_string(void) {
+static void test_arena_strdup_empty_string(void) {
     MemoryArena *arena = arena_create(1024);
     const char *original = "";
     
@@ -138,7 +138,7 @@ void test_arena_strdup_empty_string(void) {
     arena_free(arena);
 }
 
-void test_arena_strdup_insufficient_space(void) {
+static void test_arena_strdup_insufficient_space(void) {
     MemoryArena *arena = arena_create(5);
     const char *original = "Hello, World!";  // 13 + 1 = 14 bytes needed
     
@@ -150,7 +150,7 @@ void test_arena_strdup_insufficient_space(void) {
     arena_free(arena);
 }
 
-void test_arena_strndup_success(void) {
+static void test_arena_strndup_success(void) {
     MemoryArena *arena = arena_create(1024);
     const char *original = "Hello, World!";
     
@@ -163,7 +163,7 @@ void test_arena_strndup_success(void) {
     arena_free(arena);
 }
 
-void test_arena_strndup_longer_than_string(void) {
+static void test_arena_strndup_longer_than_string(void) {
     MemoryArena *arena = arena_create(1024);
     const char *original = "Hello";
     
@@ -176,7 +176,7 @@ void test_arena_strndup_longer_than_string(void) {
     arena_free(arena);
 }
 
-void test_arena_strndup_zero_length(void) {
+static void test_arena_strndup_zero_length(void) {
     MemoryArena *arena = arena_create(1024);
     const char *original = "Hello";
     
@@ -189,7 +189,7 @@ void test_arena_strndup_zero_length(void) {
     arena_free(arena);
 }
 
-void test_arena_strndup_null_string(void) {
+static void test_arena_strndup_null_string(void) {
     MemoryArena *arena = arena_create(1024);
     
     char *copy = arena_strndup(arena, NULL, 5);
@@ -200,12 +200,12 @@ void test_arena_strndup_null_string(void) {
     arena_free(arena);
 }
 
-void test_arena_free_null(void) {
+static void test_arena_free_null(void) {
     // Should not crash
     arena_free(NULL);
 }
 
-void test_arena_alignment(void) {
+static void test_arena_alignment(void) {
     MemoryArena *arena = arena_create(1024);
     
     // Allocate various sizes and check alignment
@@ -218,13 +218,13 @@ void test_arena_alignment(void) {
     TEST_ASSERT_NOT_NULL(ptr3);
     
     // Check that allocations are properly spaced
-    TEST_ASSERT_TRUE(ptr2 >= ptr1 + 1);
-    TEST_ASSERT_TRUE(ptr3 >= ptr2 + 1);
+    TEST_ASSERT_TRUE(ptr2 >= (void*)((uintptr_t)ptr1 + 1));
+    TEST_ASSERT_TRUE(ptr3 >= (void*)((uintptr_t)ptr2 + 1));
     
     arena_free(arena);
 }
 
-void test_arena_multiple_allocations(void) {
+static void test_arena_multiple_allocations(void) {
     MemoryArena *arena = arena_create(1024);
     void *ptrs[10];
     size_t sizes[10] = {8, 16, 32, 64, 128, 8, 16, 32, 64, 128};
@@ -247,7 +247,7 @@ void test_arena_multiple_allocations(void) {
     arena_free(arena);
 }
 
-void test_arena_set_get_current(void) {
+static void test_arena_set_get_current(void) {
     MemoryArena *arena1 = arena_create(1024);
     MemoryArena *arena2 = arena_create(2048);
     

@@ -6,8 +6,8 @@
 #include <jansson.h>
 
 // Test helper macros
-#define TEST_ASSERT_NOT_NULL_MESSAGE(ptr, msg) \
-    TEST_ASSERT_NOT_NULL_MESSAGE(ptr, msg)
+// #define TEST_ASSERT_NOT_NULL_MESSAGE(ptr, msg) \
+//     TEST_ASSERT_NOT_NULL_MESSAGE(ptr, msg)
 
 #define TEST_ASSERT_JSON_EQUAL(expected, actual) \
     test_assert_json_equal(expected, actual, __LINE__)

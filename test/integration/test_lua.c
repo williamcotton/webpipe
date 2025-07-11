@@ -17,8 +17,10 @@ static int load_lua_plugin(void) {
         return -1;
     }
     
-    lua_plugin_execute = dlsym(lua_plugin_handle, "plugin_execute");
-    if (!lua_plugin_execute) {
+    void *plugin_func = dlsym(lua_plugin_handle, "plugin_execute");
+    lua_plugin_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
+                         (uintptr_t)plugin_func;
+    if (!plugin_func) {
         fprintf(stderr, "Failed to find plugin_execute in lua plugin: %s\n", dlerror());
         dlclose(lua_plugin_handle);
         lua_plugin_handle = NULL;
@@ -48,7 +50,7 @@ void tearDown(void) {
     unload_lua_plugin();
 }
 
-void test_lua_plugin_simple_return(void) {
+static void test_lua_plugin_simple_return(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
@@ -64,7 +66,7 @@ void test_lua_plugin_simple_return(void) {
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_object_construction(void) {
+static void test_lua_plugin_object_construction(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
@@ -87,7 +89,7 @@ void test_lua_plugin_object_construction(void) {
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_request_access(void) {
+static void test_lua_plugin_request_access(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *params = json_object();
@@ -108,12 +110,13 @@ void test_lua_plugin_request_access(void) {
     TEST_ASSERT_STRING_EQUAL("123", json_string_value(id));
     TEST_ASSERT_STRING_EQUAL("GET", json_string_value(method));
     
+    json_decref(params);   // Fix: decrement the params object
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_array_construction(void) {
+static void test_lua_plugin_array_construction(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *params = json_object();
@@ -135,12 +138,13 @@ void test_lua_plugin_array_construction(void) {
     TEST_ASSERT_NOT_NULL(param);
     TEST_ASSERT_STRING_EQUAL("123", json_string_value(param));
     
+    json_decref(params);   // Fix: decrement the params object
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_conditional_logic(void) {
+static void test_lua_plugin_conditional_logic(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *params = json_object();
@@ -168,12 +172,13 @@ void test_lua_plugin_conditional_logic(void) {
     TEST_ASSERT_STRING_EQUAL("123", json_string_value(id));
     TEST_ASSERT_TRUE(json_is_true(found));
     
+    json_decref(params);   // Fix: decrement the params object
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_string_manipulation(void) {
+static void test_lua_plugin_string_manipulation(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *body = json_object();
@@ -203,12 +208,13 @@ void test_lua_plugin_string_manipulation(void) {
     TEST_ASSERT_STRING_EQUAL("JOHN DOE", json_string_value(upper));
     TEST_ASSERT_STRING_EQUAL("John doe", json_string_value(capitalized));
     
+    json_decref(body);     // Fix: decrement the body object
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_loop_processing(void) {
+static void test_lua_plugin_loop_processing(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
@@ -228,7 +234,7 @@ void test_lua_plugin_loop_processing(void) {
     TEST_ASSERT_EQUAL(5, json_array_size(numbers));
     
     for (int i = 0; i < 5; i++) {
-        json_t *num = json_array_get(numbers, i);
+        json_t *num = json_array_get(numbers, (size_t)i);
         TEST_ASSERT_NOT_NULL(num);
         TEST_ASSERT_EQUAL((i + 1) * 2, json_integer_value(num));
     }
@@ -238,7 +244,7 @@ void test_lua_plugin_loop_processing(void) {
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_nested_object_access(void) {
+static void test_lua_plugin_nested_object_access(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *body = json_object();
@@ -271,12 +277,13 @@ void test_lua_plugin_nested_object_access(void) {
     TEST_ASSERT_STRING_EQUAL("john@example.com", json_string_value(email));
     TEST_ASSERT_STRING_EQUAL("example.com", json_string_value(domain));
     
+    json_decref(body);     // Fix: decrement the body object
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_math_operations(void) {
+static void test_lua_plugin_math_operations(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *body = json_object();
@@ -318,12 +325,13 @@ void test_lua_plugin_math_operations(void) {
     TEST_ASSERT_DOUBLE_WITHIN(0.01, 64.77, json_real_value(total));
     TEST_ASSERT_STRING_EQUAL("$64.77", json_string_value(formatted_total));
     
+    json_decref(body);     // Fix: decrement the body object
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_error_handling_syntax_error(void) {
+static void test_lua_plugin_error_handling_syntax_error(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
@@ -346,7 +354,7 @@ void test_lua_plugin_error_handling_syntax_error(void) {
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_error_handling_runtime_error(void) {
+static void test_lua_plugin_error_handling_runtime_error(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
@@ -370,7 +378,7 @@ void test_lua_plugin_error_handling_runtime_error(void) {
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_null_input(void) {
+static void test_lua_plugin_null_input(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     const char *config = "return { message = \"null input\" }";
@@ -391,7 +399,7 @@ void test_lua_plugin_null_input(void) {
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_null_config(void) {
+static void test_lua_plugin_null_config(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
@@ -406,7 +414,7 @@ void test_lua_plugin_null_config(void) {
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_empty_config(void) {
+static void test_lua_plugin_empty_config(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
@@ -422,7 +430,7 @@ void test_lua_plugin_empty_config(void) {
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_complex_data_transformation(void) {
+static void test_lua_plugin_complex_data_transformation(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = json_object();
@@ -492,7 +500,7 @@ void test_lua_plugin_complex_data_transformation(void) {
     destroy_test_arena(arena);
 }
 
-void test_lua_plugin_memory_arena_usage(void) {
+static void test_lua_plugin_memory_arena_usage(void) {
     MemoryArena *arena = create_test_arena(1024);
     size_t initial_used = arena->used;
     

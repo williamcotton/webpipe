@@ -11,7 +11,7 @@ void tearDown(void) {
     // Tear down function called after each test
 }
 
-void test_parser_new_and_free(void) {
+static void test_parser_new_and_free(void) {
     int token_count;
     Token *tokens = tokenize_test_string("GET /test", &token_count);
     
@@ -26,7 +26,7 @@ void test_parser_new_and_free(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_parser_parse_simple_route(void) {
+static void test_parser_parse_simple_route(void) {
     const char *source = "GET /test\n  |> jq: `{ message: \"hello\" }`";
     ASTNode *ast = parse_test_string(source);
     
@@ -50,7 +50,7 @@ void test_parser_parse_simple_route(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_multi_step_pipeline(void) {
+static void test_parser_parse_multi_step_pipeline(void) {
     const char *source = "GET /page/:id\n  |> jq: `{ sqlParams: [.params.id] }`\n  |> pg: `SELECT * FROM pages WHERE id = $1`\n  |> jq: `{ page: .data.rows[0] }`";
     ASTNode *ast = parse_test_string(source);
     
@@ -88,7 +88,7 @@ void test_parser_parse_multi_step_pipeline(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_variable_assignment(void) {
+static void test_parser_parse_variable_assignment(void) {
     const char *source = "pg teamsQuery = `SELECT * FROM teams`";
     ASTNode *ast = parse_test_string(source);
     
@@ -105,7 +105,7 @@ void test_parser_parse_variable_assignment(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_variable_usage(void) {
+static void test_parser_parse_variable_usage(void) {
     const char *source = "GET /teams\n  |> pg: teamsQuery";
     ASTNode *ast = parse_test_string(source);
     
@@ -125,7 +125,7 @@ void test_parser_parse_variable_usage(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_result_step_simple(void) {
+static void test_parser_parse_result_step_simple(void) {
     const char *source = "GET /test\n  |> jq: `{ message: \"hello\" }`\n  |> result\n    ok(200):\n      |> jq: `{ success: true }`";
     ASTNode *ast = parse_test_string(source);
     
@@ -148,7 +148,7 @@ void test_parser_parse_result_step_simple(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_result_step_multiple_conditions(void) {
+static void test_parser_parse_result_step_multiple_conditions(void) {
     const char *source = "GET /test\n  |> result\n    ok(200):\n      |> jq: `{ success: true }`\n    validationError(400):\n      |> jq: `{ error: \"validation failed\" }`\n    default(500):\n      |> jq: `{ error: \"server error\" }`";
     ASTNode *ast = parse_test_string(source);
     
@@ -158,7 +158,7 @@ void test_parser_parse_result_step_multiple_conditions(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_multiple_routes(void) {
+static void test_parser_parse_multiple_routes(void) {
     const char *source = "GET /test\n  |> jq: `{ message: \"hello\" }`\n\nPOST /users\n  |> jq: `{ user: .body }`";
     ASTNode *ast = parse_test_string(source);
     
@@ -181,7 +181,7 @@ void test_parser_parse_multiple_routes(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_mixed_statements(void) {
+static void test_parser_parse_mixed_statements(void) {
     const char *source = "pg teamsQuery = `SELECT * FROM teams`\n\nGET /teams\n  |> pg: teamsQuery\n\nGET /test\n  |> jq: `{ message: \"hello\" }`";
     ASTNode *ast = parse_test_string(source);
     
@@ -209,7 +209,7 @@ void test_parser_parse_mixed_statements(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_empty_program(void) {
+static void test_parser_parse_empty_program(void) {
     const char *source = "";
     ASTNode *ast = parse_test_string(source);
     
@@ -220,7 +220,7 @@ void test_parser_parse_empty_program(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_whitespace_only(void) {
+static void test_parser_parse_whitespace_only(void) {
     const char *source = "   \n\n  \t\n  ";
     ASTNode *ast = parse_test_string(source);
     
@@ -231,7 +231,7 @@ void test_parser_parse_whitespace_only(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_comments_ignored(void) {
+static void test_parser_parse_comments_ignored(void) {
     // Note: This test assumes the lexer handles comments if they exist
     const char *source = "GET /test\n  |> jq: `{ message: \"hello\" }`";
     ASTNode *ast = parse_test_string(source);
@@ -243,7 +243,7 @@ void test_parser_parse_comments_ignored(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_all_http_methods(void) {
+static void test_parser_parse_all_http_methods(void) {
     const char *methods[] = {"GET", "POST", "PUT", "DELETE", "PATCH"};
     int num_methods = sizeof(methods) / sizeof(methods[0]);
     
@@ -266,7 +266,7 @@ void test_parser_parse_all_http_methods(void) {
     }
 }
 
-void test_parser_parse_complex_route_patterns(void) {
+static void test_parser_parse_complex_route_patterns(void) {
     const char *routes[] = {
         "/",
         "/test",
@@ -295,7 +295,7 @@ void test_parser_parse_complex_route_patterns(void) {
     }
 }
 
-void test_parser_parse_pipeline_with_various_plugins(void) {
+static void test_parser_parse_pipeline_with_various_plugins(void) {
     const char *plugins[] = {"jq", "lua", "pg", "validate", "auth"};
     int num_plugins = sizeof(plugins) / sizeof(plugins[0]);
     
@@ -319,7 +319,7 @@ void test_parser_parse_pipeline_with_various_plugins(void) {
     }
 }
 
-void test_parser_parse_multiline_string_in_pipeline(void) {
+static void test_parser_parse_multiline_string_in_pipeline(void) {
     const char *source = "GET /test\n  |> jq: `{\n    message: \"hello\",\n    timestamp: now\n  }`";
     ASTNode *ast = parse_test_string(source);
     
@@ -336,49 +336,49 @@ void test_parser_parse_multiline_string_in_pipeline(void) {
     free_test_ast(ast);
 }
 
-void test_parser_parse_with_context(void) {
-    ParseContext *ctx = parse_context_create();
-    TEST_ASSERT_NOT_NULL(ctx);
+// static void test_parser_parse_with_context(void) {
+//     ParseContext *ctx = parse_context_create();
+//     TEST_ASSERT_NOT_NULL(ctx);
     
-    int token_count;
-    Token *tokens = tokenize_test_string("GET /test", &token_count);
+//     int token_count;
+//     Token *tokens = tokenize_test_string("GET /test", &token_count);
     
-    Parser *parser = parser_new_with_context(tokens, token_count, ctx);
-    TEST_ASSERT_NOT_NULL(parser);
-    TEST_ASSERT_EQUAL(ctx, parser->ctx);
+//     Parser *parser = parser_new_with_context(tokens, token_count, ctx);
+//     TEST_ASSERT_NOT_NULL(parser);
+//     TEST_ASSERT_EQUAL(ctx, parser->ctx);
     
-    ASTNode *ast = parser_parse(parser);
-    TEST_ASSERT_NOT_NULL(ast);
+//     ASTNode *ast = parser_parse(parser);
+//     TEST_ASSERT_NOT_NULL(ast);
     
-    parser_free(parser);
-    free_test_tokens(tokens, token_count);
-    free_test_ast(ast);
-    parse_context_destroy(ctx);
-}
+//     parser_free(parser);
+//     free_test_tokens(tokens, token_count);
+//     free_test_ast(ast);
+//     parse_context_destroy(ctx);
+// }
 
-void test_parser_error_handling_invalid_syntax(void) {
-    const char *invalid_sources[] = {
-        "GET",                    // Missing route
-        "GET /test |>",          // Missing plugin
-        "GET /test |> jq",       // Missing colon
-        "GET /test |> jq:",      // Missing value
-        "INVALID /test",         // Invalid HTTP method
-        "GET /test\n  |> jq: `unclosed string"  // Unclosed string
-    };
-    int num_invalid = sizeof(invalid_sources) / sizeof(invalid_sources[0]);
+// static void test_parser_error_handling_invalid_syntax(void) {
+//     const char *invalid_sources[] = {
+//         "GET",                    // Missing route
+//         "GET /test |>",          // Missing plugin
+//         "GET /test |> jq",       // Missing colon
+//         "GET /test |> jq:",      // Missing value
+//         "INVALID /test",         // Invalid HTTP method
+//         "GET /test\n  |> jq: `unclosed string"  // Unclosed string
+//     };
+//     int num_invalid = sizeof(invalid_sources) / sizeof(invalid_sources[0]);
     
-    for (int i = 0; i < num_invalid; i++) {
-        ASTNode *ast = parse_test_string(invalid_sources[i]);
+//     for (int i = 0; i < num_invalid; i++) {
+//         ASTNode *ast = parse_test_string(invalid_sources[i]);
         
-        // Parser should handle errors gracefully
-        // Either return NULL or a partial AST
-        // The exact behavior depends on error handling implementation
+//         // Parser should handle errors gracefully
+//         // Either return NULL or a partial AST
+//         // The exact behavior depends on error handling implementation
         
-        if (ast) {
-            free_test_ast(ast);
-        }
-    }
-}
+//         if (ast) {
+//             free_test_ast(ast);
+//         }
+//     }
+// }
 
 int main(void) {
     UNITY_BEGIN();
@@ -404,3 +404,4 @@ int main(void) {
     
     return UNITY_END();
 }
+

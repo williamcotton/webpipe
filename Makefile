@@ -53,41 +53,47 @@ install-plugins: plugins
 # Test targets
 TEST_CFLAGS = $(CFLAGS) -I$(TEST_DIR) -I$(SRC_DIR) -DUNITY_INCLUDE_DOUBLE
 TEST_LDFLAGS = $(LDFLAGS) -ljq -llua -lpq
-TEST_COMMON_SOURCES = $(TEST_DIR)/unity/unity.c $(TEST_DIR)/helpers/test_utils.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c
+# Unity framework with suppressed warnings
+UNITY_CFLAGS = $(CFLAGS) -I$(TEST_DIR) -I$(SRC_DIR) -DUNITY_INCLUDE_DOUBLE -Wno-double-promotion
+TEST_COMMON_SOURCES = $(TEST_DIR)/helpers/test_utils.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c
+
+# Unity object file with suppressed warnings
+$(BUILD_DIR)/unity.o: $(BUILD_DIR) $(TEST_DIR)/unity/unity.c
+	$(CC) $(UNITY_CFLAGS) -c -o $@ $(TEST_DIR)/unity/unity.c
 
 # Individual test executables
-$(BUILD_DIR)/test_arena: $(BUILD_DIR) $(TEST_DIR)/unit/test_arena.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_arena.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_arena: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_arena.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_arena.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_lexer: $(BUILD_DIR) $(TEST_DIR)/unit/test_lexer.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_lexer.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_lexer: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_lexer.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_lexer.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_parser: $(BUILD_DIR) $(TEST_DIR)/unit/test_parser.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_parser.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_parser: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_parser.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_parser.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_plugins: $(BUILD_DIR) $(TEST_DIR)/unit/test_plugins.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_plugins.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_plugins: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_plugins.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_plugins.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_jq: $(BUILD_DIR) $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_jq: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_lua: $(BUILD_DIR) $(TEST_DIR)/integration/test_lua.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_lua.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_lua: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_lua.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_lua.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_pg: $(BUILD_DIR) $(TEST_DIR)/integration/test_pg.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_pg.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_pg: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_pg.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_pg.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_pipeline: $(BUILD_DIR) $(TEST_DIR)/integration/test_pipeline.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_pipeline.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_pipeline: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_pipeline.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_pipeline.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_server: $(BUILD_DIR) $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_server: $(BUILD_DIR)/unity.o $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_e2e: $(BUILD_DIR) $(TEST_DIR)/system/test_e2e.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_e2e.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS) -lcurl
+$(BUILD_DIR)/test_e2e: $(BUILD_DIR)/unity.o $(TEST_DIR)/system/test_e2e.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_e2e.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS) -lcurl
 
-$(BUILD_DIR)/test_perf: $(BUILD_DIR) $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES) $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_perf: $(BUILD_DIR)/unity.o $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
 # Test group targets
 TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_plugins

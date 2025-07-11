@@ -167,10 +167,19 @@ void destroy_mock_plugin(Plugin *plugin) {
 }
 
 json_t *mock_plugin_passthrough(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
+    (void)arena;
+    (void)alloc_func;
+    (void)free_func;
+    (void)config;
     return json_incref(input);
 }
 
 json_t *mock_plugin_error(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
+    (void)input;
+    (void)arena;
+    (void)alloc_func;
+    (void)free_func;
+    (void)config;
     json_t *error_obj = json_object();
     json_t *errors = json_array();
     json_t *error = json_object();
@@ -341,7 +350,14 @@ int init_test_runtime(const char *wp_file) {
     
     // Read file content
     fseek(file, 0, SEEK_END);
-    size_t file_size = ftell(file);
+    long file_size_long = ftell(file);
+    if (file_size_long < 0) {
+        fclose(file);
+        free(test_runtime);
+        test_runtime = NULL;
+        return -1;
+    }
+    size_t file_size = (size_t)file_size_long;
     fseek(file, 0, SEEK_SET);
     
     char *source = malloc(file_size + 1);

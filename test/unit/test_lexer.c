@@ -11,7 +11,7 @@ void tearDown(void) {
     // Tear down function called after each test
 }
 
-void test_lexer_new_and_free(void) {
+static void test_lexer_new_and_free(void) {
     const char *source = "GET /test";
     Lexer *lexer = lexer_new(source);
     
@@ -24,7 +24,7 @@ void test_lexer_new_and_free(void) {
     lexer_free(lexer);
 }
 
-void test_lexer_peek_and_advance(void) {
+static void test_lexer_peek_and_advance(void) {
     const char *source = "GET";
     Lexer *lexer = lexer_new(source);
     
@@ -44,7 +44,7 @@ void test_lexer_peek_and_advance(void) {
     lexer_free(lexer);
 }
 
-void test_lexer_skip_whitespace(void) {
+static void test_lexer_skip_whitespace(void) {
     const char *source = "  \t  GET";
     Lexer *lexer = lexer_new(source);
     
@@ -55,7 +55,7 @@ void test_lexer_skip_whitespace(void) {
     lexer_free(lexer);
 }
 
-void test_lexer_skip_whitespace_with_newlines(void) {
+static void test_lexer_skip_whitespace_with_newlines(void) {
     const char *source = "  \n  \t\n  GET";
     Lexer *lexer = lexer_new(source);
     
@@ -67,7 +67,7 @@ void test_lexer_skip_whitespace_with_newlines(void) {
     lexer_free(lexer);
 }
 
-void test_lexer_tokenize_http_methods(void) {
+static void test_lexer_tokenize_http_methods(void) {
     const char *methods[] = {"GET", "POST", "PUT", "DELETE", "PATCH"};
     int num_methods = sizeof(methods) / sizeof(methods[0]);
     
@@ -84,7 +84,7 @@ void test_lexer_tokenize_http_methods(void) {
     }
 }
 
-void test_lexer_tokenize_route_patterns(void) {
+static void test_lexer_tokenize_route_patterns(void) {
     const char *routes[] = {
         "/test",
         "/page/:id",
@@ -106,7 +106,7 @@ void test_lexer_tokenize_route_patterns(void) {
     }
 }
 
-void test_lexer_tokenize_pipeline_operator(void) {
+static void test_lexer_tokenize_pipeline_operator(void) {
     const char *source = "|>";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -119,7 +119,7 @@ void test_lexer_tokenize_pipeline_operator(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_string_literals(void) {
+static void test_lexer_tokenize_string_literals(void) {
     const char *source = "`{ id: .params.id }`";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -132,7 +132,7 @@ void test_lexer_tokenize_string_literals(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_multiline_string(void) {
+static void test_lexer_tokenize_multiline_string(void) {
     const char *source = "`{\n  id: .params.id,\n  name: .body.name\n}`";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -145,7 +145,7 @@ void test_lexer_tokenize_multiline_string(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_identifiers(void) {
+static void test_lexer_tokenize_identifiers(void) {
     const char *identifiers[] = {"jq", "lua", "pg", "result", "teamsQuery", "validateUser"};
     int num_identifiers = sizeof(identifiers) / sizeof(identifiers[0]);
     
@@ -162,7 +162,7 @@ void test_lexer_tokenize_identifiers(void) {
     }
 }
 
-void test_lexer_tokenize_numbers(void) {
+static void test_lexer_tokenize_numbers(void) {
     const char *numbers[] = {"123", "200", "404", "500", "0"};
     int num_numbers = sizeof(numbers) / sizeof(numbers[0]);
     
@@ -179,7 +179,7 @@ void test_lexer_tokenize_numbers(void) {
     }
 }
 
-void test_lexer_tokenize_punctuation(void) {
+static void test_lexer_tokenize_punctuation(void) {
     const char *source = "(): {}=";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -196,7 +196,7 @@ void test_lexer_tokenize_punctuation(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_simple_route(void) {
+static void test_lexer_tokenize_simple_route(void) {
     const char *source = "GET /test\n  |> jq: `{ message: \"hello\" }`";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -227,7 +227,7 @@ void test_lexer_tokenize_simple_route(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_variable_assignment(void) {
+static void test_lexer_tokenize_variable_assignment(void) {
     const char *source = "pg teamsQuery = `SELECT * FROM teams`";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -250,7 +250,7 @@ void test_lexer_tokenize_variable_assignment(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_result_step(void) {
+static void test_lexer_tokenize_result_step(void) {
     const char *source = "result\n  ok(200):\n    |> jq: `{ success: true }`";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -277,7 +277,7 @@ void test_lexer_tokenize_result_step(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_empty_string(void) {
+static void test_lexer_tokenize_empty_string(void) {
     const char *source = "";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -288,7 +288,7 @@ void test_lexer_tokenize_empty_string(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_whitespace_only(void) {
+static void test_lexer_tokenize_whitespace_only(void) {
     const char *source = "   \t\n  \n  ";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -301,7 +301,7 @@ void test_lexer_tokenize_whitespace_only(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_line_column_tracking(void) {
+static void test_lexer_tokenize_line_column_tracking(void) {
     const char *source = "GET /test\n  |> jq: `hello`\n\nPOST /users";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -329,7 +329,7 @@ void test_lexer_tokenize_line_column_tracking(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_unclosed_string(void) {
+static void test_lexer_tokenize_unclosed_string(void) {
     const char *source = "`unclosed string";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -341,7 +341,7 @@ void test_lexer_tokenize_unclosed_string(void) {
     free_test_tokens(tokens, token_count);
 }
 
-void test_lexer_tokenize_escaped_backticks(void) {
+static void test_lexer_tokenize_escaped_backticks(void) {
     const char *source = "`string with \\` escaped backtick`";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
@@ -380,3 +380,4 @@ int main(void) {
     
     return UNITY_END();
 }
+

@@ -410,7 +410,7 @@ void free_pipeline(PipelineStep *pipeline) {
     // Handle result steps specially - value is an ASTNode*, not a malloc'd string
     // Check plugin name BEFORE freeing it
     if (pipeline->plugin && strcmp(pipeline->plugin, "result") == 0) {
-      free_ast((ASTNode*)pipeline->value);
+      free_ast((ASTNode *)(uintptr_t)(pipeline->value));
     } else {
       free(pipeline->value);
     }

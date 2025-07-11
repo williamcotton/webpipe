@@ -17,8 +17,10 @@ static int load_pg_plugin(void) {
         return -1;
     }
     
-    pg_plugin_execute = dlsym(pg_plugin_handle, "plugin_execute");
-    if (!pg_plugin_execute) {
+    void *plugin_func = dlsym(pg_plugin_handle, "plugin_execute");
+    pg_plugin_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
+                        (uintptr_t)plugin_func;
+    if (!plugin_func) {
         fprintf(stderr, "Failed to find plugin_execute in pg plugin: %s\n", dlerror());
         dlclose(pg_plugin_handle);
         pg_plugin_handle = NULL;
@@ -48,7 +50,7 @@ void tearDown(void) {
     unload_pg_plugin();
 }
 
-void test_pg_plugin_simple_select(void) {
+static void test_pg_plugin_simple_select(void) {
     MemoryArena *arena = create_test_arena(1024 * 1024);
     
     // Set arena context for JSON allocation
@@ -84,7 +86,7 @@ void test_pg_plugin_simple_select(void) {
     destroy_test_arena(arena);
 }
 
-void test_pg_plugin_parameterized_query(void) {
+static void test_pg_plugin_parameterized_query(void) {
     MemoryArena *arena = create_test_arena(1024 * 1024);
     
     // Set arena context for JSON allocation
@@ -114,7 +116,7 @@ void test_pg_plugin_parameterized_query(void) {
     destroy_test_arena(arena);
 }
 
-void test_pg_plugin_sql_error_handling(void) {
+static void test_pg_plugin_sql_error_handling(void) {
     MemoryArena *arena = create_test_arena(1024 * 1024);
     
     // Set arena context for JSON allocation

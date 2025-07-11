@@ -127,7 +127,7 @@ void parse_context_destroy(ParseContext *ctx) {
 }
 
 // Thread-local storage for current arena
-_Thread_local MemoryArena *currentArena = NULL;
+static _Thread_local MemoryArena *currentArena = NULL;
 
 // Set current arena for this thread
 void set_current_arena(MemoryArena *arena) {
