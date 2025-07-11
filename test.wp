@@ -162,3 +162,21 @@ PATCH /test-body
     body: .body,
     hasBody: (.body != null)
   }`
+
+GET /hello-mustache
+  |> jq: `{ name: "World", message: "Hello from mustache!" }`
+  |> mustache: `
+    <html>
+      <head>
+        <title>{{message}}</title>
+      </head>
+      <body>
+        <h1>{{message}}</h1>
+        <p>Hello, {{name}}!</p>
+      </body>
+    </html>
+  `
+
+GET /mustache-error-test
+  |> jq: `{ invalid: "data" }`
+  |> mustache: `{{syntax_error`

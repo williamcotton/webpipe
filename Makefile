@@ -66,7 +66,7 @@ else ifeq ($(PLATFORM),DARWIN)
 endif
 
 # Middleware targets
-middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so
+middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so $(BUILD_DIR)/mustache.so
 
 $(BUILD_DIR)/jq.so: $(MIDDLEWARE_DIR)/jq.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -ljq
@@ -76,6 +76,9 @@ $(BUILD_DIR)/lua.so: $(MIDDLEWARE_DIR)/lua.c
 
 $(BUILD_DIR)/pg.so: $(MIDDLEWARE_DIR)/pg.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -lpq
+
+$(BUILD_DIR)/mustache.so: $(MIDDLEWARE_DIR)/mustache.c deps/mustach/mustach.c deps/mustach/mustach-jansson.c deps/mustach/mustach-wrap.c
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ $^ -ljansson
 
 # Install middleware to runtime directory
 install-middleware: middleware
