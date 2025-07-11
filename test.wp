@@ -1,3 +1,6 @@
+GET /hello
+  |> jq: `{ world: ":)"}`
+
 GET /page/:id
   |> jq: `{ sqlParams: [.params.id | tostring] }`
   |> pg: `SELECT * FROM teams WHERE id = $1`

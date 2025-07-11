@@ -2,6 +2,11 @@
 
 A high-performance web server runtime that processes HTTP requests through declarative pipeline configurations. Built in C with libmicrohttpd and JSON data flow between pipeline steps.
 
+```wp
+GET /hello
+  |> jq: `{ world: ":)"}`
+```
+
 ## Overview
 
 Web Pipeline (wp) is a domain-specific language and runtime for building web APIs through pipeline-based request processing. Each HTTP request flows through a series of plugins that transform JSON data, enabling powerful composition of data processing steps.
@@ -251,6 +256,101 @@ Each plugin receives:
 - `alloc_func`/`free_func`: Arena allocation functions
 - `config`: Plugin configuration string
 
+### Automatic Memory Management with Jansson
+
+The runtime automatically configures jansson to use per-request arena allocators at startup by calling `json_set_alloc_funcs()` in `server.c`. This means that **plugin developers can use jansson JSON objects normally** without worrying about memory management - all JSON allocations will automatically use the per-request arena allocator.
+
+When creating, manipulating, or returning `json_t` objects in plugins:
+- Use standard jansson functions (`json_object()`, `json_array()`, `json_string()`, etc.)
+- No need to manually manage memory for JSON objects
+- All JSON memory is automatically freed when the request completes
+- The arena ensures no memory leaks even if plugins don't explicitly decref objects
+
+This seamless integration allows plugins to focus on business logic rather than memory management details.
+
+### Hello World Plugin Example
+
+Here's a complete example of a simple plugin that adds a `hello` key to the JSON object:
+
+```c
+#include <jansson.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// Arena allocation function types for plugins
+typedef void* (*arena_alloc_func)(void* arena, size_t size);
+typedef void (*arena_free_func)(void* arena);
+
+// Memory arena type (forward declaration)
+typedef struct MemoryArena MemoryArena;
+
+// Plugin interface function
+json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
+    // Suppress unused parameter warnings
+    (void)free_func;
+    
+    // Handle null input - create empty object
+    if (!input) {
+        input = json_object();
+    }
+    
+    // Handle null or empty config - use "world" as default
+    const char *value = "world";
+    if (config && strlen(config) > 0) {
+        value = config;
+    }
+    
+    // Demonstrate arena usage by copying the config value
+    char *arena_value = NULL;
+    if (alloc_func && arena) {
+        size_t len = strlen(value);
+        arena_value = alloc_func(arena, len + 1);
+        if (arena_value) {
+            memcpy(arena_value, value, len);
+            arena_value[len] = '\0';
+            value = arena_value;
+        }
+    }
+    
+    // Clone the input to avoid modifying the original
+    json_t *result = json_deep_copy(input);
+    if (!result) {
+        // Return standardized error format
+        json_t *error_obj = json_object();
+        json_t *errors_array = json_array();
+        json_t *error_detail = json_object();
+        
+        json_object_set_new(error_detail, "type", json_string("internalError"));
+        json_object_set_new(error_detail, "message", json_string("Failed to copy input"));
+        
+        json_array_append_new(errors_array, error_detail);
+        json_object_set_new(error_obj, "errors", errors_array);
+        
+        return error_obj;
+    }
+    
+    // Add the hello key with the configured value
+    json_object_set_new(result, "hello", json_string(value));
+    
+    return result;
+}
+```
+
+This plugin demonstrates:
+- **Arena Usage**: Uses the arena allocator to copy the config string
+- **Config Handling**: Takes a config parameter and uses it as the value (defaults to "world")
+- **JSON Manipulation**: Uses standard jansson functions which automatically use arena allocation
+- **Error Handling**: Returns error objects when operations fail
+
+Usage in a `.wp` file:
+```wp
+GET /hello
+  |> hello: `world`
+```
+
+The plugin receives the initial request JSON and adds `{ "hello": "world" }` to it.
+
 ## Memory Management
 
 The runtime uses per-request memory arenas for efficient allocation and cleanup:
@@ -270,12 +370,64 @@ This approach eliminates memory leaks and provides predictable performance chara
 
 ## Error Handling
 
-The system provides structured error handling through the `result` step:
+The system provides structured error handling through the `result` step and a standardized error format:
 
-- **Condition Matching**: Errors are matched against specific condition types
+### Error Format
+
+All errors in the system follow a standardized JSON format with an `errors` array:
+
+```json
+{
+  "errors": [
+    {
+      "type": "validationError",
+      "message": "Missing required field",
+      "field": "email"
+    }
+  ]
+}
+```
+
+Each error object contains:
+- **type**: Error category (e.g., `validationError`, `sqlError`, `internalError`)
+- **message**: Human-readable error description
+- **Additional fields**: Context-specific data like `field`, `sqlstate`, `severity`, etc.
+
+### Error Types
+
+Common error types include:
+- `validationError`: Input validation failures
+- `sqlError`: Database operation errors
+- `internalError`: System/plugin internal errors
+- `authError`: Authentication/authorization failures
+
+### Result Step Processing
+
+The `result` step matches errors against condition types:
+
+- **Condition Matching**: Errors are matched against specific condition types using the `type` field
 - **Status Codes**: Each condition specifies HTTP status codes
 - **Error Propagation**: Errors flow through the pipeline like regular data
 - **Fallback Handling**: `default` condition handles unmatched errors
+
+### Plugin Error Creation
+
+Plugins should create errors using the standardized format:
+
+```c
+json_t *error_obj = json_object();
+json_t *errors_array = json_array();
+json_t *error_detail = json_object();
+
+json_object_set_new(error_detail, "type", json_string("validationError"));
+json_object_set_new(error_detail, "message", json_string("Invalid input"));
+json_object_set_new(error_detail, "field", json_string("email"));
+
+json_array_append_new(errors_array, error_detail);
+json_object_set_new(error_obj, "errors", errors_array);
+
+return error_obj;
+```
 
 ## Continuous Integration
 
