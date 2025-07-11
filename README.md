@@ -109,18 +109,35 @@ GET /users/:id
 
 ### Prerequisites
 
-- clang compiler
-- libmicrohttpd
-- libjansson
-- jq library
-- lua library  
-- PostgreSQL client library (libpq)
+#### Ubuntu/Linux
+```bash
+sudo apt-get install -y \
+  clang \
+  libmicrohttpd-dev \
+  libpq-dev \
+  libjansson-dev \
+  libjq-dev \
+  liblua5.4-dev \
+  postgresql-client \
+  valgrind
+```
+
+#### macOS
+```bash
+brew install \
+  llvm \
+  postgresql@14 \
+  libmicrohttpd \
+  jansson \
+  jq \
+  lua
+```
 
 ### Build Commands
 
 ```bash
 # Build main executable and plugins
-make
+make all
 
 # Build debug version
 make debug
@@ -134,17 +151,28 @@ make run
 
 ### Testing
 
+The project uses Unity testing framework with comprehensive test coverage:
+
 ```bash
 # Run all tests
 make test
 
 # Run specific test suites
-make test-unit
-make test-integration
-make test-system
+make test-unit       # Unit tests for core components
+make test-integration # Integration tests for plugins  
+make test-system     # System/end-to-end tests
 
 # Run performance tests
 make test-perf
+
+# Run memory leak detection
+make test-leaks
+
+# Run static analysis
+make test-analyze
+
+# Run code linting
+make test-lint
 ```
 
 ## Usage
@@ -249,13 +277,26 @@ The system provides structured error handling through the `result` step:
 - **Error Propagation**: Errors flow through the pipeline like regular data
 - **Fallback Handling**: `default` condition handles unmatched errors
 
+## Continuous Integration
+
+The project uses GitHub Actions for automated testing across platforms:
+
+- **Ubuntu Latest**: Full test suite with PostgreSQL service
+- **macOS Latest**: Native macOS builds and testing
+- **Test Coverage**: Unit, integration, system, and leak detection tests
+- **Static Analysis**: Clang analyzer and linting with warnings as errors
+
+See `.github/workflows/test.yml` for the complete CI configuration.
+
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Write tests for new functionality
 4. Ensure all tests pass with `make test`
-5. Submit a pull request
+5. Verify static analysis passes with `make test-analyze`
+6. Check for memory leaks with `make test-leaks`
+7. Submit a pull request
 
 ## License
 
