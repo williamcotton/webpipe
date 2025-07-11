@@ -81,7 +81,8 @@ char *arena_strdup(MemoryArena *arena, const char *str) {
     size_t len = strlen(str);
     char *copy = arena_alloc(arena, len + 1);
     if (copy) {
-        strcpy(copy, str);
+        memcpy(copy, str, len);
+        copy[len] = '\0';
     }
     return copy;
 }
@@ -904,6 +905,12 @@ int wp_runtime_init(const char *wp_file) {
     long file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
     
+    if (file_size <= 0) {
+        fprintf(stderr, "Error: File '%s' is empty or invalid\n", wp_file);
+        fclose(file);
+        return -1;
+    }
+    
     char *source = malloc((size_t)file_size + 1);
     fread(source, 1, (size_t)file_size, file);
     source[file_size] = '\0';
@@ -973,6 +980,7 @@ int wp_runtime_init(const char *wp_file) {
         if (!runtime->daemon) {
             fprintf(stderr, "Error starting HTTP server on port 8081 as well\n");
             fprintf(stderr, "Check if ports are in use or if you have permission to bind to them\n");
+            free(source);
             return -1;
         } else {
             printf("HTTP server started successfully on port 8081\n");

@@ -44,6 +44,9 @@ jobs:
     - name: Build application
       run: make all
 
+    - name: Run static analysis
+      run: make test-analyze
+
     - name: Run unit tests
       run: make test-unit
 
@@ -96,6 +99,9 @@ jobs:
 
     - name: Build application
       run: make all
+
+    - name: Run static analysis
+      run: make test-analyze
 
     - name: Run unit tests
       run: make test-unit

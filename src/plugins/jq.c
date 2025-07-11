@@ -182,7 +182,8 @@ static json_t *jv_to_json_with_arena(jv v, void *arena, arena_alloc_func alloc_f
       jv_free(v);
       return result;
     }
-    strcpy(arena_str, str);
+    memcpy(arena_str, str, len);
+    arena_str[len] = '\0';
     
     json_t *result = json_string(arena_str);  // Uses plugin's arena allocator
     jv_free(v);
@@ -223,7 +224,8 @@ static json_t *jv_to_json_with_arena(jv v, void *arena, arena_alloc_func alloc_f
         jv_free(k);
         continue;
       }
-      strcpy(arena_key, key_str);
+      memcpy(arena_key, key_str, key_len);
+      arena_key[key_len] = '\0';
       
       json_t *json_val = jv_to_json_with_arena(val, arena, alloc_func);
       if (json_val) {

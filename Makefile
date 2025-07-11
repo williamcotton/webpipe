@@ -151,6 +151,9 @@ test-perf: $(BUILD_DIR)/test_perf
 	@echo "Running performance tests..."
 	$(BUILD_DIR)/test_perf
 
+test-analyze:
+	clang --analyze $(SRC_DIR)/*.c $(PLUGIN_DIR)/*.c $(CFLAGS) -Xanalyzer -analyzer-output=text -Xanalyzer -analyzer-checker=core,deadcode,nullability,optin,osx,security,unix,valist -Xanalyzer -analyzer-disable-checker -Xanalyzer security.insecureAPI.DeprecatedOrUnsafeBufferHandling -Werror
+
 # Original test command
 test-wp: $(BUILD_DIR)/wp
 	$(BUILD_DIR)/wp -f test.wp
@@ -165,4 +168,4 @@ clean:
 	rm -rf $(BUILD_DIR)
 	rm -f ./plugins/*.so
 
-.PHONY: all clean test test-unit test-integration test-system test-perf test-wp run plugins install-plugins
+.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-wp run plugins install-plugins

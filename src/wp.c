@@ -146,6 +146,12 @@ int main(int argc, char *argv[]) {
         long file_size = ftell(file);
         fseek(file, 0, SEEK_SET);
 
+        if (file_size <= 0) {
+            fprintf(stderr, "Error: File '%s' is empty or invalid\n", argv[2]);
+            fclose(file);
+            return -1;
+        }
+
         char *source = malloc((size_t)file_size + 1);
         fread(source, 1, (size_t)file_size, file);
         source[file_size] = '\0';

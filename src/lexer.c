@@ -11,7 +11,8 @@ char *strdup_safe(const char *s) {
   size_t len = strlen(s);
   char *copy = malloc(len + 1);
   if (copy) {
-    strcpy(copy, s);
+    memcpy(copy, s, len);
+    copy[len] = '\0';
   }
   return copy;
 }
