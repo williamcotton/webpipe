@@ -14,6 +14,7 @@ ifeq ($(PLATFORM),LINUX)
 	SANITIZE_FLAGS = -fsanitize=address,undefined
 	PLATFORM_LIBS = -lm -lpthread -ldl
 	CODESIGN_CMD = 
+	TIDY = clang-tidy
 else ifeq ($(PLATFORM),DARWIN)
 	CC = clang
 	LUA_LIB = -llua
@@ -23,6 +24,7 @@ else ifeq ($(PLATFORM),DARWIN)
 	SANITIZE_FLAGS = -fsanitize=address,undefined
 	PLATFORM_LIBS = -ldl
 	CODESIGN_CMD = codesign -s - -v -f --entitlements debug.plist
+	TIDY = $(shell brew --prefix llvm)/bin/clang-tidy
 endif
 
 # Common flags
@@ -154,6 +156,13 @@ test-perf: $(BUILD_DIR)/test_perf
 test-analyze:
 	clang --analyze $(SRC_DIR)/*.c $(PLUGIN_DIR)/*.c $(CFLAGS) -Xanalyzer -analyzer-output=text -Xanalyzer -analyzer-checker=core,deadcode,nullability,optin,osx,security,unix,valist -Xanalyzer -analyzer-disable-checker -Xanalyzer security.insecureAPI.DeprecatedOrUnsafeBufferHandling -Werror
 
+test-lint:
+ifeq ($(PLATFORM),LINUX)
+	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument -warnings-as-errors=* $(SRC_DIR)/*.c $(PLUGIN_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
+else ifeq ($(PLATFORM),DARWIN)
+	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument -warnings-as-errors=* $(SRC_DIR)/*.c $(PLUGIN_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
+endif
+
 # Original test command
 test-wp: $(BUILD_DIR)/wp
 	$(BUILD_DIR)/wp -f test.wp
@@ -168,4 +177,4 @@ clean:
 	rm -rf $(BUILD_DIR)
 	rm -f ./plugins/*.so
 
-.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-wp run plugins install-plugins
+.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run plugins install-plugins

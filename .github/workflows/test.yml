@@ -47,6 +47,9 @@ jobs:
     - name: Run static analysis
       run: make test-analyze
 
+    - name: Run linting
+      run: make test-lint
+
     - name: Run unit tests
       run: make test-unit
 
@@ -102,6 +105,9 @@ jobs:
 
     - name: Run static analysis
       run: make test-analyze
+
+    - name: Run linting
+      run: make test-lint
 
     - name: Run unit tests
       run: make test-unit
