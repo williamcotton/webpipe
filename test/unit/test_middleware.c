@@ -30,7 +30,8 @@ static void test_middleware_execute_passthrough(void) {
     json_t *input = json_object();
     json_object_set_new(input, "test", json_string("value"));
     
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config");
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", &content_type);
     
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_JSON_EQUAL(input, output);
@@ -49,7 +50,8 @@ static void test_middleware_execute_with_arena(void) {
     json_object_set_new(input, "message", json_string("hello"));
     
     // Test that arena is passed correctly
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -66,7 +68,8 @@ static void test_middleware_execute_error_handling(void) {
     json_t *input = json_object();
     json_object_set_new(input, "test", json_string("value"));
     
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config");
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", &content_type);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -96,7 +99,8 @@ static void test_middleware_execute_with_config(void) {
     json_t *input = json_object();
     const char *config = "test configuration string";
     
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, config, &content_type);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -110,7 +114,8 @@ static void test_middleware_execute_null_input(void) {
     Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
-    json_t *output = middleware->execute(NULL, arena, get_arena_alloc_wrapper(), NULL, NULL);
+    char *content_type = NULL;
+    json_t *output = middleware->execute(NULL, arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type);
     
     // Should handle null input gracefully
     TEST_ASSERT_NULL(output);
@@ -125,7 +130,8 @@ static void test_middleware_execute_null_arena(void) {
     json_t *input = json_object();
     json_object_set_new(input, "test", json_string("value"));
     
-    json_t *output = middleware->execute(input, NULL, get_arena_alloc_wrapper(), NULL, NULL);
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, NULL, get_arena_alloc_wrapper(), NULL, NULL, &content_type);
     
     // Should handle null arena gracefully
     TEST_ASSERT_NOT_NULL(output);
@@ -170,7 +176,8 @@ static void test_middleware_memory_management(void) {
         json_t *input = json_object();
         json_object_set_new(input, "iteration", json_integer(i));
         
-        json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
+        char *content_type = NULL;
+        json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type);
         
         TEST_ASSERT_NOT_NULL(output);
         
@@ -194,8 +201,10 @@ static void test_middleware_concurrent_execution(void) {
     json_object_set_new(input2, "thread", json_string("2"));
     
     // Simulate concurrent execution
-    json_t *output1 = middleware->execute(input1, arena1, get_arena_alloc_wrapper(), NULL, "config1");
-    json_t *output2 = middleware->execute(input2, arena2, get_arena_alloc_wrapper(), NULL, "config2");
+    char *content_type1 = NULL;
+    char *content_type2 = NULL;
+    json_t *output1 = middleware->execute(input1, arena1, get_arena_alloc_wrapper(), NULL, "config1", &content_type1);
+    json_t *output2 = middleware->execute(input2, arena2, get_arena_alloc_wrapper(), NULL, "config2", &content_type2);
     
     TEST_ASSERT_NOT_NULL(output1);
     TEST_ASSERT_NOT_NULL(output2);
@@ -227,7 +236,8 @@ static void test_middleware_json_preservation(void) {
     int num_inputs = sizeof(inputs) / sizeof(inputs[0]);
     
     for (int i = 0; i < num_inputs; i++) {
-        json_t *output = middleware->execute(inputs[i], arena, get_arena_alloc_wrapper(), NULL, NULL);
+        char *content_type = NULL;
+        json_t *output = middleware->execute(inputs[i], arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type);
         
         TEST_ASSERT_NOT_NULL(output);
         TEST_ASSERT_JSON_EQUAL(inputs[i], output);
@@ -268,7 +278,8 @@ static void test_middleware_complex_json_handling(void) {
     
     json_object_set_new(input, "request", request);
     
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type);
     
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_JSON_EQUAL(input, output);
@@ -286,7 +297,8 @@ static void test_middleware_error_propagation(void) {
     json_t *input = json_object();
     json_object_set_new(input, "test", json_string("value"));
     
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -339,6 +351,27 @@ static void test_middleware_registry_operations(void) {
     TEST_ASSERT_NULL(middleware);
 }
 
+static void test_middleware_content_type_handling(void) {
+    // Test that content type parameter is properly passed
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
+    MemoryArena *arena = create_test_arena(1024);
+    
+    json_t *input = json_object();
+    json_object_set_new(input, "test", json_string("value"));
+    
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", &content_type);
+    
+    TEST_ASSERT_NOT_NULL(output);
+    // Mock middleware doesn't set content type, so it should remain NULL
+    TEST_ASSERT_NULL(content_type);
+    
+    json_decref(input);
+    json_decref(output);
+    destroy_test_arena(arena);
+    destroy_mock_middleware(middleware);
+}
+
 int main(void) {
     UNITY_BEGIN();
     
@@ -359,6 +392,7 @@ int main(void) {
     RUN_TEST(test_middleware_error_propagation);
     RUN_TEST(test_middleware_name_collision_handling);
     RUN_TEST(test_middleware_registry_operations);
+    RUN_TEST(test_middleware_content_type_handling);
     
     return UNITY_END();
 }

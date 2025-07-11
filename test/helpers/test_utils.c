@@ -151,7 +151,7 @@ void assert_ast_type(ASTNode *node, ASTNodeType expected_type) {
     TEST_ASSERT_EQUAL(expected_type, node->type);
 }
 
-Middleware *create_mock_middleware(const char *name, json_t *(*execute_func)(json_t *, void *, arena_alloc_func, arena_free_func, const char *)) {
+Middleware *create_mock_middleware(const char *name, json_t *(*execute_func)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **)) {
     Middleware *middleware = malloc(sizeof(Middleware));
     middleware->name = strdup(name);
     middleware->handle = NULL;
@@ -166,20 +166,22 @@ void destroy_mock_middleware(Middleware *middleware) {
     }
 }
 
-json_t *mock_middleware_passthrough(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
+json_t *mock_middleware_passthrough(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType) {
     (void)arena;
     (void)alloc_func;
     (void)free_func;
     (void)config;
+    (void)contentType;  // Mock middleware doesn't change content type
     return json_incref(input);
 }
 
-json_t *mock_middleware_error(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
+json_t *mock_middleware_error(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType) {
     (void)input;
     (void)arena;
     (void)alloc_func;
     (void)free_func;
     (void)config;
+    (void)contentType;  // Mock middleware doesn't change content type
     json_t *error_obj = json_object();
     json_t *errors = json_array();
     json_t *error = json_object();

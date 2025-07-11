@@ -121,7 +121,7 @@ typedef void (*arena_free_func)(void* arena);
 typedef struct {
     char *name;
     void *handle;
-    json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config);
+    json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType);
 } Middleware;
 
 // Function declarations
@@ -195,7 +195,7 @@ json_t *create_request_json(struct MHD_Connection *connection,
                            const char *url, const char *method,
                            const char *upload_data, size_t upload_data_size);
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
-                                json_t **final_response, int *response_code);
+                                json_t **final_response, int *response_code, char **content_type);
 int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena);
 bool match_route(const char *pattern, const char *url, json_t *params);
 

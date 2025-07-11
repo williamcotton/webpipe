@@ -191,8 +191,8 @@ int load_middleware(const char *name) {
     }
     
     // Get middleware execute function
-    json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = 
-        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))dlsym(handle, "middleware_execute");
+    json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **) = 
+        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **))dlsym(handle, "middleware_execute");
     if (!execute) {
         fprintf(stderr, "Error getting middleware_execute for %s: %s\n", name, dlerror());
         dlclose(handle);
@@ -311,21 +311,61 @@ static const char *get_first_error_type(json_t *json) {
     return json_string_value(type_json);
 }
 
-// Helper function to send JSON response
-static enum MHD_Result send_json_response(struct MHD_Connection *connection, 
-                                         json_t *json_data, int status_code) {
-    char *response_str = json_dumps(json_data, JSON_COMPACT);
+// Helper function to send response with flexible content type
+static enum MHD_Result send_response(struct MHD_Connection *connection, 
+                                   json_t *json_data, int status_code, const char *content_type) {
+    char *response_str = NULL;
+    size_t response_len = 0;
+    
+    // Default content type if not specified
+    if (!content_type) {
+        content_type = "application/json";
+    }
+    
+    // Handle different content types
+    if (strcmp(content_type, "application/json") == 0) {
+        // JSON response
+        response_str = json_dumps(json_data, JSON_COMPACT);
+        response_len = strlen(response_str);
+    } else if (strcmp(content_type, "text/html") == 0 || 
+               strcmp(content_type, "text/plain") == 0 ||
+               strncmp(content_type, "text/", 5) == 0) {
+        // HTML or text response - extract string from JSON
+        if (json_is_string(json_data)) {
+            const char *content = json_string_value(json_data);
+            response_len = strlen(content);
+            response_str = malloc(response_len + 1);
+            memcpy(response_str, content, response_len);
+            response_str[response_len] = '\0';
+        } else {
+            // Fallback to JSON if not a string
+            response_str = json_dumps(json_data, JSON_COMPACT);
+            response_len = strlen(response_str);
+            content_type = "application/json";
+        }
+    } else {
+        // Default to JSON for unknown content types
+        response_str = json_dumps(json_data, JSON_COMPACT);
+        response_len = strlen(response_str);
+        content_type = "application/json";
+    }
     
     struct MHD_Response *mhd_response =
         MHD_create_response_from_buffer(
-            strlen(response_str), (void *)response_str,
+            response_len, (void *)response_str,
             MHD_RESPMEM_PERSISTENT);
     
-    MHD_add_response_header(mhd_response, "Content-Type", "application/json");
+    MHD_add_response_header(mhd_response, "Content-Type", content_type);
     (void)MHD_queue_response(connection, (unsigned int)status_code, mhd_response);
     MHD_destroy_response(mhd_response);
     
     return MHD_YES;
+}
+
+// Helper function to send JSON response (backward compatibility)
+static enum MHD_Result send_json_response(struct MHD_Connection *connection, 
+                                         json_t *json_data, int status_code) {
+    return send_response(connection, json_data, status_code, "application/json");
 }
 
 // Helper function to send error response
@@ -353,13 +393,14 @@ static enum MHD_Result process_route(struct MHD_Connection *connection,
     // Execute pipeline with result handling
     json_t *final_response = NULL;
     int response_code = 200;
+    char *content_type = NULL;
     
     int result = execute_pipeline_with_result(route_stmt->data.route_def.pipeline, 
-                                            request, arena, &final_response, &response_code);
+                                            request, arena, &final_response, &response_code, &content_type);
     
     if (result == 0 && final_response) {
         set_current_arena(arena);
-        return send_json_response(connection, final_response, response_code);
+        return send_response(connection, final_response, response_code, content_type);
     } else {
         // Error in pipeline execution
         return send_error_response(connection, 
@@ -392,9 +433,10 @@ static enum MHD_Result find_and_process_route(struct MHD_Connection *connection,
 }
 
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
-                                json_t **final_response, int *response_code) {
+                                json_t **final_response, int *response_code, char **content_type) {
     json_t *current = request;
     *response_code = 200; // Default
+    *content_type = arena_strdup(arena, "application/json"); // Default content type
     
     PipelineStep *step = pipeline;
     while (step) {
@@ -453,7 +495,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
                     json_t *condition_result = NULL;
                     int temp_code;
                     int result = execute_pipeline_with_result(selected_condition->pipeline, 
-                                                            current, arena, &condition_result, &temp_code);
+                                                            current, arena, &condition_result, &temp_code, content_type);
                     // Ensure arena context is still set after recursive execution
                     set_current_arena(arena);
                     if (result == 0 && condition_result) {
@@ -483,7 +525,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         
         // Ensure arena context is set before middleware execution
         set_current_arena(arena);
-        json_t *result = middleware->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config);
+        json_t *result = middleware->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config, content_type);
         // Ensure arena context is still set after middleware execution
         set_current_arena(arena);
         if (!result) {
@@ -535,7 +577,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
                             json_t *condition_result = NULL;
                             int temp_code;
                             int exec_result = execute_pipeline_with_result(selected_condition->pipeline, 
-                                                                    result, arena, &condition_result, &temp_code);
+                                                                    result, arena, &condition_result, &temp_code, content_type);
                             // Ensure arena context is still set after recursive execution
                             set_current_arena(arena);
                             if (exec_result == 0 && condition_result) {
@@ -564,7 +606,8 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
 int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena) {
     json_t *response = NULL;
     int response_code;
-    int result = execute_pipeline_with_result(pipeline, request, arena, &response, &response_code);
+    char *content_type = NULL;
+    int result = execute_pipeline_with_result(pipeline, request, arena, &response, &response_code, &content_type);
     return result;
 }
 

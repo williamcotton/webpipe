@@ -6,7 +6,7 @@
 #include <string.h>
 
 // Function prototype for middleware interface
-json_t *middleware_execute(json_t *input, void *arena, void *alloc, void *free_func, const char *filter);
+json_t *middleware_execute(json_t *input, void *arena, void *alloc, void *free_func, const char *filter, char **contentType);
 
 // Hash table for caching
 #define HASH_TABLE_SIZE 256
@@ -246,7 +246,10 @@ static __thread arena_alloc_func current_middleware_alloc_func = NULL;
 
 // The actual middleware function
 json_t *middleware_execute(json_t *input, void *arena, void *alloc, void *free_func,
-                       const char *filter) {
+                       const char *filter, char **contentType) {
+  // jq middleware produces JSON output, so we don't change content type
+  (void)contentType;  // Unused parameter
+  
   // Set up thread-local arena context for string allocations
   current_middleware_arena = arena;
   current_middleware_alloc_func = (arena_alloc_func)alloc;

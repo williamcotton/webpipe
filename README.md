@@ -235,6 +235,65 @@ POST /users
       |> jq: `{ error: "Internal server error" }`
 ```
 
+## Content-Type Support
+
+The runtime supports multiple content types beyond the default `application/json`. Middleware can set the response content type by modifying the `contentType` parameter.
+
+### Supported Content Types
+
+- **application/json** (default): Standard JSON responses
+- **text/html**: HTML responses for web pages
+- **text/plain**: Plain text responses
+- **text/css**: CSS stylesheets
+- **text/javascript**: JavaScript code
+- **Other text/***: Any text-based content type
+
+### Setting Content Type in Middleware
+
+Middleware can set the content type by assigning to the `contentType` parameter:
+
+```c
+json_t *middleware_execute(json_t *input, void *arena, 
+                          arena_alloc_func alloc_func, 
+                          arena_free_func free_func, 
+                          const char *config,
+                          char **contentType) {
+    // Set content type to HTML
+    *contentType = arena_strdup(arena, "text/html");
+    
+    // Return HTML content as a JSON string
+    return json_string("<html><body><h1>Hello World</h1></body></html>");
+}
+```
+
+### Response Handling
+
+The server automatically handles different content types:
+- **JSON responses**: Content is serialized as JSON
+- **HTML/Text responses**: JSON string values are extracted and sent as-is
+- **Fallback**: Non-string JSON is serialized as JSON with `application/json` content type
+
+This enables seamless support for web pages, APIs, and other content types in the same pipeline framework.
+
+### Future Template Support
+
+The content-type system is designed to support template engines like Mustache. Future middleware could enable:
+
+```wp
+GET /page/:id
+  |> jq: `{ id: .params.id, name: "John Doe" }`
+  |> mustache: `
+    <html>
+      <body>
+        <h1>User {{id}}</h1>
+        <p>Welcome, {{name}}!</p>
+      </body>
+    </html>
+  `
+```
+
+Where the mustache middleware would set `*contentType = "text/html"` and render the template with the JSON data.
+
 ## Middleware Development
 
 Middleware are shared libraries that implement the middleware interface:
@@ -246,7 +305,8 @@ typedef struct {
     json_t *(*execute)(json_t *input, void *arena, 
                       arena_alloc_func alloc_func, 
                       arena_free_func free_func, 
-                      const char *config);
+                      const char *config,
+                      char **contentType);
 } Middleware;
 ```
 
@@ -255,6 +315,7 @@ Each middleware receives:
 - `arena`: Memory arena for allocations
 - `alloc_func`/`free_func`: Arena allocation functions
 - `config`: Middleware configuration string
+- `contentType`: Pointer to content type string (can be modified)
 
 ### Automatic Memory Management with Jansson
 
@@ -286,9 +347,10 @@ typedef void (*arena_free_func)(void* arena);
 typedef struct MemoryArena MemoryArena;
 
 // Middleware interface function
-json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType) {
     // Suppress unused parameter warnings
     (void)free_func;
+    (void)contentType;  // This middleware doesn't change content type
     
     // Handle null input - create empty object
     if (!input) {
