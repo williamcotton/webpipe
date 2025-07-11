@@ -54,10 +54,23 @@ run_leaks() {
     echo "Running leak detection on all tests..."
     local failed=0
     
+    # Platform detection
+    PLATFORM=$(uname -s | tr 'a-z' 'A-Z')
+    
     for test in "${tests[@]}"; do
         echo "Checking leaks for $test"
-        if ! leaks --atExit -- "$test"; then
-            echo "$test has memory leaks"
+        if [ "$PLATFORM" = "LINUX" ]; then
+            if ! valgrind --tool=memcheck --leak-check=full --error-exitcode=1 --num-callers=30 -s "$test"; then
+                echo "$test has memory leaks"
+                failed=1
+            fi
+        elif [ "$PLATFORM" = "DARWIN" ]; then
+            if ! leaks --atExit -- "$test"; then
+                echo "$test has memory leaks"
+                failed=1
+            fi
+        else
+            echo "Unsupported platform: $PLATFORM"
             failed=1
         fi
     done

@@ -1,9 +1,33 @@
+# Platform detection
+PLATFORM := $(shell sh -c 'uname -s 2>/dev/null | tr 'a-z' 'A-Z'')
+
 # Base CFLAGS from compile_flags.txt
 BASE_CFLAGS = $(shell cat compile_flags.txt | tr '\n' ' ')
 
-CC = clang
-CFLAGS = -Wall -Wextra -std=c99 -g -O0 -fno-omit-frame-pointer $(BASE_CFLAGS)
-LDFLAGS = -lmicrohttpd -ljansson -ldl
+# Platform-specific settings
+ifeq ($(PLATFORM),LINUX)
+	CC = clang
+	LUA_LIB = -llua5.4
+	LUA_INCLUDE = -I/usr/include/lua5.4
+	PG_LIBDIR = /usr/lib/x86_64-linux-gnu
+	PG_INCLUDE = -I/usr/include/postgresql
+	SANITIZE_FLAGS = -fsanitize=address,undefined
+	PLATFORM_LIBS = -lm -lpthread -ldl
+	CODESIGN_CMD = 
+else ifeq ($(PLATFORM),DARWIN)
+	CC = clang
+	LUA_LIB = -llua
+	LUA_INCLUDE = -I/opt/homebrew/include/lua
+	PG_LIBDIR = /opt/homebrew/lib/postgresql@14
+	PG_INCLUDE = -I/opt/homebrew/include/postgresql@14
+	SANITIZE_FLAGS = -fsanitize=address,undefined
+	PLATFORM_LIBS = -ldl
+	CODESIGN_CMD = codesign -s - -v -f --entitlements debug.plist
+endif
+
+# Common flags
+CFLAGS = -Wall -Wextra -std=c99 -g -O0 -fno-omit-frame-pointer $(BASE_CFLAGS) $(LUA_INCLUDE) $(PG_INCLUDE)
+LDFLAGS = -lmicrohttpd -ljansson $(LUA_LIB) -L$(PG_LIBDIR) -lpq $(PLATFORM_LIBS)
 
 # Directories
 SRC_DIR = src
@@ -20,7 +44,7 @@ $(BUILD_DIR):
 
 # Main wp executable
 $(BUILD_DIR)/wp: $(BUILD_DIR) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/wp.h
-	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(LDFLAGS) -fsanitize=address
+	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(LDFLAGS) $(SANITIZE_FLAGS)
 
 # Debug target - single wp executable in build directory
 debug: $(BUILD_DIR)/wp-debug plugins
@@ -28,10 +52,16 @@ debug: $(BUILD_DIR)/wp-debug plugins
 # Debug executable
 $(BUILD_DIR)/wp-debug: $(BUILD_DIR) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/wp.h
 	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(LDFLAGS)
-	codesign -s - -v -f --entitlements debug.plist ./build/wp-debug
+ifneq ($(CODESIGN_CMD),)
+	$(CODESIGN_CMD) ./build/wp-debug
+endif
 
 leaks: $(BUILD_DIR)/wp-debug
+ifeq ($(PLATFORM),LINUX)
+	valgrind --tool=memcheck --leak-check=full --error-exitcode=1 --num-callers=30 -s ./build/wp-debug test.wp
+else ifeq ($(PLATFORM),DARWIN)
 	leaks --atExit -- ./build/wp-debug test.wp
+endif
 
 # Plugin targets
 plugins: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so
