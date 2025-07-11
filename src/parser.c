@@ -406,15 +406,16 @@ void stringify_node(FILE *out, ASTNode *node, int level) {
 void free_pipeline(PipelineStep *pipeline) {
   while (pipeline) {
     PipelineStep *next = pipeline->next;
-    free(pipeline->plugin);
     
     // Handle result steps specially - value is an ASTNode*, not a malloc'd string
+    // Check plugin name BEFORE freeing it
     if (pipeline->plugin && strcmp(pipeline->plugin, "result") == 0) {
       free_ast((ASTNode*)pipeline->value);
     } else {
       free(pipeline->value);
     }
     
+    free(pipeline->plugin);
     free(pipeline);
     pipeline = next;
   }
