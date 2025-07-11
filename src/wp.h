@@ -128,6 +128,8 @@ typedef struct {
 char *strdup_safe(const char *s);
 void set_current_arena(MemoryArena *arena);
 MemoryArena *get_current_arena(void);
+void *jansson_arena_malloc(size_t size);
+void jansson_arena_free(void *ptr);
 MemoryArena *arena_create(size_t size);
 void *arena_alloc(MemoryArena *arena, size_t size);
 void arena_free(MemoryArena *arena);

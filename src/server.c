@@ -140,7 +140,7 @@ MemoryArena *get_current_arena(void) {
 }
 
 // Custom jansson allocator functions
-static void *jansson_arena_malloc(size_t size) {
+void *jansson_arena_malloc(size_t size) {
     MemoryArena *arena = get_current_arena();
     if (arena && arena->memory) {  // Check if arena is valid
         void *ptr = arena_alloc(arena, size);
@@ -154,7 +154,7 @@ static void *jansson_arena_malloc(size_t size) {
     return malloc(size);
 }
 
-static void jansson_arena_free(void *ptr) {
+void jansson_arena_free(void *ptr) {
     // Arena memory is freed all at once, so we don't need to do anything here
     (void)ptr;
 }

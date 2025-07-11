@@ -49,7 +49,13 @@ void tearDown(void) {
 }
 
 void test_pg_plugin_simple_select(void) {
-    MemoryArena *arena = create_test_arena(1024);
+    MemoryArena *arena = create_test_arena(1024 * 1024);
+    
+    // Set arena context for JSON allocation
+    set_current_arena(arena);
+    
+    // Set up arena-based jansson allocators to match runtime behavior
+    json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
     
     json_t *input = json_object();
     json_t *sqlParams = json_array();
@@ -68,13 +74,24 @@ void test_pg_plugin_simple_select(void) {
     TEST_ASSERT_NOT_NULL(rows);
     TEST_ASSERT_TRUE(json_is_array(rows));
     
-    json_decref(input);
-    json_decref(output);
+    // Don't call json_decref on arena-allocated objects - they're freed with the arena
+    
+    // Restore default jansson allocators
+    json_set_alloc_funcs(malloc, free);
+    
+    // Clear arena context before cleanup
+    set_current_arena(NULL);
     destroy_test_arena(arena);
 }
 
 void test_pg_plugin_parameterized_query(void) {
-    MemoryArena *arena = create_test_arena(1024);
+    MemoryArena *arena = create_test_arena(1024 * 1024);
+    
+    // Set arena context for JSON allocation
+    set_current_arena(arena);
+    
+    // Set up arena-based jansson allocators to match runtime behavior
+    json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
     
     json_t *input = json_object();
     json_t *sqlParams = json_array();
@@ -87,13 +104,24 @@ void test_pg_plugin_parameterized_query(void) {
     
     TEST_ASSERT_NOT_NULL(output);
     
-    json_decref(input);
-    json_decref(output);
+    // Don't call json_decref on arena-allocated objects - they're freed with the arena
+    
+    // Restore default jansson allocators
+    json_set_alloc_funcs(malloc, free);
+    
+    // Clear arena context before cleanup
+    set_current_arena(NULL);
     destroy_test_arena(arena);
 }
 
 void test_pg_plugin_sql_error_handling(void) {
-    MemoryArena *arena = create_test_arena(1024);
+    MemoryArena *arena = create_test_arena(1024 * 1024);
+    
+    // Set arena context for JSON allocation
+    set_current_arena(arena);
+    
+    // Set up arena-based jansson allocators to match runtime behavior
+    json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
     
     json_t *input = json_object();
     json_t *sqlParams = json_array();
@@ -111,10 +139,17 @@ void test_pg_plugin_sql_error_handling(void) {
         TEST_ASSERT_GREATER_THAN(0, json_array_size(errors));
     }
     
-    json_decref(input);
-    json_decref(output);
+    // Don't call json_decref on arena-allocated objects - they're freed with the arena
+    
+    // Restore default jansson allocators
+    json_set_alloc_funcs(malloc, free);
+    
+    // Clear arena context before cleanup
+    set_current_arena(NULL);
     destroy_test_arena(arena);
 }
+
+
 
 int main(void) {
     UNITY_BEGIN();
