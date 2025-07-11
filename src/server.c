@@ -54,12 +54,16 @@ void *arena_alloc(MemoryArena *arena, size_t size) {
         return NULL;
     }
     
-    if (arena->used + size > arena->size) {
+    // Align to 8-byte boundary for struct alignment
+    size_t alignment = 8;
+    size_t aligned_used = (arena->used + alignment - 1) & ~(alignment - 1);
+    
+    if (aligned_used + size > arena->size) {
         return NULL; // Out of memory
     }
     
-    void *ptr = arena->memory + arena->used;
-    arena->used += size;
+    void *ptr = arena->memory + aligned_used;
+    arena->used = aligned_used + size;
     return ptr;
 }
 
