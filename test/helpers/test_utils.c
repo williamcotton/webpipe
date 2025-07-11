@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <microhttpd.h>
 
-// Arena allocation wrapper for plugin interface
+// Arena allocation wrapper for middleware interface
 static void *arena_alloc_wrapper(void *arena, size_t size) {
     return arena_alloc((MemoryArena *)arena, size);
 }
@@ -151,22 +151,22 @@ void assert_ast_type(ASTNode *node, ASTNodeType expected_type) {
     TEST_ASSERT_EQUAL(expected_type, node->type);
 }
 
-Plugin *create_mock_plugin(const char *name, json_t *(*execute_func)(json_t *, void *, arena_alloc_func, arena_free_func, const char *)) {
-    Plugin *plugin = malloc(sizeof(Plugin));
-    plugin->name = strdup(name);
-    plugin->handle = NULL;
-    plugin->execute = execute_func;
-    return plugin;
+Middleware *create_mock_middleware(const char *name, json_t *(*execute_func)(json_t *, void *, arena_alloc_func, arena_free_func, const char *)) {
+    Middleware *middleware = malloc(sizeof(Middleware));
+    middleware->name = strdup(name);
+    middleware->handle = NULL;
+    middleware->execute = execute_func;
+    return middleware;
 }
 
-void destroy_mock_plugin(Plugin *plugin) {
-    if (plugin) {
-        free(plugin->name);
-        free(plugin);
+void destroy_mock_middleware(Middleware *middleware) {
+    if (middleware) {
+        free(middleware->name);
+        free(middleware);
     }
 }
 
-json_t *mock_plugin_passthrough(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
+json_t *mock_middleware_passthrough(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
     (void)arena;
     (void)alloc_func;
     (void)free_func;
@@ -174,7 +174,7 @@ json_t *mock_plugin_passthrough(json_t *input, void *arena, arena_alloc_func all
     return json_incref(input);
 }
 
-json_t *mock_plugin_error(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
+json_t *mock_middleware_error(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
     (void)input;
     (void)arena;
     (void)alloc_func;
@@ -185,7 +185,7 @@ json_t *mock_plugin_error(json_t *input, void *arena, arena_alloc_func alloc_fun
     json_t *error = json_object();
     
     json_object_set_new(error, "type", json_string("mockError"));
-    json_object_set_new(error, "message", json_string("Mock plugin error"));
+    json_object_set_new(error, "message", json_string("Mock middleware error"));
     json_array_append_new(errors, error);
     json_object_set_new(error_obj, "errors", errors);
     
@@ -298,20 +298,20 @@ void restore_memory_functions(void) {
     // TODO: Implement memory function restoration
 }
 
-void simulate_plugin_failure(const char *plugin_name __attribute__((unused))) {
-    // TODO: Implement plugin failure simulation
+void simulate_middleware_failure(const char *middleware_name __attribute__((unused))) {
+    // TODO: Implement middleware failure simulation
 }
 
-void restore_plugin_functions(void) {
-    // TODO: Implement plugin function restoration
+void restore_middleware_functions(void) {
+    // TODO: Implement middleware function restoration
 }
 
 // Compatible runtime structure definition for tests
 typedef struct WPRuntime {
     struct MHD_Daemon *daemon;
     ASTNode *program;
-    Plugin *plugins;
-    int plugin_count;
+    Middleware *middlewares;
+    int middleware_count;
     json_t *variables;
     ParseContext *parse_ctx;
 } WPRuntime;
@@ -334,12 +334,12 @@ int init_test_runtime(const char *wp_file) {
     // Initialize fields
     test_runtime->daemon = NULL;
     test_runtime->program = NULL;
-    test_runtime->plugins = NULL;
-    test_runtime->plugin_count = 0;
+    test_runtime->middlewares = NULL;
+    test_runtime->middleware_count = 0;
     test_runtime->variables = json_object();  // Use default jansson allocators
     test_runtime->parse_ctx = NULL;
     
-    // Parse the WP file for plugin loading without setting up HTTP server
+    // Parse the WP file for middleware loading without setting up HTTP server
     FILE *file = fopen(wp_file, "r");
     if (!file) {
         fprintf(stderr, "Error: Could not open file '%s'\n", wp_file);
@@ -387,14 +387,14 @@ int init_test_runtime(const char *wp_file) {
         return -1;
     }
     
-    // Load plugins without custom allocators - skip for now to avoid circular dependency
-    // char *plugin_names[64];
-    // int plugin_count = 0;
-    // collect_plugin_names_from_ast(test_runtime->program, plugin_names, &plugin_count, 64);
+    // Load middlewares without custom allocators - skip for now to avoid circular dependency
+    // char *middleware_names[64];
+    // int middleware_count = 0;
+    // collect_middleware_names_from_ast(test_runtime->program, middleware_names, &middleware_count, 64);
     
-    // for (int i = 0; i < plugin_count; i++) {
-    //     if (load_plugin(plugin_names[i]) != 0) {
-    //         fprintf(stderr, "Warning: Failed to load %s plugin\n", plugin_names[i]);
+    // for (int i = 0; i < middleware_count; i++) {
+    //     if (load_middleware(middleware_names[i]) != 0) {
+    //         fprintf(stderr, "Warning: Failed to load %s middleware\n", middleware_names[i]);
     //     }
     // }
     
@@ -413,12 +413,12 @@ void cleanup_test_runtime(void) {
             MHD_stop_daemon(test_runtime->daemon);
         }
         
-        // Cleanup plugins
-        for (int i = 0; i < test_runtime->plugin_count; i++) {
-            dlclose(test_runtime->plugins[i].handle);
-            free(test_runtime->plugins[i].name);
+        // Cleanup middlewares
+        for (int i = 0; i < test_runtime->middleware_count; i++) {
+            dlclose(test_runtime->middlewares[i].handle);
+            free(test_runtime->middlewares[i].name);
         }
-        free(test_runtime->plugins);
+        free(test_runtime->middlewares);
         
         // Cleanup other resources
         if (test_runtime->variables) {

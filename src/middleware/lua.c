@@ -7,7 +7,7 @@
 #include <string.h>
 #include <stdbool.h>
 
-// Arena allocation function types for plugins
+// Arena allocation function types for middlewares
 typedef void* (*arena_alloc_func)(void* arena, size_t size);
 typedef void (*arena_free_func)(void* arena);
 
@@ -18,7 +18,7 @@ typedef struct MemoryArena MemoryArena;
 static void jansson_to_lua(lua_State *L, json_t *json);
 static json_t *lua_to_jansson(lua_State *L, int index);
 static json_t *lua_to_jansson_with_depth(lua_State *L, int index, int depth);
-json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code);
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code);
 
 // Conversion functions
 void jansson_to_lua(lua_State *L, json_t *json) {
@@ -166,8 +166,8 @@ static int lua_panic_handler(lua_State *L) {
     return 0; // Don't call abort()
 }
 
-// Plugin execute function
-json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code) {
+// Middleware execute function
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code) {
   (void)free_func; // Suppress unused parameter warning
     
     // Handle null or empty lua_code

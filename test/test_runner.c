@@ -7,7 +7,7 @@
 void run_arena_tests(void);
 void run_lexer_tests(void);
 void run_parser_tests(void);
-void run_plugin_tests(void);
+void run_middleware_tests(void);
 void run_jq_tests(void);
 void run_lua_tests(void);
 void run_pg_tests(void);
@@ -26,7 +26,7 @@ int main(int argc, char *argv[]) {
             run_arena_tests();
             run_lexer_tests();
             run_parser_tests();
-            run_plugin_tests();
+            run_middleware_tests();
         } else if (strcmp(argv[1], "integration") == 0) {
             printf("Running integration tests...\n");
             run_jq_tests();
@@ -45,7 +45,7 @@ int main(int argc, char *argv[]) {
             run_arena_tests();
             run_lexer_tests();
             run_parser_tests();
-            run_plugin_tests();
+            run_middleware_tests();
             run_jq_tests();
             run_lua_tests();
             run_pg_tests();
@@ -63,7 +63,7 @@ int main(int argc, char *argv[]) {
         run_arena_tests();
         run_lexer_tests();
         run_parser_tests();
-        run_plugin_tests();
+        run_middleware_tests();
         run_jq_tests();
         run_lua_tests();
         run_pg_tests();

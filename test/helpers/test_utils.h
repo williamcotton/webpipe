@@ -46,11 +46,11 @@ ASTNode *parse_test_string(const char *source);
 void free_test_ast(ASTNode *ast);
 void assert_ast_type(ASTNode *node, ASTNodeType expected_type);
 
-// Plugin testing utilities
-Plugin *create_mock_plugin(const char *name, json_t *(*execute_func)(json_t *, void *, arena_alloc_func, arena_free_func, const char *));
-void destroy_mock_plugin(Plugin *plugin);
-json_t *mock_plugin_passthrough(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config);
-json_t *mock_plugin_error(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config);
+// Middleware testing utilities
+Middleware *create_mock_middleware(const char *name, json_t *(*execute_func)(json_t *, void *, arena_alloc_func, arena_free_func, const char *));
+void destroy_mock_middleware(Middleware *middleware);
+json_t *mock_middleware_passthrough(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config);
+json_t *mock_middleware_error(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config);
 
 // HTTP testing utilities
 struct test_http_response {
@@ -75,14 +75,14 @@ void start_timer(void);
 double end_timer(void);
 void assert_execution_time_under(double max_seconds);
 
-// Arena allocation wrapper for plugin interface
+// Arena allocation wrapper for middleware interface
 arena_alloc_func get_arena_alloc_wrapper(void);
 
 // Error simulation utilities
 void simulate_memory_shortage(void);
 void restore_memory_functions(void);
-void simulate_plugin_failure(const char *plugin_name);
-void restore_plugin_functions(void);
+void simulate_middleware_failure(const char *middleware_name);
+void restore_middleware_functions(void);
 
 // Test-safe runtime initialization
 int init_test_runtime(const char *wp_file);

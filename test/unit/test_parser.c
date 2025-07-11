@@ -42,7 +42,7 @@ static void test_parser_parse_simple_route(void) {
     // Check pipeline
     PipelineStep *step = route->data.route_def.pipeline;
     TEST_ASSERT_NOT_NULL(step);
-    TEST_ASSERT_STRING_EQUAL("jq", step->plugin);
+    TEST_ASSERT_STRING_EQUAL("jq", step->middleware);
     TEST_ASSERT_STRING_EQUAL("{ message: \"hello\" }", step->value);
     TEST_ASSERT_FALSE(step->is_variable);
     TEST_ASSERT_NULL(step->next);
@@ -66,21 +66,21 @@ static void test_parser_parse_multi_step_pipeline(void) {
     // Check first step
     PipelineStep *step1 = route->data.route_def.pipeline;
     TEST_ASSERT_NOT_NULL(step1);
-    TEST_ASSERT_STRING_EQUAL("jq", step1->plugin);
+    TEST_ASSERT_STRING_EQUAL("jq", step1->middleware);
     TEST_ASSERT_STRING_EQUAL("{ sqlParams: [.params.id] }", step1->value);
     TEST_ASSERT_FALSE(step1->is_variable);
     
     // Check second step
     PipelineStep *step2 = step1->next;
     TEST_ASSERT_NOT_NULL(step2);
-    TEST_ASSERT_STRING_EQUAL("pg", step2->plugin);
+    TEST_ASSERT_STRING_EQUAL("pg", step2->middleware);
     TEST_ASSERT_STRING_EQUAL("SELECT * FROM pages WHERE id = $1", step2->value);
     TEST_ASSERT_FALSE(step2->is_variable);
     
     // Check third step
     PipelineStep *step3 = step2->next;
     TEST_ASSERT_NOT_NULL(step3);
-    TEST_ASSERT_STRING_EQUAL("jq", step3->plugin);
+    TEST_ASSERT_STRING_EQUAL("jq", step3->middleware);
     TEST_ASSERT_STRING_EQUAL("{ page: .data.rows[0] }", step3->value);
     TEST_ASSERT_FALSE(step3->is_variable);
     TEST_ASSERT_NULL(step3->next);
@@ -98,7 +98,7 @@ static void test_parser_parse_variable_assignment(void) {
     
     ASTNode *var_assign = ast->data.program.statements[0];
     assert_ast_type(var_assign, AST_VARIABLE_ASSIGNMENT);
-    TEST_ASSERT_STRING_EQUAL("pg", var_assign->data.var_assign.plugin);
+    TEST_ASSERT_STRING_EQUAL("pg", var_assign->data.var_assign.middleware);
     TEST_ASSERT_STRING_EQUAL("teamsQuery", var_assign->data.var_assign.name);
     TEST_ASSERT_STRING_EQUAL("SELECT * FROM teams", var_assign->data.var_assign.value);
     
@@ -118,7 +118,7 @@ static void test_parser_parse_variable_usage(void) {
     
     PipelineStep *step = route->data.route_def.pipeline;
     TEST_ASSERT_NOT_NULL(step);
-    TEST_ASSERT_STRING_EQUAL("pg", step->plugin);
+    TEST_ASSERT_STRING_EQUAL("pg", step->middleware);
     TEST_ASSERT_STRING_EQUAL("teamsQuery", step->value);
     TEST_ASSERT_TRUE(step->is_variable);
     
@@ -139,11 +139,11 @@ static void test_parser_parse_result_step_simple(void) {
     // Find the result step in the pipeline
     PipelineStep *step = route->data.route_def.pipeline;
     TEST_ASSERT_NOT_NULL(step);
-    TEST_ASSERT_STRING_EQUAL("jq", step->plugin);
+    TEST_ASSERT_STRING_EQUAL("jq", step->middleware);
     
     step = step->next;
     TEST_ASSERT_NOT_NULL(step);
-    TEST_ASSERT_STRING_EQUAL("result", step->plugin);
+    TEST_ASSERT_STRING_EQUAL("result", step->middleware);
     
     free_test_ast(ast);
 }
@@ -295,13 +295,13 @@ static void test_parser_parse_complex_route_patterns(void) {
     }
 }
 
-static void test_parser_parse_pipeline_with_various_plugins(void) {
-    const char *plugins[] = {"jq", "lua", "pg", "validate", "auth"};
-    int num_plugins = sizeof(plugins) / sizeof(plugins[0]);
+static void test_parser_parse_pipeline_with_various_middlewares(void) {
+    const char *middlewares[] = {"jq", "lua", "pg", "validate", "auth"};
+    int num_middlewares = sizeof(middlewares) / sizeof(middlewares[0]);
     
-    for (int i = 0; i < num_plugins; i++) {
+    for (int i = 0; i < num_middlewares; i++) {
         char source[256];
-        snprintf(source, sizeof(source), "GET /test\n  |> %s: `test config`", plugins[i]);
+        snprintf(source, sizeof(source), "GET /test\n  |> %s: `test config`", middlewares[i]);
         
         ASTNode *ast = parse_test_string(source);
         
@@ -312,7 +312,7 @@ static void test_parser_parse_pipeline_with_various_plugins(void) {
         ASTNode *route = ast->data.program.statements[0];
         PipelineStep *step = route->data.route_def.pipeline;
         TEST_ASSERT_NOT_NULL(step);
-        TEST_ASSERT_STRING_EQUAL(plugins[i], step->plugin);
+        TEST_ASSERT_STRING_EQUAL(middlewares[i], step->middleware);
         TEST_ASSERT_STRING_EQUAL("test config", step->value);
         
         free_test_ast(ast);
@@ -330,7 +330,7 @@ static void test_parser_parse_multiline_string_in_pipeline(void) {
     ASTNode *route = ast->data.program.statements[0];
     PipelineStep *step = route->data.route_def.pipeline;
     TEST_ASSERT_NOT_NULL(step);
-    TEST_ASSERT_STRING_EQUAL("jq", step->plugin);
+    TEST_ASSERT_STRING_EQUAL("jq", step->middleware);
     TEST_ASSERT_STRING_EQUAL("{\n    message: \"hello\",\n    timestamp: now\n  }", step->value);
     
     free_test_ast(ast);
@@ -359,7 +359,7 @@ static void test_parser_parse_multiline_string_in_pipeline(void) {
 // static void test_parser_error_handling_invalid_syntax(void) {
 //     const char *invalid_sources[] = {
 //         "GET",                    // Missing route
-//         "GET /test |>",          // Missing plugin
+//         "GET /test |>",          // Missing middleware
 //         "GET /test |> jq",       // Missing colon
 //         "GET /test |> jq:",      // Missing value
 //         "INVALID /test",         // Invalid HTTP method
@@ -397,7 +397,7 @@ int main(void) {
     RUN_TEST(test_parser_parse_comments_ignored);
     RUN_TEST(test_parser_parse_all_http_methods);
     RUN_TEST(test_parser_parse_complex_route_patterns);
-    RUN_TEST(test_parser_parse_pipeline_with_various_plugins);
+    RUN_TEST(test_parser_parse_pipeline_with_various_middlewares);
     RUN_TEST(test_parser_parse_multiline_string_in_pipeline);
     // RUN_TEST(test_parser_parse_with_context);
     // RUN_TEST(test_parser_error_handling_invalid_syntax);

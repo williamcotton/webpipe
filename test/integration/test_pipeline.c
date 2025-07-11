@@ -14,24 +14,24 @@ void tearDown(void) {
     // Tear down function called after each test
 }
 
-// Load the actual jq plugin for testing
-static void *jq_plugin_handle = NULL;
-static json_t *(*jq_plugin_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = NULL;
+// Load the actual jq middleware for testing
+static void *jq_middleware_handle = NULL;
+static json_t *(*jq_middleware_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = NULL;
 
-static int load_jq_plugin_for_test(void) {
-    if (jq_plugin_handle) return 0; // Already loaded
+static int load_jq_middleware_for_test(void) {
+    if (jq_middleware_handle) return 0; // Already loaded
     
-    jq_plugin_handle = dlopen("./plugins/jq.so", RTLD_LAZY);
-    if (!jq_plugin_handle) {
+    jq_middleware_handle = dlopen("./middleware/jq.so", RTLD_LAZY);
+    if (!jq_middleware_handle) {
         return -1;
     }
     
-    void *plugin_func = dlsym(jq_plugin_handle, "plugin_execute");
-    jq_plugin_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
-                        (uintptr_t)plugin_func;
-    if (!plugin_func) {
-        dlclose(jq_plugin_handle);
-        jq_plugin_handle = NULL;
+    void *middleware_func = dlsym(jq_middleware_handle, "middleware_execute");
+    jq_middleware_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
+                        (uintptr_t)middleware_func;
+    if (!middleware_func) {
+        dlclose(jq_middleware_handle);
+        jq_middleware_handle = NULL;
         return -1;
     }
     
@@ -41,16 +41,16 @@ static int load_jq_plugin_for_test(void) {
 static void test_pipeline_single_step(void) {
     MemoryArena *arena = create_test_arena(1024);
     
-    // Load jq plugin for this test
-    if (load_jq_plugin_for_test() != 0) {
-        TEST_FAIL_MESSAGE("Failed to load jq plugin");
+    // Load jq middleware for this test
+    if (load_jq_middleware_for_test() != 0) {
+        TEST_FAIL_MESSAGE("Failed to load jq middleware");
     }
     
     json_t *input = create_test_request("GET", "/test");
     
-    // Test single step execution by calling plugin directly
+    // Test single step execution by calling middleware directly
     const char *config = "{ \"message\": \"hello\" }";
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -67,23 +67,23 @@ static void test_pipeline_single_step(void) {
 static void test_pipeline_multi_step(void) {
     MemoryArena *arena = create_test_arena(1024);
     
-    // Load jq plugin for this test
-    if (load_jq_plugin_for_test() != 0) {
-        TEST_FAIL_MESSAGE("Failed to load jq plugin");
+    // Load jq middleware for this test
+    if (load_jq_middleware_for_test() != 0) {
+        TEST_FAIL_MESSAGE("Failed to load jq middleware");
     }
     
     json_t *input = create_test_request("GET", "/test");
     
-    // Test multi-step execution by calling plugins sequentially
+    // Test multi-step execution by calling middlewares sequentially
     // Step 1: Create an object with id
     const char *config1 = "{ \"id\": \"123\" }";
-    json_t *step1_output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config1);
+    json_t *step1_output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config1);
     
     TEST_ASSERT_NOT_NULL(step1_output);
     
     // Step 2: Transform the output from step 1
     const char *config2 = "{ \"user_id\": .id }";
-    json_t *step2_output = jq_plugin_execute(step1_output, arena, get_arena_alloc_wrapper(), NULL, config2);
+    json_t *step2_output = jq_middleware_execute(step1_output, arena, get_arena_alloc_wrapper(), NULL, config2);
     
     TEST_ASSERT_NOT_NULL(step2_output);
     

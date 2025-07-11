@@ -67,14 +67,14 @@ PipelineStep *parser_parse_pipeline(Parser *parser) {
 
   while (parser_match(parser, TOKEN_PIPE)) {
     if (!parser_check(parser, TOKEN_IDENTIFIER)) {
-      fprintf(stderr, "Expected plugin name after |>\n");
+      fprintf(stderr, "Expected middleware name after |>\n");
       return head;
     }
 
-    Token *plugin = parser_advance(parser);
+    Token *middleware = parser_advance(parser);
 
     // Check for result step
-    if (strcmp(plugin->value, "result") == 0) {
+    if (strcmp(middleware->value, "result") == 0) {
       // This is a result step - no colon needed, parse result conditions
       parser_consume_newlines(parser);
       
@@ -84,10 +84,10 @@ PipelineStep *parser_parse_pipeline(Parser *parser) {
       PipelineStep *step;
       if (parser->ctx && parser->ctx->parse_arena) {
         step = arena_alloc(parser->ctx->parse_arena, sizeof(PipelineStep));
-        step->plugin = arena_strdup(parser->ctx->parse_arena, "result");
+        step->middleware = arena_strdup(parser->ctx->parse_arena, "result");
       } else {
         step = malloc(sizeof(PipelineStep));
-        step->plugin = strdup_safe("result");
+        step->middleware = strdup_safe("result");
       }
       step->value = (char*)result_node; // Store result node as value
       step->is_variable = false;
@@ -105,7 +105,7 @@ PipelineStep *parser_parse_pipeline(Parser *parser) {
     }
 
     if (!parser_match(parser, TOKEN_COLON)) {
-      fprintf(stderr, "Expected : after plugin name\n");
+      fprintf(stderr, "Expected : after middleware name\n");
       return head;
     }
 
@@ -131,11 +131,11 @@ PipelineStep *parser_parse_pipeline(Parser *parser) {
     PipelineStep *step;
     if (parser->ctx && parser->ctx->parse_arena) {
       step = arena_alloc(parser->ctx->parse_arena, sizeof(PipelineStep));
-      step->plugin = arena_strdup(parser->ctx->parse_arena, plugin->value);
+      step->middleware = arena_strdup(parser->ctx->parse_arena, middleware->value);
       step->value = value; // Already allocated in arena above
     } else {
       step = malloc(sizeof(PipelineStep));
-      step->plugin = strdup_safe(plugin->value);
+      step->middleware = strdup_safe(middleware->value);
       step->value = value;
     }
     step->is_variable = is_variable;
@@ -265,7 +265,7 @@ ASTNode *parser_parse_route_definition(Parser *parser) {
 }
 
 ASTNode *parser_parse_variable_assignment(Parser *parser) {
-  Token *plugin = parser_advance(parser);
+  Token *middleware = parser_advance(parser);
   Token *name = parser_advance(parser);
 
   if (!parser_match(parser, TOKEN_EQUALS)) {
@@ -283,12 +283,12 @@ ASTNode *parser_parse_variable_assignment(Parser *parser) {
   ASTNode *node;
   if (parser->ctx && parser->ctx->parse_arena) {
     node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
-    node->data.var_assign.plugin = arena_strdup(parser->ctx->parse_arena, plugin->value);
+    node->data.var_assign.middleware = arena_strdup(parser->ctx->parse_arena, middleware->value);
     node->data.var_assign.name = arena_strdup(parser->ctx->parse_arena, name->value);
     node->data.var_assign.value = arena_strdup(parser->ctx->parse_arena, value->value);
   } else {
     node = malloc(sizeof(ASTNode));
-    node->data.var_assign.plugin = strdup_safe(plugin->value);
+    node->data.var_assign.middleware = strdup_safe(middleware->value);
     node->data.var_assign.name = strdup_safe(name->value);
     node->data.var_assign.value = strdup_safe(value->value);
   }
@@ -305,7 +305,7 @@ ASTNode *parser_parse_statement(Parser *parser) {
   // Check for variable assignment
   if (parser_check(parser, TOKEN_IDENTIFIER)) {
     int saved = parser->current;
-    parser_advance(parser); // plugin
+    parser_advance(parser); // middleware
     if (parser_check(parser, TOKEN_IDENTIFIER)) {
       parser_advance(parser); // name
       if (parser_check(parser, TOKEN_EQUALS)) {
@@ -356,7 +356,7 @@ void stringify_pipeline(FILE *out, PipelineStep *pipeline, int level) {
   PipelineStep *step = pipeline;
   while (step) {
     stringify_indent(out, level);
-    fprintf(out, "|> %s: ", step->plugin);
+    fprintf(out, "|> %s: ", step->middleware);
     if (step->is_variable) {
       fprintf(out, "%s", step->value);
     } else {
@@ -388,7 +388,7 @@ void stringify_node(FILE *out, ASTNode *node, int level) {
     break;
 
   case AST_VARIABLE_ASSIGNMENT:
-    fprintf(out, "%s %s = `%s`\n", node->data.var_assign.plugin,
+    fprintf(out, "%s %s = `%s`\n", node->data.var_assign.middleware,
             node->data.var_assign.name, node->data.var_assign.value);
     break;
 
@@ -408,14 +408,14 @@ void free_pipeline(PipelineStep *pipeline) {
     PipelineStep *next = pipeline->next;
     
     // Handle result steps specially - value is an ASTNode*, not a malloc'd string
-    // Check plugin name BEFORE freeing it
-    if (pipeline->plugin && strcmp(pipeline->plugin, "result") == 0) {
+    // Check middleware name BEFORE freeing it
+    if (pipeline->middleware && strcmp(pipeline->middleware, "result") == 0) {
       free_ast((ASTNode *)(uintptr_t)(pipeline->value));
     } else {
       free(pipeline->value);
     }
     
-    free(pipeline->plugin);
+    free(pipeline->middleware);
     free(pipeline);
     pipeline = next;
   }
@@ -450,7 +450,7 @@ void free_ast(ASTNode *node) {
     break;
 
   case AST_VARIABLE_ASSIGNMENT:
-    free(node->data.var_assign.plugin);
+    free(node->data.var_assign.middleware);
     free(node->data.var_assign.name);
     free(node->data.var_assign.value);
     break;

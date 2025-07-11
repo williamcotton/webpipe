@@ -81,14 +81,14 @@ static void test_server_request_json_creation(void) {
     arena_free(arena);
 }
 
-static void test_server_plugin_loading(void) {
-    // Test plugin loading by directly using dlopen/dlsym like the actual plugin loading
-    void *handle = dlopen("./plugins/jq.so", RTLD_LAZY);
+static void test_server_middleware_loading(void) {
+    // Test middleware loading by directly using dlopen/dlsym like the actual middleware loading
+    void *handle = dlopen("./middleware/jq.so", RTLD_LAZY);
     TEST_ASSERT_NOT_NULL(handle);
     
-    // Test that we can find the plugin_execute function
+    // Test that we can find the middleware_execute function
     json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = 
-        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))dlsym(handle, "plugin_execute");
+        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))dlsym(handle, "middleware_execute");
     TEST_ASSERT_NOT_NULL(execute);
     
     // Test that the function works
@@ -107,8 +107,8 @@ static void test_server_plugin_loading(void) {
     json_decref(output);
     dlclose(handle);
     
-    // Test loading non-existent plugin
-    void *bad_handle = dlopen("./plugins/nonexistent.so", RTLD_LAZY);
+    // Test loading non-existent middleware
+    void *bad_handle = dlopen("./middleware/nonexistent.so", RTLD_LAZY);
     TEST_ASSERT_NULL(bad_handle);
 }
 
@@ -145,7 +145,7 @@ int main(void) {
     RUN_TEST(test_server_startup_shutdown);
     RUN_TEST(test_server_route_matching);
     RUN_TEST(test_server_request_json_creation);
-    RUN_TEST(test_server_plugin_loading);
+    RUN_TEST(test_server_middleware_loading);
     RUN_TEST(test_server_memory_arena_per_request);
     
     return UNITY_END();

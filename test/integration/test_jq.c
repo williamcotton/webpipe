@@ -3,60 +3,60 @@
 #include "../../src/wp.h"
 #include <string.h>
 
-// Load the actual jq plugin
+// Load the actual jq middleware
 #include <dlfcn.h>
-static void *jq_plugin_handle = NULL;
-static json_t *(*jq_plugin_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = NULL;
+static void *jq_middleware_handle = NULL;
+static json_t *(*jq_middleware_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = NULL;
 
-static int load_jq_plugin(void) {
-    if (jq_plugin_handle) return 0; // Already loaded
+static int load_jq_middleware(void) {
+    if (jq_middleware_handle) return 0; // Already loaded
     
-    jq_plugin_handle = dlopen("./plugins/jq.so", RTLD_LAZY);
-    if (!jq_plugin_handle) {
-        fprintf(stderr, "Failed to load jq plugin: %s\n", dlerror());
+    jq_middleware_handle = dlopen("./middleware/jq.so", RTLD_LAZY);
+    if (!jq_middleware_handle) {
+        fprintf(stderr, "Failed to load jq middleware: %s\n", dlerror());
         return -1;
     }
     
-    void *plugin_func = dlsym(jq_plugin_handle, "plugin_execute");
-    jq_plugin_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
-                        (uintptr_t)plugin_func;
-    if (!plugin_func) {
-        fprintf(stderr, "Failed to find plugin_execute in jq plugin: %s\n", dlerror());
-        dlclose(jq_plugin_handle);
-        jq_plugin_handle = NULL;
+    void *middleware_func = dlsym(jq_middleware_handle, "middleware_execute");
+    jq_middleware_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
+                        (uintptr_t)middleware_func;
+    if (!middleware_func) {
+        fprintf(stderr, "Failed to find middleware_execute in jq middleware: %s\n", dlerror());
+        dlclose(jq_middleware_handle);
+        jq_middleware_handle = NULL;
         return -1;
     }
     
     return 0;
 }
 
-static void unload_jq_plugin(void) {
-    if (jq_plugin_handle) {
-        dlclose(jq_plugin_handle);
-        jq_plugin_handle = NULL;
-        jq_plugin_execute = NULL;
+static void unload_jq_middleware(void) {
+    if (jq_middleware_handle) {
+        dlclose(jq_middleware_handle);
+        jq_middleware_handle = NULL;
+        jq_middleware_execute = NULL;
     }
 }
 
 void setUp(void) {
     // Set up function called before each test
-    if (load_jq_plugin() != 0) {
-        TEST_FAIL_MESSAGE("Failed to load jq plugin");
+    if (load_jq_middleware() != 0) {
+        TEST_FAIL_MESSAGE("Failed to load jq middleware");
     }
 }
 
 void tearDown(void) {
     // Tear down function called after each test
-    unload_jq_plugin();
+    unload_jq_middleware();
 }
 
-static void test_jq_plugin_simple_passthrough(void) {
+static void test_jq_middleware_simple_passthrough(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = ".";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_JSON_EQUAL(input, output);
@@ -66,7 +66,7 @@ static void test_jq_plugin_simple_passthrough(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_field_extraction(void) {
+static void test_jq_middleware_field_extraction(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *params = json_object();
@@ -75,7 +75,7 @@ static void test_jq_plugin_field_extraction(void) {
     
     const char *config = "{ id: .params.id }";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -89,13 +89,13 @@ static void test_jq_plugin_field_extraction(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_object_construction(void) {
+static void test_jq_middleware_object_construction(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = "{ message: \"Hello, World!\", status: \"success\" }";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -112,7 +112,7 @@ static void test_jq_plugin_object_construction(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_array_operations(void) {
+static void test_jq_middleware_array_operations(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *params = json_object();
@@ -121,7 +121,7 @@ static void test_jq_plugin_array_operations(void) {
     
     const char *config = "{ sqlParams: [.params.id] }";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -140,7 +140,7 @@ static void test_jq_plugin_array_operations(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_conditional_expression(void) {
+static void test_jq_middleware_conditional_expression(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *params = json_object();
@@ -149,7 +149,7 @@ static void test_jq_plugin_conditional_expression(void) {
     
     const char *config = "if .params.id then { id: .params.id } else { error: \"No ID\" } end";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -166,7 +166,7 @@ static void test_jq_plugin_conditional_expression(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_string_manipulation(void) {
+static void test_jq_middleware_string_manipulation(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *params = json_object();
@@ -175,7 +175,7 @@ static void test_jq_plugin_string_manipulation(void) {
     
     const char *config = "{ id: (.params.id | tostring), idNumber: (.params.id | tonumber) }";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -202,7 +202,7 @@ static void test_jq_plugin_string_manipulation(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_nested_object_access(void) {
+static void test_jq_middleware_nested_object_access(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *body = json_object();
@@ -215,7 +215,7 @@ static void test_jq_plugin_nested_object_access(void) {
     
     const char *config = "{ name: .body.user.name, email: .body.user.email }";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -233,7 +233,7 @@ static void test_jq_plugin_nested_object_access(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_array_transformation(void) {
+static void test_jq_middleware_array_transformation(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = json_object();
@@ -255,7 +255,7 @@ static void test_jq_plugin_array_transformation(void) {
     
     const char *config = "{ users: [.data.rows[] | { id: .id, name: .name }] }";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -275,13 +275,13 @@ static void test_jq_plugin_array_transformation(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_error_handling_invalid_syntax(void) {
+static void test_jq_middleware_error_handling_invalid_syntax(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = "{ invalid jq syntax }";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     // Should handle syntax error gracefully
     TEST_ASSERT_NOT_NULL(output);
@@ -298,13 +298,13 @@ static void test_jq_plugin_error_handling_invalid_syntax(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_error_handling_missing_field(void) {
+static void test_jq_middleware_error_handling_missing_field(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = ".nonexistent.field";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -316,7 +316,7 @@ static void test_jq_plugin_error_handling_missing_field(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_complex_expression(void) {
+static void test_jq_middleware_complex_expression(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
@@ -333,7 +333,7 @@ static void test_jq_plugin_complex_expression(void) {
                         "  }\n"
                         "}";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -360,18 +360,18 @@ static void test_jq_plugin_complex_expression(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_null_input(void) {
+static void test_jq_middleware_null_input(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     const char *config = "{ message: \"null input\" }";
     
-    // Skip null input test to avoid segfault - JQ plugin may not handle null input gracefully
-    // json_t *output = jq_plugin_execute(NULL, arena, arena_alloc, NULL, config);
+    // Skip null input test to avoid segfault - JQ middleware may not handle null input gracefully
+    // json_t *output = jq_middleware_execute(NULL, arena, arena_alloc, NULL, config);
     // TEST_ASSERT_NULL(output);
     
     // Instead test with empty object
     json_t *input = json_object();
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     // Should return something for empty input
     TEST_ASSERT_NOT_NULL(output);
@@ -381,12 +381,12 @@ static void test_jq_plugin_null_input(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_null_config(void) {
+static void test_jq_middleware_null_config(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
     
     // Should handle null config gracefully
     TEST_ASSERT_NOT_NULL(output);
@@ -396,13 +396,13 @@ static void test_jq_plugin_null_config(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_empty_config(void) {
+static void test_jq_middleware_empty_config(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = "";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     // Should handle empty config gracefully
     TEST_ASSERT_NOT_NULL(output);
@@ -412,14 +412,14 @@ static void test_jq_plugin_empty_config(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_memory_arena_usage(void) {
+static void test_jq_middleware_memory_arena_usage(void) {
     MemoryArena *arena = create_test_arena(1024);
     size_t initial_used = arena->used;
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = "{ message: \"memory test\" }";
     
-    json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -431,7 +431,7 @@ static void test_jq_plugin_memory_arena_usage(void) {
     destroy_test_arena(arena);
 }
 
-static void test_jq_plugin_performance_simple(void) {
+static void test_jq_middleware_performance_simple(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
@@ -440,7 +440,7 @@ static void test_jq_plugin_performance_simple(void) {
     start_timer();
     
     for (int i = 0; i < 100; i++) {
-        json_t *output = jq_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+        json_t *output = jq_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
         TEST_ASSERT_NOT_NULL(output);
         json_decref(output);
     }
@@ -454,22 +454,22 @@ static void test_jq_plugin_performance_simple(void) {
 int main(void) {
     UNITY_BEGIN();
     
-    RUN_TEST(test_jq_plugin_simple_passthrough);
-    RUN_TEST(test_jq_plugin_field_extraction);
-    RUN_TEST(test_jq_plugin_object_construction);
-    RUN_TEST(test_jq_plugin_array_operations);
-    RUN_TEST(test_jq_plugin_conditional_expression);
-    RUN_TEST(test_jq_plugin_string_manipulation);
-    RUN_TEST(test_jq_plugin_nested_object_access);
-    RUN_TEST(test_jq_plugin_array_transformation);
-    RUN_TEST(test_jq_plugin_error_handling_invalid_syntax);
-    RUN_TEST(test_jq_plugin_error_handling_missing_field);
-    RUN_TEST(test_jq_plugin_complex_expression);
-    RUN_TEST(test_jq_plugin_null_input);
-    RUN_TEST(test_jq_plugin_null_config);
-    RUN_TEST(test_jq_plugin_empty_config);
-    RUN_TEST(test_jq_plugin_memory_arena_usage);
-    RUN_TEST(test_jq_plugin_performance_simple);
+    RUN_TEST(test_jq_middleware_simple_passthrough);
+    RUN_TEST(test_jq_middleware_field_extraction);
+    RUN_TEST(test_jq_middleware_object_construction);
+    RUN_TEST(test_jq_middleware_array_operations);
+    RUN_TEST(test_jq_middleware_conditional_expression);
+    RUN_TEST(test_jq_middleware_string_manipulation);
+    RUN_TEST(test_jq_middleware_nested_object_access);
+    RUN_TEST(test_jq_middleware_array_transformation);
+    RUN_TEST(test_jq_middleware_error_handling_invalid_syntax);
+    RUN_TEST(test_jq_middleware_error_handling_missing_field);
+    RUN_TEST(test_jq_middleware_complex_expression);
+    RUN_TEST(test_jq_middleware_null_input);
+    RUN_TEST(test_jq_middleware_null_config);
+    RUN_TEST(test_jq_middleware_empty_config);
+    RUN_TEST(test_jq_middleware_memory_arena_usage);
+    RUN_TEST(test_jq_middleware_performance_simple);
     
     return UNITY_END();
 }

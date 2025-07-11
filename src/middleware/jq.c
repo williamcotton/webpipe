@@ -5,8 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Function prototype for plugin interface
-json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func, const char *filter);
+// Function prototype for middleware interface
+json_t *middleware_execute(json_t *input, void *arena, void *alloc, void *free_func, const char *filter);
 
 // Hash table for caching
 #define HASH_TABLE_SIZE 256
@@ -185,7 +185,7 @@ static json_t *jv_to_json_with_arena(jv v, void *arena, arena_alloc_func alloc_f
     memcpy(arena_str, str, len);
     arena_str[len] = '\0';
     
-    json_t *result = json_string(arena_str);  // Uses plugin's arena allocator
+    json_t *result = json_string(arena_str);  // Uses middleware's arena allocator
     jv_free(v);
     return result;
   }
@@ -240,16 +240,16 @@ static json_t *jv_to_json_with_arena(jv v, void *arena, arena_alloc_func alloc_f
   return NULL;
 }
 
-// Thread-local plugin arena context for internal use
-static __thread void *current_plugin_arena = NULL;
-static __thread arena_alloc_func current_plugin_alloc_func = NULL;
+// Thread-local middleware arena context for internal use
+static __thread void *current_middleware_arena = NULL;
+static __thread arena_alloc_func current_middleware_alloc_func = NULL;
 
-// The actual plugin function
-json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func,
+// The actual middleware function
+json_t *middleware_execute(json_t *input, void *arena, void *alloc, void *free_func,
                        const char *filter) {
   // Set up thread-local arena context for string allocations
-  current_plugin_arena = arena;
-  current_plugin_alloc_func = (arena_alloc_func)alloc;
+  current_middleware_arena = arena;
+  current_middleware_alloc_func = (arena_alloc_func)alloc;
   
   // Use arena for string allocation in jv_to_json_with_arena
   arena_alloc_func alloc_func = (arena_alloc_func)alloc;
@@ -310,8 +310,8 @@ json_t *plugin_execute(json_t *input, void *arena, void *alloc, void *free_func,
   }
 
   // Clear thread-local arena references to prevent use-after-free
-  current_plugin_arena = NULL;
-  current_plugin_alloc_func = NULL;
+  current_middleware_arena = NULL;
+  current_middleware_alloc_func = NULL;
   
   return result;
 }

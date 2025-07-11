@@ -3,60 +3,60 @@
 #include "../../src/wp.h"
 #include <string.h>
 
-// Load the actual lua plugin
+// Load the actual lua middleware
 #include <dlfcn.h>
-static void *lua_plugin_handle = NULL;
-static json_t *(*lua_plugin_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = NULL;
+static void *lua_middleware_handle = NULL;
+static json_t *(*lua_middleware_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = NULL;
 
-static int load_lua_plugin(void) {
-    if (lua_plugin_handle) return 0; // Already loaded
+static int load_lua_middleware(void) {
+    if (lua_middleware_handle) return 0; // Already loaded
     
-    lua_plugin_handle = dlopen("./plugins/lua.so", RTLD_LAZY);
-    if (!lua_plugin_handle) {
-        fprintf(stderr, "Failed to load lua plugin: %s\n", dlerror());
+    lua_middleware_handle = dlopen("./middleware/lua.so", RTLD_LAZY);
+    if (!lua_middleware_handle) {
+        fprintf(stderr, "Failed to load lua middleware: %s\n", dlerror());
         return -1;
     }
     
-    void *plugin_func = dlsym(lua_plugin_handle, "plugin_execute");
-    lua_plugin_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
-                         (uintptr_t)plugin_func;
-    if (!plugin_func) {
-        fprintf(stderr, "Failed to find plugin_execute in lua plugin: %s\n", dlerror());
-        dlclose(lua_plugin_handle);
-        lua_plugin_handle = NULL;
+    void *middleware_func = dlsym(lua_middleware_handle, "middleware_execute");
+    lua_middleware_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
+                         (uintptr_t)middleware_func;
+    if (!middleware_func) {
+        fprintf(stderr, "Failed to find middleware_execute in lua middleware: %s\n", dlerror());
+        dlclose(lua_middleware_handle);
+        lua_middleware_handle = NULL;
         return -1;
     }
     
     return 0;
 }
 
-static void unload_lua_plugin(void) {
-    if (lua_plugin_handle) {
-        dlclose(lua_plugin_handle);
-        lua_plugin_handle = NULL;
-        lua_plugin_execute = NULL;
+static void unload_lua_middleware(void) {
+    if (lua_middleware_handle) {
+        dlclose(lua_middleware_handle);
+        lua_middleware_handle = NULL;
+        lua_middleware_execute = NULL;
     }
 }
 
 void setUp(void) {
     // Set up function called before each test
-    if (load_lua_plugin() != 0) {
-        TEST_FAIL_MESSAGE("Failed to load lua plugin");
+    if (load_lua_middleware() != 0) {
+        TEST_FAIL_MESSAGE("Failed to load lua middleware");
     }
 }
 
 void tearDown(void) {
     // Tear down function called after each test
-    unload_lua_plugin();
+    unload_lua_middleware();
 }
 
-static void test_lua_plugin_simple_return(void) {
+static void test_lua_middleware_simple_return(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = "return request";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_JSON_EQUAL(input, output);
@@ -66,13 +66,13 @@ static void test_lua_plugin_simple_return(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_object_construction(void) {
+static void test_lua_middleware_object_construction(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = "return { message = \"Hello from Lua!\", status = \"success\" }";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -89,7 +89,7 @@ static void test_lua_plugin_object_construction(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_request_access(void) {
+static void test_lua_middleware_request_access(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *params = json_object();
@@ -98,7 +98,7 @@ static void test_lua_plugin_request_access(void) {
     
     const char *config = "return { id = request.params.id, method = request.method }";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -116,7 +116,7 @@ static void test_lua_plugin_request_access(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_array_construction(void) {
+static void test_lua_middleware_array_construction(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *params = json_object();
@@ -125,7 +125,7 @@ static void test_lua_plugin_array_construction(void) {
     
     const char *config = "return { sqlParams = { request.params.id } }";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -144,7 +144,7 @@ static void test_lua_plugin_array_construction(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_conditional_logic(void) {
+static void test_lua_middleware_conditional_logic(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *params = json_object();
@@ -157,7 +157,7 @@ static void test_lua_plugin_conditional_logic(void) {
                         "  return { error = \"No ID provided\", found = false }\n"
                         "end";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -178,7 +178,7 @@ static void test_lua_plugin_conditional_logic(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_string_manipulation(void) {
+static void test_lua_middleware_string_manipulation(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *body = json_object();
@@ -192,7 +192,7 @@ static void test_lua_plugin_string_manipulation(void) {
                         "  capitalized = string.upper(string.sub(name, 1, 1)) .. string.sub(name, 2)\n"
                         "}";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -214,7 +214,7 @@ static void test_lua_plugin_string_manipulation(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_loop_processing(void) {
+static void test_lua_middleware_loop_processing(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
@@ -224,7 +224,7 @@ static void test_lua_plugin_loop_processing(void) {
                         "end\n"
                         "return { numbers = result }";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -244,7 +244,7 @@ static void test_lua_plugin_loop_processing(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_nested_object_access(void) {
+static void test_lua_middleware_nested_object_access(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *body = json_object();
@@ -261,7 +261,7 @@ static void test_lua_plugin_nested_object_access(void) {
                         "  domain = string.match(request.body.user.email, \"@(.+)\")\n"
                         "}";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -283,7 +283,7 @@ static void test_lua_plugin_nested_object_access(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_math_operations(void) {
+static void test_lua_middleware_math_operations(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *body = json_object();
@@ -306,7 +306,7 @@ static void test_lua_plugin_math_operations(void) {
                         "  formatted_total = string.format(\"$%.2f\", total)\n"
                         "}";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -331,13 +331,13 @@ static void test_lua_plugin_math_operations(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_error_handling_syntax_error(void) {
+static void test_lua_middleware_error_handling_syntax_error(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = "return { invalid lua syntax }";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     // Should handle syntax error gracefully
     TEST_ASSERT_NOT_NULL(output);
@@ -354,14 +354,14 @@ static void test_lua_plugin_error_handling_syntax_error(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_error_handling_runtime_error(void) {
+static void test_lua_middleware_error_handling_runtime_error(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = "local x = nil\n"
                         "return { result = x.nonexistent }";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     // Should handle runtime error gracefully
     TEST_ASSERT_NOT_NULL(output);
@@ -378,18 +378,18 @@ static void test_lua_plugin_error_handling_runtime_error(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_null_input(void) {
+static void test_lua_middleware_null_input(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     const char *config = "return { message = \"null input\" }";
     
-    // Skip null input test to avoid segfault - Lua plugin may not handle null input gracefully
-    // json_t *output = lua_plugin_execute(NULL, arena, arena_alloc, NULL, config);
+    // Skip null input test to avoid segfault - Lua middleware may not handle null input gracefully
+    // json_t *output = lua_middleware_execute(NULL, arena, arena_alloc, NULL, config);
     // TEST_ASSERT_NULL(output);
     
     // Instead test with empty object
     json_t *input = json_object();
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     // Should return something for empty input
     TEST_ASSERT_NOT_NULL(output);
@@ -399,12 +399,12 @@ static void test_lua_plugin_null_input(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_null_config(void) {
+static void test_lua_middleware_null_config(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
     
     // Should handle null config gracefully
     TEST_ASSERT_NOT_NULL(output);
@@ -414,13 +414,13 @@ static void test_lua_plugin_null_config(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_empty_config(void) {
+static void test_lua_middleware_empty_config(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = "";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     // Should handle empty config gracefully
     TEST_ASSERT_NOT_NULL(output);
@@ -430,7 +430,7 @@ static void test_lua_plugin_empty_config(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_complex_data_transformation(void) {
+static void test_lua_middleware_complex_data_transformation(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = json_object();
@@ -469,7 +469,7 @@ static void test_lua_plugin_complex_data_transformation(void) {
                         "  total_users = #request.data.rows\n"
                         "}";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -500,14 +500,14 @@ static void test_lua_plugin_complex_data_transformation(void) {
     destroy_test_arena(arena);
 }
 
-static void test_lua_plugin_memory_arena_usage(void) {
+static void test_lua_middleware_memory_arena_usage(void) {
     MemoryArena *arena = create_test_arena(1024);
     size_t initial_used = arena->used;
     
     json_t *input = create_test_request("GET", "/test");
     const char *config = "return { message = \"memory test\" }";
     
-    json_t *output = lua_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -522,22 +522,22 @@ static void test_lua_plugin_memory_arena_usage(void) {
 int main(void) {
     UNITY_BEGIN();
     
-    RUN_TEST(test_lua_plugin_simple_return);
-    RUN_TEST(test_lua_plugin_object_construction);
-    RUN_TEST(test_lua_plugin_request_access);
-    RUN_TEST(test_lua_plugin_array_construction);
-    RUN_TEST(test_lua_plugin_conditional_logic);
-    RUN_TEST(test_lua_plugin_string_manipulation);
-    RUN_TEST(test_lua_plugin_loop_processing);
-    RUN_TEST(test_lua_plugin_nested_object_access);
-    RUN_TEST(test_lua_plugin_math_operations);
-    RUN_TEST(test_lua_plugin_error_handling_syntax_error);
-    RUN_TEST(test_lua_plugin_error_handling_runtime_error);
-    RUN_TEST(test_lua_plugin_null_input);
-    RUN_TEST(test_lua_plugin_null_config);
-    RUN_TEST(test_lua_plugin_empty_config);
-    RUN_TEST(test_lua_plugin_complex_data_transformation);
-    RUN_TEST(test_lua_plugin_memory_arena_usage);
+    RUN_TEST(test_lua_middleware_simple_return);
+    RUN_TEST(test_lua_middleware_object_construction);
+    RUN_TEST(test_lua_middleware_request_access);
+    RUN_TEST(test_lua_middleware_array_construction);
+    RUN_TEST(test_lua_middleware_conditional_logic);
+    RUN_TEST(test_lua_middleware_string_manipulation);
+    RUN_TEST(test_lua_middleware_loop_processing);
+    RUN_TEST(test_lua_middleware_nested_object_access);
+    RUN_TEST(test_lua_middleware_math_operations);
+    RUN_TEST(test_lua_middleware_error_handling_syntax_error);
+    RUN_TEST(test_lua_middleware_error_handling_runtime_error);
+    RUN_TEST(test_lua_middleware_null_input);
+    RUN_TEST(test_lua_middleware_null_config);
+    RUN_TEST(test_lua_middleware_empty_config);
+    RUN_TEST(test_lua_middleware_complex_data_transformation);
+    RUN_TEST(test_lua_middleware_memory_arena_usage);
     
     return UNITY_END();
 }

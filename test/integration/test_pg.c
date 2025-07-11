@@ -3,54 +3,54 @@
 #include "../../src/wp.h"
 #include <string.h>
 
-// Load the actual pg plugin
+// Load the actual pg middleware
 #include <dlfcn.h>
-static void *pg_plugin_handle = NULL;
-static json_t *(*pg_plugin_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = NULL;
+static void *pg_middleware_handle = NULL;
+static json_t *(*pg_middleware_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = NULL;
 
-static int load_pg_plugin(void) {
-    if (pg_plugin_handle) return 0; // Already loaded
+static int load_pg_middleware(void) {
+    if (pg_middleware_handle) return 0; // Already loaded
     
-    pg_plugin_handle = dlopen("./plugins/pg.so", RTLD_LAZY);
-    if (!pg_plugin_handle) {
-        fprintf(stderr, "Failed to load pg plugin: %s\n", dlerror());
+    pg_middleware_handle = dlopen("./middleware/pg.so", RTLD_LAZY);
+    if (!pg_middleware_handle) {
+        fprintf(stderr, "Failed to load pg middleware: %s\n", dlerror());
         return -1;
     }
     
-    void *plugin_func = dlsym(pg_plugin_handle, "plugin_execute");
-    pg_plugin_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
-                        (uintptr_t)plugin_func;
-    if (!plugin_func) {
-        fprintf(stderr, "Failed to find plugin_execute in pg plugin: %s\n", dlerror());
-        dlclose(pg_plugin_handle);
-        pg_plugin_handle = NULL;
+    void *middleware_func = dlsym(pg_middleware_handle, "middleware_execute");
+    pg_middleware_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
+                        (uintptr_t)middleware_func;
+    if (!middleware_func) {
+        fprintf(stderr, "Failed to find middleware_execute in pg middleware: %s\n", dlerror());
+        dlclose(pg_middleware_handle);
+        pg_middleware_handle = NULL;
         return -1;
     }
     
     return 0;
 }
 
-static void unload_pg_plugin(void) {
-    if (pg_plugin_handle) {
-        dlclose(pg_plugin_handle);
-        pg_plugin_handle = NULL;
-        pg_plugin_execute = NULL;
+static void unload_pg_middleware(void) {
+    if (pg_middleware_handle) {
+        dlclose(pg_middleware_handle);
+        pg_middleware_handle = NULL;
+        pg_middleware_execute = NULL;
     }
 }
 
 void setUp(void) {
     setup_test_database();
-    if (load_pg_plugin() != 0) {
-        TEST_FAIL_MESSAGE("Failed to load pg plugin");
+    if (load_pg_middleware() != 0) {
+        TEST_FAIL_MESSAGE("Failed to load pg middleware");
     }
 }
 
 void tearDown(void) {
     teardown_test_database();
-    unload_pg_plugin();
+    unload_pg_middleware();
 }
 
-static void test_pg_plugin_simple_select(void) {
+static void test_pg_middleware_simple_select(void) {
     MemoryArena *arena = create_test_arena(1024 * 1024);
     
     // Set arena context for JSON allocation
@@ -65,7 +65,7 @@ static void test_pg_plugin_simple_select(void) {
     
     const char *config = "SELECT 1 as test_value";
     
-    json_t *output = pg_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -86,7 +86,7 @@ static void test_pg_plugin_simple_select(void) {
     destroy_test_arena(arena);
 }
 
-static void test_pg_plugin_parameterized_query(void) {
+static void test_pg_middleware_parameterized_query(void) {
     MemoryArena *arena = create_test_arena(1024 * 1024);
     
     // Set arena context for JSON allocation
@@ -102,7 +102,7 @@ static void test_pg_plugin_parameterized_query(void) {
     
     const char *config = "SELECT * FROM teams WHERE id = $1";
     
-    json_t *output = pg_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -116,7 +116,7 @@ static void test_pg_plugin_parameterized_query(void) {
     destroy_test_arena(arena);
 }
 
-static void test_pg_plugin_sql_error_handling(void) {
+static void test_pg_middleware_sql_error_handling(void) {
     MemoryArena *arena = create_test_arena(1024 * 1024);
     
     // Set arena context for JSON allocation
@@ -131,7 +131,7 @@ static void test_pg_plugin_sql_error_handling(void) {
     
     const char *config = "SELECT * FROM nonexistent_table";
     
-    json_t *output = pg_plugin_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -156,9 +156,9 @@ static void test_pg_plugin_sql_error_handling(void) {
 int main(void) {
     UNITY_BEGIN();
     
-    RUN_TEST(test_pg_plugin_simple_select);
-    RUN_TEST(test_pg_plugin_parameterized_query);
-    RUN_TEST(test_pg_plugin_sql_error_handling);
+    RUN_TEST(test_pg_middleware_simple_select);
+    RUN_TEST(test_pg_middleware_parameterized_query);
+    RUN_TEST(test_pg_middleware_sql_error_handling);
     
     return UNITY_END();
 }

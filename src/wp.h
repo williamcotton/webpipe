@@ -59,7 +59,7 @@ typedef enum {
 
 // Pipeline step
 struct PipelineStep {
-  char *plugin;
+  char *middleware;
   char *value;
   bool is_variable;
   PipelineStep *next;
@@ -87,7 +87,7 @@ struct ASTNode {
       PipelineStep *pipeline;
     } route_def;
     struct {
-      char *plugin;
+      char *middleware;
       char *name;
       char *value;
     } var_assign;
@@ -113,16 +113,16 @@ typedef struct {
   ParseContext *ctx;  // Parse context for arena allocation
 } Parser;
 
-// Arena allocation function types for plugins
+// Arena allocation function types for middleware
 typedef void* (*arena_alloc_func)(void* arena, size_t size);
 typedef void (*arena_free_func)(void* arena);
 
-// Plugin interface with arena functions
+// Middleware interface with arena functions
 typedef struct {
     char *name;
     void *handle;
     json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config);
-} Plugin;
+} Middleware;
 
 // Function declarations
 char *strdup_safe(const char *s);
@@ -188,9 +188,9 @@ typedef struct {
 #define POST_DATA_MAGIC 0x504F5354  // "POST" in ASCII
 
 // Server internal function declarations
-int load_plugin(const char *name);
-Plugin *find_plugin(const char *name);
-void collect_plugin_names_from_ast(ASTNode *node, char **plugin_names, int *plugin_count, int max_plugins);
+int load_middleware(const char *name);
+Middleware *find_middleware(const char *name);
+void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, int *middleware_count, int max_middleware);
 json_t *create_request_json(struct MHD_Connection *connection, 
                            const char *url, const char *method,
                            const char *upload_data, size_t upload_data_size);

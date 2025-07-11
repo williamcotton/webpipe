@@ -14,23 +14,23 @@ GET /articles
   |> pg: articlesQuery
 ```
 
-Each step in the pipeline has a plugin. In the above example there are three plugins, jq, lua, and pg.
+Each step in the pipeline has a middleware. In the above example there are three middleware, jq, lua, and pg.
 
 Use a per-request bump allocator memory arena for the jansson custom allocators as well as any other memory allocation needed. Release the memory arena after the end of each request is handled.
 
-Use libmicrohttpd to create event handlers that parse an income HTTP request into a jansson json_t type. This type is passed between plugins. In essence each step in the pipeline takes in json_t and returns json_t. The plugin should also take in the memory arena.
+Use libmicrohttpd to create event handlers that parse an income HTTP request into a jansson json_t type. This type is passed between middleware. In essence each step in the pipeline takes in json_t and returns json_t. The middleware should also take in the memory arena.
 
 The initial JSON that is created for the first step in the pipeline is a request object with keys for query, body, params, headers, and the rest of what a request object in ExpressJS would look like. The intial request is maintained across each step of JSON passed between steps in a pipeline.
 
-In the above example we can see that jq step with `{ id: .params.id }` - the jq plugin is called with the intial request object. It sets the id key on the request object to the id param from the URL. Then the next step in the pipeline is the lua interpreter which has a request in scope as `return { sqlParams: request.id }`. This prepares the sqlParams, a required keyword for the pg plugin, which is the next step in the pipeline. The pg plugin takes in the json_t object with the sqlParams array and uses that with the postgres query. Then it returns a data key on the request object with a rows array for the query results.
+In the above example we can see that jq step with `{ id: .params.id }` - the jq middleware is called with the intial request object. It sets the id key on the request object to the id param from the URL. Then the next step in the pipeline is the lua interpreter which has a request in scope as `return { sqlParams: request.id }`. This prepares the sqlParams, a required keyword for the pg middleware, which is the next step in the pipeline. The pg middleware takes in the json_t object with the sqlParams array and uses that with the postgres query. Then it returns a data key on the request object with a rows array for the query results.
 
-Each plugin should register its callback and name with a central location. Each plugin should be a separate .so file and dynamically loaded by the main wp process. The plugin .so files to be dynamically loaded come from the AST. They take in a at least a json_t object and the per-request memory arena.
+Each middleware should register its callback and name with a central location. Each middleware should be a separate .so file and dynamically loaded by the main wp process. The middleware .so files to be dynamically loaded come from the AST. They take in a at least a json_t object and the per-request memory arena.
 
-For the jq plugin you will need a janssonToJv as well as a jvToJansson. You should figure out a way to cache the compiled jq at startup so the requests are more performant.
+For the jq middleware you will need a janssonToJv as well as a jvToJansson. You should figure out a way to cache the compiled jq at startup so the requests are more performant.
 
 The same applies for lua, you'll need to create a janssonToLua as well as a luaToJansson.
 
-The same goes for pg, the postgres plugin.
+The same goes for pg, the postgres middleware.
 
 This way each step in the pipeline can process JSON data.
 

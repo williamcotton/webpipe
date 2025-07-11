@@ -12,25 +12,25 @@ void tearDown(void) {
     // Tear down function called after each test
 }
 
-static void test_plugin_interface_basic(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+static void test_middleware_interface_basic(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     
-    TEST_ASSERT_NOT_NULL(plugin);
-    TEST_ASSERT_STRING_EQUAL("test", plugin->name);
-    TEST_ASSERT_NOT_NULL(plugin->execute);
-    TEST_ASSERT_NULL(plugin->handle);
+    TEST_ASSERT_NOT_NULL(middleware);
+    TEST_ASSERT_STRING_EQUAL("test", middleware->name);
+    TEST_ASSERT_NOT_NULL(middleware->execute);
+    TEST_ASSERT_NULL(middleware->handle);
     
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_execute_passthrough(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+static void test_middleware_execute_passthrough(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = json_object();
     json_object_set_new(input, "test", json_string("value"));
     
-    json_t *output = plugin->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config");
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config");
     
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_JSON_EQUAL(input, output);
@@ -38,35 +38,35 @@ static void test_plugin_execute_passthrough(void) {
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_execute_with_arena(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+static void test_middleware_execute_with_arena(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = json_object();
     json_object_set_new(input, "message", json_string("hello"));
     
     // Test that arena is passed correctly
-    json_t *output = plugin->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
     
     TEST_ASSERT_NOT_NULL(output);
     
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_execute_error_handling(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_error);
+static void test_middleware_execute_error_handling(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_error);
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = json_object();
     json_object_set_new(input, "test", json_string("value"));
     
-    json_t *output = plugin->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config");
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config");
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -86,72 +86,72 @@ static void test_plugin_execute_error_handling(void) {
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_execute_with_config(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+static void test_middleware_execute_with_config(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = json_object();
     const char *config = "test configuration string";
     
-    json_t *output = plugin->execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
     TEST_ASSERT_NOT_NULL(output);
     
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_execute_null_input(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+static void test_middleware_execute_null_input(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
-    json_t *output = plugin->execute(NULL, arena, get_arena_alloc_wrapper(), NULL, NULL);
+    json_t *output = middleware->execute(NULL, arena, get_arena_alloc_wrapper(), NULL, NULL);
     
     // Should handle null input gracefully
     TEST_ASSERT_NULL(output);
     
     destroy_test_arena(arena);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_execute_null_arena(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+static void test_middleware_execute_null_arena(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     
     json_t *input = json_object();
     json_object_set_new(input, "test", json_string("value"));
     
-    json_t *output = plugin->execute(input, NULL, get_arena_alloc_wrapper(), NULL, NULL);
+    json_t *output = middleware->execute(input, NULL, get_arena_alloc_wrapper(), NULL, NULL);
     
     // Should handle null arena gracefully
     TEST_ASSERT_NOT_NULL(output);
     
     json_decref(input);
     json_decref(output);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_load_function(void) {
-    // Test plugin loading functionality
+static void test_middleware_load_function(void) {
+    // Test middleware loading functionality
     // This would test the actual dynamic library loading
     
     // For now, we'll test the interface
-    int result = load_plugin("nonexistent");
-    TEST_ASSERT_NOT_EQUAL(0, result);  // Should fail for non-existent plugin
+    int result = load_middleware("nonexistent");
+    TEST_ASSERT_NOT_EQUAL(0, result);  // Should fail for non-existent middleware
 }
 
-static void test_plugin_find_function(void) {
-    // Test plugin finding functionality
+static void test_middleware_find_function(void) {
+    // Test middleware finding functionality
     
-    Plugin *plugin = find_plugin("nonexistent");
-    TEST_ASSERT_NULL(plugin);  // Should return NULL for non-existent plugin
+    Middleware *middleware = find_middleware("nonexistent");
+    TEST_ASSERT_NULL(middleware);  // Should return NULL for non-existent middleware
 }
 
-static void test_plugin_arena_alloc_function(void) {
+static void test_middleware_arena_alloc_function(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     void *ptr = arena_alloc(arena, 100);
@@ -161,16 +161,16 @@ static void test_plugin_arena_alloc_function(void) {
     destroy_test_arena(arena);
 }
 
-static void test_plugin_memory_management(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+static void test_middleware_memory_management(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
-    // Test multiple allocations within plugin context
+    // Test multiple allocations within middleware context
     for (int i = 0; i < 10; i++) {
         json_t *input = json_object();
         json_object_set_new(input, "iteration", json_integer(i));
         
-        json_t *output = plugin->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
+        json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
         
         TEST_ASSERT_NOT_NULL(output);
         
@@ -179,11 +179,11 @@ static void test_plugin_memory_management(void) {
     }
     
     destroy_test_arena(arena);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_concurrent_execution(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+static void test_middleware_concurrent_execution(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     MemoryArena *arena1 = create_test_arena(1024);
     MemoryArena *arena2 = create_test_arena(1024);
     
@@ -194,8 +194,8 @@ static void test_plugin_concurrent_execution(void) {
     json_object_set_new(input2, "thread", json_string("2"));
     
     // Simulate concurrent execution
-    json_t *output1 = plugin->execute(input1, arena1, get_arena_alloc_wrapper(), NULL, "config1");
-    json_t *output2 = plugin->execute(input2, arena2, get_arena_alloc_wrapper(), NULL, "config2");
+    json_t *output1 = middleware->execute(input1, arena1, get_arena_alloc_wrapper(), NULL, "config1");
+    json_t *output2 = middleware->execute(input2, arena2, get_arena_alloc_wrapper(), NULL, "config2");
     
     TEST_ASSERT_NOT_NULL(output1);
     TEST_ASSERT_NOT_NULL(output2);
@@ -206,11 +206,11 @@ static void test_plugin_concurrent_execution(void) {
     json_decref(output2);
     destroy_test_arena(arena1);
     destroy_test_arena(arena2);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_json_preservation(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+static void test_middleware_json_preservation(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
     // Test various JSON types
@@ -227,7 +227,7 @@ static void test_plugin_json_preservation(void) {
     int num_inputs = sizeof(inputs) / sizeof(inputs[0]);
     
     for (int i = 0; i < num_inputs; i++) {
-        json_t *output = plugin->execute(inputs[i], arena, get_arena_alloc_wrapper(), NULL, NULL);
+        json_t *output = middleware->execute(inputs[i], arena, get_arena_alloc_wrapper(), NULL, NULL);
         
         TEST_ASSERT_NOT_NULL(output);
         TEST_ASSERT_JSON_EQUAL(inputs[i], output);
@@ -241,11 +241,11 @@ static void test_plugin_json_preservation(void) {
     }
     
     destroy_test_arena(arena);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_complex_json_handling(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+static void test_middleware_complex_json_handling(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     MemoryArena *arena = create_test_arena(1024);
     
     // Create complex JSON structure
@@ -268,7 +268,7 @@ static void test_plugin_complex_json_handling(void) {
     
     json_object_set_new(input, "request", request);
     
-    json_t *output = plugin->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
     
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_JSON_EQUAL(input, output);
@@ -276,17 +276,17 @@ static void test_plugin_complex_json_handling(void) {
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_error_propagation(void) {
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_error);
+static void test_middleware_error_propagation(void) {
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_error);
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = json_object();
     json_object_set_new(input, "test", json_string("value"));
     
-    json_t *output = plugin->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -304,61 +304,61 @@ static void test_plugin_error_propagation(void) {
     TEST_ASSERT_NOT_NULL(type);
     TEST_ASSERT_NOT_NULL(message);
     TEST_ASSERT_STRING_EQUAL("mockError", json_string_value(type));
-    TEST_ASSERT_STRING_EQUAL("Mock plugin error", json_string_value(message));
+    TEST_ASSERT_STRING_EQUAL("Mock middleware error", json_string_value(message));
     
     json_decref(input);
     json_decref(output);
     destroy_test_arena(arena);
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
 }
 
-static void test_plugin_name_collision_handling(void) {
-    Plugin *plugin1 = create_mock_plugin("test", mock_plugin_passthrough);
-    Plugin *plugin2 = create_mock_plugin("test", mock_plugin_error);
+static void test_middleware_name_collision_handling(void) {
+    Middleware *middleware1 = create_mock_middleware("test", mock_middleware_passthrough);
+    Middleware *middleware2 = create_mock_middleware("test", mock_middleware_error);
     
-    // Both plugins have the same name
-    TEST_ASSERT_STRING_EQUAL("test", plugin1->name);
-    TEST_ASSERT_STRING_EQUAL("test", plugin2->name);
+    // Both middlewares have the same name
+    TEST_ASSERT_STRING_EQUAL("test", middleware1->name);
+    TEST_ASSERT_STRING_EQUAL("test", middleware2->name);
     
     // But different execution functions
-    TEST_ASSERT_NOT_EQUAL(plugin1->execute, plugin2->execute);
+    TEST_ASSERT_NOT_EQUAL(middleware1->execute, middleware2->execute);
     
-    destroy_mock_plugin(plugin1);
-    destroy_mock_plugin(plugin2);
+    destroy_mock_middleware(middleware1);
+    destroy_mock_middleware(middleware2);
 }
 
-static void test_plugin_registry_operations(void) {
-    // Test plugin registry operations
-    // This would test the actual plugin registration system
+static void test_middleware_registry_operations(void) {
+    // Test middleware registry operations
+    // This would test the actual middleware registration system
     
     // For now, test the interface
-    Plugin *plugin = find_plugin("jq");
-    // Plugin may or may not exist depending on system state
+    Middleware *middleware = find_middleware("jq");
+    // Middleware may or may not exist depending on system state
     
-    plugin = find_plugin("nonexistent_plugin_name");
-    TEST_ASSERT_NULL(plugin);
+    middleware = find_middleware("nonexistent_middleware_name");
+    TEST_ASSERT_NULL(middleware);
 }
 
 int main(void) {
     UNITY_BEGIN();
     
-    RUN_TEST(test_plugin_interface_basic);
-    RUN_TEST(test_plugin_execute_passthrough);
-    RUN_TEST(test_plugin_execute_with_arena);
-    RUN_TEST(test_plugin_execute_error_handling);
-    RUN_TEST(test_plugin_execute_with_config);
-    RUN_TEST(test_plugin_execute_null_input);
-    RUN_TEST(test_plugin_execute_null_arena);
-    RUN_TEST(test_plugin_load_function);
-    RUN_TEST(test_plugin_find_function);
-    RUN_TEST(test_plugin_arena_alloc_function);
-    RUN_TEST(test_plugin_memory_management);
-    RUN_TEST(test_plugin_concurrent_execution);
-    RUN_TEST(test_plugin_json_preservation);
-    RUN_TEST(test_plugin_complex_json_handling);
-    RUN_TEST(test_plugin_error_propagation);
-    RUN_TEST(test_plugin_name_collision_handling);
-    RUN_TEST(test_plugin_registry_operations);
+    RUN_TEST(test_middleware_interface_basic);
+    RUN_TEST(test_middleware_execute_passthrough);
+    RUN_TEST(test_middleware_execute_with_arena);
+    RUN_TEST(test_middleware_execute_error_handling);
+    RUN_TEST(test_middleware_execute_with_config);
+    RUN_TEST(test_middleware_execute_null_input);
+    RUN_TEST(test_middleware_execute_null_arena);
+    RUN_TEST(test_middleware_load_function);
+    RUN_TEST(test_middleware_find_function);
+    RUN_TEST(test_middleware_arena_alloc_function);
+    RUN_TEST(test_middleware_memory_management);
+    RUN_TEST(test_middleware_concurrent_execution);
+    RUN_TEST(test_middleware_json_preservation);
+    RUN_TEST(test_middleware_complex_json_handling);
+    RUN_TEST(test_middleware_error_propagation);
+    RUN_TEST(test_middleware_name_collision_handling);
+    RUN_TEST(test_middleware_registry_operations);
     
     return UNITY_END();
 }

@@ -33,12 +33,12 @@ LDFLAGS = -lmicrohttpd -ljansson $(LUA_LIB) -L$(PG_LIBDIR) -lpq $(PLATFORM_LIBS)
 
 # Directories
 SRC_DIR = src
-PLUGIN_DIR = $(SRC_DIR)/plugins
+MIDDLEWARE_DIR = $(SRC_DIR)/middleware
 BUILD_DIR = build
 TEST_DIR = test
 
 # Main target - single wp executable in build directory
-all: $(BUILD_DIR)/wp plugins
+all: $(BUILD_DIR)/wp middleware
 
 # Create build directory
 $(BUILD_DIR):
@@ -49,7 +49,7 @@ $(BUILD_DIR)/wp: $(BUILD_DIR) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/pars
 	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(LDFLAGS) $(SANITIZE_FLAGS)
 
 # Debug target - single wp executable in build directory
-debug: $(BUILD_DIR)/wp-debug plugins
+debug: $(BUILD_DIR)/wp-debug middleware
 
 # Debug executable
 $(BUILD_DIR)/wp-debug: $(BUILD_DIR) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/wp.h
@@ -65,22 +65,22 @@ else ifeq ($(PLATFORM),DARWIN)
 	leaks --atExit -- ./build/wp-debug test.wp
 endif
 
-# Plugin targets
-plugins: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so
+# Middleware targets
+middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so
 
-$(BUILD_DIR)/jq.so: $(PLUGIN_DIR)/jq.c
+$(BUILD_DIR)/jq.so: $(MIDDLEWARE_DIR)/jq.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -ljq
 
-$(BUILD_DIR)/lua.so: $(PLUGIN_DIR)/lua.c
+$(BUILD_DIR)/lua.so: $(MIDDLEWARE_DIR)/lua.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -llua
 
-$(BUILD_DIR)/pg.so: $(PLUGIN_DIR)/pg.c
+$(BUILD_DIR)/pg.so: $(MIDDLEWARE_DIR)/pg.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -lpq
 
-# Install plugins to runtime directory
-install-plugins: plugins
-	mkdir -p ./plugins
-	cp $(BUILD_DIR)/*.so ./plugins/
+# Install middleware to runtime directory
+install-middleware: middleware
+	mkdir -p ./middleware
+	cp $(BUILD_DIR)/*.so ./middleware/
 
 # Test targets
 TEST_CFLAGS = $(CFLAGS) -I$(TEST_DIR) -I$(SRC_DIR) -DUNITY_INCLUDE_DOUBLE
@@ -103,8 +103,8 @@ $(BUILD_DIR)/test_lexer: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_lexer.c $(TE
 $(BUILD_DIR)/test_parser: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_parser.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_parser.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_plugins: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_plugins.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_plugins.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
+$(BUILD_DIR)/test_middleware: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_middleware.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_middleware.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
 $(BUILD_DIR)/test_jq: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
@@ -128,7 +128,7 @@ $(BUILD_DIR)/test_perf: $(BUILD_DIR)/unity.o $(TEST_DIR)/system/test_perf.c $(TE
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
 # Test group targets
-TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_plugins
+TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_middleware
 TEST_INTEGRATION_BINS = $(BUILD_DIR)/test_jq $(BUILD_DIR)/test_lua $(BUILD_DIR)/test_pg $(BUILD_DIR)/test_pipeline
 TEST_SYSTEM_BINS = $(BUILD_DIR)/test_server $(BUILD_DIR)/test_e2e $(BUILD_DIR)/test_perf
 TEST_ALL_BINS = $(TEST_UNIT_BINS) $(TEST_INTEGRATION_BINS) $(TEST_SYSTEM_BINS)
@@ -154,13 +154,13 @@ test-perf: $(BUILD_DIR)/test_perf
 	$(BUILD_DIR)/test_perf
 
 test-analyze:
-	clang --analyze $(SRC_DIR)/*.c $(PLUGIN_DIR)/*.c $(CFLAGS) -Xanalyzer -analyzer-output=text -Xanalyzer -analyzer-checker=core,deadcode,nullability,optin,osx,security,unix,valist -Xanalyzer -analyzer-disable-checker -Xanalyzer security.insecureAPI.DeprecatedOrUnsafeBufferHandling -Werror
+	clang --analyze $(SRC_DIR)/*.c $(MIDDLEWARE_DIR)/*.c $(CFLAGS) -Xanalyzer -analyzer-output=text -Xanalyzer -analyzer-checker=core,deadcode,nullability,optin,osx,security,unix,valist -Xanalyzer -analyzer-disable-checker -Xanalyzer security.insecureAPI.DeprecatedOrUnsafeBufferHandling -Werror
 
 test-lint:
 ifeq ($(PLATFORM),LINUX)
-	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument -warnings-as-errors=* $(SRC_DIR)/*.c $(PLUGIN_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
+	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument -warnings-as-errors=* $(SRC_DIR)/*.c $(MIDDLEWARE_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
 else ifeq ($(PLATFORM),DARWIN)
-	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument -warnings-as-errors=* $(SRC_DIR)/*.c $(PLUGIN_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
+	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument -warnings-as-errors=* $(SRC_DIR)/*.c $(MIDDLEWARE_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
 endif
 
 # Original test command
@@ -168,13 +168,13 @@ test-wp: $(BUILD_DIR)/wp
 	$(BUILD_DIR)/wp -f test.wp
 
 # Run server
-run: $(BUILD_DIR)/wp install-plugins
+run: $(BUILD_DIR)/wp install-middleware
 	$(BUILD_DIR)/wp test.wp
 
 # Clean
 clean:
 	rm -f wp wp_debug wp_runtime wp_runtime_debug
 	rm -rf $(BUILD_DIR)
-	rm -f ./plugins/*.so
+	rm -f ./middleware/*.so
 
-.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run plugins install-plugins
+.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run middleware install-middleware

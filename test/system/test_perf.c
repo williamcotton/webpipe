@@ -19,7 +19,7 @@ static void test_perf_arena_allocation(void) {
     start_timer();
     
     for (int i = 0; i < iterations; i++) {
-        MemoryArena *arena = arena_create(1024);
+        MemoryArena *arena = arena_create(2048); // Increased size to accommodate alignment
         
         // Allocate various sizes
         for (int j = 0; j < 100; j++) {
@@ -91,17 +91,17 @@ static void test_perf_json_operations(void) {
     assert_execution_time_under(2.0);  // Should complete in under 2 seconds
 }
 
-static void test_perf_plugin_execution(void) {
+static void test_perf_middleware_execution(void) {
     const int iterations = 1000;
     MemoryArena *arena = create_test_arena(1024 * 1024);  // 1MB arena
     
-    Plugin *plugin = create_mock_plugin("test", mock_plugin_passthrough);
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
     
     start_timer();
     
     for (int i = 0; i < iterations; i++) {
         json_t *input = create_test_request("GET", "/test");
-        json_t *output = plugin->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config");
+        json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config");
         
         TEST_ASSERT_NOT_NULL(output);
         
@@ -111,7 +111,7 @@ static void test_perf_plugin_execution(void) {
     
     assert_execution_time_under(1.0);  // Should complete in under 1 second
     
-    destroy_mock_plugin(plugin);
+    destroy_mock_middleware(middleware);
     destroy_test_arena(arena);
 }
 
@@ -187,20 +187,20 @@ static void test_perf_string_operations(void) {
 static void test_perf_pipeline_execution(void) {
     const int iterations = 100;
     
-    // Load JQ plugin for direct execution
-    void *jq_plugin_handle = dlopen("./plugins/jq.so", RTLD_LAZY);
-    if (!jq_plugin_handle) {
-        TEST_FAIL_MESSAGE("Failed to load jq plugin");
+    // Load JQ middleware for direct execution
+    void *jq_middleware_handle = dlopen("./middleware/jq.so", RTLD_LAZY);
+    if (!jq_middleware_handle) {
+        TEST_FAIL_MESSAGE("Failed to load jq middleware");
     }
     
-    void *plugin_func = dlsym(jq_plugin_handle, "plugin_execute");
+    void *middleware_func = dlsym(jq_middleware_handle, "middleware_execute");
     json_t *(*jq_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = 
         (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
-        (uintptr_t)plugin_func;
+        (uintptr_t)middleware_func;
     
-    if (!plugin_func) {
-        dlclose(jq_plugin_handle);
-        TEST_FAIL_MESSAGE("Failed to find plugin_execute in jq plugin");
+    if (!middleware_func) {
+        dlclose(jq_middleware_handle);
+        TEST_FAIL_MESSAGE("Failed to find middleware_execute in jq middleware");
     }
     
     start_timer();
@@ -209,7 +209,7 @@ static void test_perf_pipeline_execution(void) {
         MemoryArena *arena = create_test_arena(1024);
         json_t *input = create_test_request("GET", "/test");
         
-        // Execute JQ plugin directly
+        // Execute JQ middleware directly
         json_t *result = jq_execute(input, arena, get_arena_alloc_wrapper(), NULL, 
                                    "{ message: \"performance test\" }");
         
@@ -222,7 +222,7 @@ static void test_perf_pipeline_execution(void) {
     
     assert_execution_time_under(2.0);  // Should complete in under 2 seconds
     
-    dlclose(jq_plugin_handle);
+    dlclose(jq_middleware_handle);
 }
 
 int main(void) {
@@ -232,7 +232,7 @@ int main(void) {
     RUN_TEST(test_perf_lexer_tokenization);
     RUN_TEST(test_perf_parser_parsing);
     RUN_TEST(test_perf_json_operations);
-    RUN_TEST(test_perf_plugin_execution);
+    RUN_TEST(test_perf_middleware_execution);
     RUN_TEST(test_perf_memory_usage);
     RUN_TEST(test_perf_concurrent_arena_access);
     RUN_TEST(test_perf_string_operations);

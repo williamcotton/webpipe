@@ -6,7 +6,7 @@
 #include <string.h>
 #include <stdbool.h>
 
-// Arena allocation function types for plugins
+// Arena allocation function types for middlewares
 typedef void *(*arena_alloc_func)(void *arena, size_t size);
 typedef void (*arena_free_func)(void *arena);
 
@@ -26,15 +26,15 @@ static const char *pg_user = "postgres";
 static const char *pg_password = "postgres";
 
 // Function prototypes
-static int pg_plugin_init(void);
-static void pg_plugin_cleanup(void);
+static int pg_middleware_init(void);
+static void pg_middleware_cleanup(void);
 static json_t *pg_result_to_json(PGresult *result);
 static json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func);
-json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *sql);
-static void plugin_destructor(void);
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *sql);
+static void middleware_destructor(void);
 
 // Initialize PostgreSQL connection (thread-safe)
-int pg_plugin_init() {
+int pg_middleware_init() {
   pthread_mutex_lock(&pg_mutex);
 
   // If we already have a connection or already failed, return early
@@ -76,7 +76,7 @@ int pg_plugin_init() {
 }
 
 // Cleanup PostgreSQL connection
-void pg_plugin_cleanup() {
+void pg_middleware_cleanup() {
   pthread_mutex_lock(&pg_mutex);
   if (pg_connection) {
     PQfinish(pg_connection);
@@ -184,7 +184,7 @@ json_t *pg_result_to_json(PGresult *result) {
 json_t *execute_sql(const char *sql, json_t *params, void *arena,
                     arena_alloc_func alloc_func) {
   // Try to initialize connection if needed
-  if (!pg_plugin_init()) {
+  if (!pg_middleware_init()) {
     json_t *error = json_object();
     json_t *errors_array = json_array();
     json_t *error_detail = json_object();
@@ -246,8 +246,8 @@ json_t *execute_sql(const char *sql, json_t *params, void *arena,
   return response;
 }
 
-// Plugin execute function
-json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func,
+// Middleware execute function
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func,
                        arena_free_func free_func, const char *sql_query) {
   (void)free_func; // Not used - we don't free the arena
 
@@ -280,6 +280,6 @@ json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func,
   return response;
 }
 
-// Plugin cleanup function called when plugin is unloaded
-__attribute__((destructor)) void plugin_destructor() { pg_plugin_cleanup(); }
+// Middleware cleanup function called when middleware is unloaded
+__attribute__((destructor)) void middleware_destructor() { pg_middleware_cleanup(); }
 

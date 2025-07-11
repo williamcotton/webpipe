@@ -13,8 +13,8 @@
 typedef struct {
     struct MHD_Daemon *daemon;
     ASTNode *program;
-    Plugin *plugins;
-    int plugin_count;
+    Middleware *middleware;
+    int middleware_count;
     json_t *variables;
     ParseContext *parse_ctx;
 } WPRuntime;
@@ -164,7 +164,7 @@ void jansson_arena_free(void *ptr) {
     (void)ptr;
 }
 
-// Wrapper functions for plugin interface
+// Wrapper functions for middleware interface
 static void *arena_alloc_wrapper(void *arena, size_t size) {
     return arena_alloc((MemoryArena*)arena, size);
 }
@@ -173,51 +173,51 @@ static void arena_free_wrapper(void *arena) {
     arena_free((MemoryArena*)arena);
 }
 
-// Plugin loading and management
-int load_plugin(const char *name) {
+// Middleware loading and management
+int load_middleware(const char *name) {
     // Check if runtime is initialized
     if (!runtime) {
         fprintf(stderr, "Error: Runtime not initialized\n");
         return -1;
     }
     
-    char plugin_path[256];
-    snprintf(plugin_path, sizeof(plugin_path), "./plugins/%s.so", name);
+    char middleware_path[256];
+    snprintf(middleware_path, sizeof(middleware_path), "./middleware/%s.so", name);
     
-    void *handle = dlopen(plugin_path, RTLD_LAZY);
+    void *handle = dlopen(middleware_path, RTLD_LAZY);
     if (!handle) {
-        fprintf(stderr, "Error loading plugin %s: %s\n", name, dlerror());
+        fprintf(stderr, "Error loading middleware %s: %s\n", name, dlerror());
         return -1;
     }
     
-    // Get plugin execute function
+    // Get middleware execute function
     json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = 
-        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))dlsym(handle, "plugin_execute");
+        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))dlsym(handle, "middleware_execute");
     if (!execute) {
-        fprintf(stderr, "Error getting plugin_execute for %s: %s\n", name, dlerror());
+        fprintf(stderr, "Error getting middleware_execute for %s: %s\n", name, dlerror());
         dlclose(handle);
         return -1;
     }
     
-    // Add to runtime plugins
-    runtime->plugins = realloc(runtime->plugins, sizeof(Plugin) * (size_t)(runtime->plugin_count + 1));
-    runtime->plugins[runtime->plugin_count].name = strdup(name);
-    runtime->plugins[runtime->plugin_count].handle = handle;
-    runtime->plugins[runtime->plugin_count].execute = execute;
-    runtime->plugin_count++;
+    // Add to runtime middleware
+    runtime->middleware = realloc(runtime->middleware, sizeof(Middleware) * (size_t)(runtime->middleware_count + 1));
+    runtime->middleware[runtime->middleware_count].name = strdup(name);
+    runtime->middleware[runtime->middleware_count].handle = handle;
+    runtime->middleware[runtime->middleware_count].execute = execute;
+    runtime->middleware_count++;
     
     return 0;
 }
 
-Plugin *find_plugin(const char *name) {
+Middleware *find_middleware(const char *name) {
     // Check if runtime is initialized
     if (!runtime) {
         return NULL;
     }
     
-    for (int i = 0; i < runtime->plugin_count; i++) {
-        if (strcmp(runtime->plugins[i].name, name) == 0) {
-            return &runtime->plugins[i];
+    for (int i = 0; i < runtime->middleware_count; i++) {
+        if (strcmp(runtime->middleware[i].name, name) == 0) {
+            return &runtime->middleware[i];
         }
     }
     return NULL;
@@ -398,7 +398,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
     
     PipelineStep *step = pipeline;
     while (step) {
-        if (strcmp(step->plugin, "result") == 0) {
+        if (strcmp(step->middleware, "result") == 0) {
             // Handle result step
             ASTNode *result_node = (ASTNode*)(uintptr_t)step->value;
             
@@ -466,9 +466,9 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             return 0;
         }
         
-        Plugin *plugin = find_plugin(step->plugin);
-        if (!plugin) {
-            fprintf(stderr, "Plugin not found: %s\n", step->plugin);
+        Middleware *middleware = find_middleware(step->middleware);
+        if (!middleware) {
+            fprintf(stderr, "Middleware not found: %s\n", step->middleware);
             return -1;
         }
         
@@ -481,13 +481,13 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             }
         }
         
-        // Ensure arena context is set before plugin execution
+        // Ensure arena context is set before middleware execution
         set_current_arena(arena);
-        json_t *result = plugin->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config);
-        // Ensure arena context is still set after plugin execution
+        json_t *result = middleware->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config);
+        // Ensure arena context is still set after middleware execution
         set_current_arena(arena);
         if (!result) {
-            fprintf(stderr, "Plugin %s failed\n", step->plugin);
+            fprintf(stderr, "Middleware %s failed\n", step->middleware);
             return -1;
         }
         
@@ -496,7 +496,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             // Find the result step in the remaining pipeline
             PipelineStep *remaining_step = step->next;
             while (remaining_step) {
-                if (strcmp(remaining_step->plugin, "result") == 0) {
+                if (strcmp(remaining_step->middleware, "result") == 0) {
                     // Execute result step with error
                     ASTNode *result_node = (ASTNode*)(uintptr_t)remaining_step->value;
                     
@@ -733,57 +733,57 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     return find_and_process_route(connection, url, method, request, arena);
 }
 
-// Function to collect unique plugin names from AST
-void collect_plugin_names_from_ast(ASTNode *node, char **plugin_names, int *plugin_count, int max_plugins) {
+// Function to collect unique middleware names from AST
+void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, int *middleware_count, int max_middleware) {
     if (!node) return;
     
     switch (node->type) {
         case AST_PROGRAM:
             for (int i = 0; i < node->data.program.statement_count; i++) {
-                collect_plugin_names_from_ast(node->data.program.statements[i], plugin_names, plugin_count, max_plugins);
+                collect_middleware_names_from_ast(node->data.program.statements[i], middleware_names, middleware_count, max_middleware);
             }
             break;
             
         case AST_ROUTE_DEFINITION:
-            // Collect plugins from the main pipeline
+            // Collect middleware from the main pipeline
             PipelineStep *step = node->data.route_def.pipeline;
             while (step) {
                 // Skip "result" as it's built-in
-                if (strcmp(step->plugin, "result") != 0) {
-                    // Check if plugin is already in the list
+                if (strcmp(step->middleware, "result") != 0) {
+                    // Check if middleware is already in the list
                     bool found = false;
-                    for (int i = 0; i < *plugin_count; i++) {
-                        if (strcmp(plugin_names[i], step->plugin) == 0) {
+                    for (int i = 0; i < *middleware_count; i++) {
+                        if (strcmp(middleware_names[i], step->middleware) == 0) {
                             found = true;
                             break;
                         }
                     }
-                    if (!found && *plugin_count < max_plugins) {
-                        plugin_names[*plugin_count] = strdup(step->plugin);
-                        (*plugin_count)++;
+                    if (!found && *middleware_count < max_middleware) {
+                        middleware_names[*middleware_count] = strdup(step->middleware);
+                        (*middleware_count)++;
                     }
                 }
                 
-                // If this is a result step, collect plugins from its conditions
-                if (strcmp(step->plugin, "result") == 0) {
+                // If this is a result step, collect middleware from its conditions
+                if (strcmp(step->middleware, "result") == 0) {
                     ASTNode *result_node = (ASTNode*)(uintptr_t)step->value;
                     ResultCondition *condition = result_node->data.result_step.conditions;
                     while (condition) {
                         PipelineStep *condition_step = condition->pipeline;
                         while (condition_step) {
                             // Skip "result" as it's built-in
-                            if (strcmp(condition_step->plugin, "result") != 0) {
-                                // Check if plugin is already in the list
+                            if (strcmp(condition_step->middleware, "result") != 0) {
+                                // Check if middleware is already in the list
                                 bool found = false;
-                                for (int i = 0; i < *plugin_count; i++) {
-                                    if (strcmp(plugin_names[i], condition_step->plugin) == 0) {
+                                for (int i = 0; i < *middleware_count; i++) {
+                                    if (strcmp(middleware_names[i], condition_step->middleware) == 0) {
                                         found = true;
                                         break;
                                     }
                                 }
-                                if (!found && *plugin_count < max_plugins) {
-                                    plugin_names[*plugin_count] = strdup(condition_step->plugin);
-                                    (*plugin_count)++;
+                                if (!found && *middleware_count < max_middleware) {
+                                    middleware_names[*middleware_count] = strdup(condition_step->middleware);
+                                    (*middleware_count)++;
                                 }
                             }
                             condition_step = condition_step->next;
@@ -818,8 +818,8 @@ int wp_runtime_init(const char *wp_file) {
     printf("Checking microhttpd availability...\n");
     
     runtime = malloc(sizeof(WPRuntime));
-    runtime->plugins = NULL;
-    runtime->plugin_count = 0;
+    runtime->middleware = NULL;
+    runtime->middleware_count = 0;
     runtime->parse_ctx = parse_context_create();
     if (!runtime->parse_ctx) {
         fprintf(stderr, "Error: Could not create parse context\n");
@@ -876,25 +876,25 @@ int wp_runtime_init(const char *wp_file) {
         }
     }
     
-    // Collect and load required plugins from AST
-    printf("Analyzing AST for required plugins...\n");
-    char *plugin_names[64]; // Max 64 plugins
-    int plugin_count = 0;
+    // Collect and load required middleware from AST
+    printf("Analyzing AST for required middleware...\n");
+    char *middleware_names[64]; // Max 64 middleware
+    int middleware_count = 0;
     
-    collect_plugin_names_from_ast(runtime->program, plugin_names, &plugin_count, 64);
+    collect_middleware_names_from_ast(runtime->program, middleware_names, &middleware_count, 64);
     
-    printf("Found %d unique plugins in AST\n", plugin_count);
+    printf("Found %d unique middleware in AST\n", middleware_count);
     
-    // Load required plugins
-    printf("Loading plugins...\n");
-    for (int i = 0; i < plugin_count; i++) {
-        printf("Loading plugin: %s\n", plugin_names[i]);
-        if (load_plugin(plugin_names[i]) != 0) {
-            printf("Warning: Failed to load %s plugin\n", plugin_names[i]);
+    // Load required middleware
+    printf("Loading middleware...\n");
+    for (int i = 0; i < middleware_count; i++) {
+        printf("Loading middleware: %s\n", middleware_names[i]);
+        if (load_middleware(middleware_names[i]) != 0) {
+            printf("Warning: Failed to load %s middleware\n", middleware_names[i]);
         } else {
-            printf("Loaded %s plugin successfully\n", plugin_names[i]);
+            printf("Loaded %s middleware successfully\n", middleware_names[i]);
         }
-        free(plugin_names[i]); // Free the strdup'd name
+        free(middleware_names[i]); // Free the strdup'd name
     }
     
     // Start HTTP server
@@ -943,12 +943,12 @@ void wp_runtime_cleanup() {
             MHD_stop_daemon(runtime->daemon);
         }
         
-        // Cleanup plugins
-        for (int i = 0; i < runtime->plugin_count; i++) {
-            dlclose(runtime->plugins[i].handle);
-            free(runtime->plugins[i].name);
+        // Cleanup middleware
+        for (int i = 0; i < runtime->middleware_count; i++) {
+            dlclose(runtime->middleware[i].handle);
+            free(runtime->middleware[i].name);
         }
-        free(runtime->plugins);
+        free(runtime->middleware);
         
         // Free parse context (this frees ALL parser memory automatically)
         parse_context_destroy(runtime->parse_ctx);

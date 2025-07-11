@@ -48,7 +48,8 @@ static void test_arena_alloc_success(void) {
     
     void *ptr2 = arena_alloc(arena, 200);
     TEST_ASSERT_NOT_NULL(ptr2);
-    TEST_ASSERT_EQUAL(300, arena->used);
+    // Account for 8-byte alignment: 100 bytes aligned to 104, then 200 more = 304
+    TEST_ASSERT_EQUAL(304, arena->used);
     
     // Check that pointers are different and don't overlap
     TEST_ASSERT_NOT_EQUAL(ptr1, ptr2);

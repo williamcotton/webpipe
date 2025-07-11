@@ -9,14 +9,14 @@ GET /hello
 
 ## Overview
 
-Web Pipeline (wp) is a domain-specific language and runtime for building web APIs through pipeline-based request processing. Each HTTP request flows through a series of plugins that transform JSON data, enabling powerful composition of data processing steps.
+Web Pipeline (wp) is a DSL and runtime for building web APIs through pipeline-based request processing. Each HTTP request flows through a series of middleware that transform JSON data, enabling powerful composition of data processing steps.
 
 ## Architecture
 
 The system consists of:
 - **Lexer/Parser**: Parses `.wp` files into an Abstract Syntax Tree (AST)
 - **Runtime**: HTTP server built on libmicrohttpd that executes pipeline steps
-- **Plugin System**: Dynamically loaded `.so` files that process JSON data
+- **Middleware System**: Dynamically loaded `.so` files that process JSON data
 - **Memory Management**: Per-request bump allocator arenas for efficient memory usage
 
 ## Pipeline Processing
@@ -25,13 +25,13 @@ Each HTTP request follows this flow:
 
 1. **Request Creation**: Incoming HTTP request is converted to JSON with `query`, `body`, `params`, `headers`, and other request metadata
 2. **Pipeline Execution**: Request JSON flows through each pipeline step sequentially
-3. **Plugin Processing**: Each plugin receives JSON input and returns JSON output
+3. **Middleware Processing**: Each middleware receives JSON input and returns JSON output
 4. **Response Generation**: Final JSON is converted to HTTP response
 
 ### Data Flow Example
 
 ```
-HTTP Request → JSON Request Object → Plugin 1 → Plugin 2 → Plugin N → HTTP Response
+HTTP Request → JSON Request Object → Middleware 1 → Middleware 2 → Middleware N → HTTP Response
 ```
 
 The request object is maintained throughout the pipeline, with each step potentially modifying or augmenting the data.
@@ -79,9 +79,9 @@ GET /api/data
       }`
 ```
 
-## Built-in Plugins
+## Built-in Middleware
 
-### JQ Plugin
+### JQ Middleware
 Processes JSON using jq expressions for data transformation and filtering.
 
 ```wp
@@ -89,7 +89,7 @@ GET /transform
   |> jq: `{ message: "Hello, " + .params.name }`
 ```
 
-### Lua Plugin
+### Lua Middleware
 Executes Lua scripts with full access to the request object.
 
 ```wp
@@ -101,7 +101,7 @@ GET /process
   `
 ```
 
-### PostgreSQL Plugin
+### PostgreSQL Middleware
 Executes SQL queries with parameter binding from `sqlParams`.
 
 ```wp
@@ -141,14 +141,14 @@ brew install \
 ### Build Commands
 
 ```bash
-# Build main executable and plugins
+# Build main executable and middleware
 make all
 
 # Build debug version
 make debug
 
-# Build and install plugins
-make install-plugins
+# Build and install middleware
+make install-middleware
 
 # Run server
 make run
@@ -164,7 +164,7 @@ make test
 
 # Run specific test suites
 make test-unit       # Unit tests for core components
-make test-integration # Integration tests for plugins  
+make test-integration # Integration tests for middleware  
 make test-system     # System/end-to-end tests
 
 # Run performance tests
@@ -235,9 +235,9 @@ POST /users
       |> jq: `{ error: "Internal server error" }`
 ```
 
-## Plugin Development
+## Middleware Development
 
-Plugins are shared libraries that implement the plugin interface:
+Middleware are shared libraries that implement the middleware interface:
 
 ```c
 typedef struct {
@@ -247,30 +247,30 @@ typedef struct {
                       arena_alloc_func alloc_func, 
                       arena_free_func free_func, 
                       const char *config);
-} Plugin;
+} Middleware;
 ```
 
-Each plugin receives:
+Each middleware receives:
 - `input`: JSON data from previous pipeline step
 - `arena`: Memory arena for allocations
 - `alloc_func`/`free_func`: Arena allocation functions
-- `config`: Plugin configuration string
+- `config`: Middleware configuration string
 
 ### Automatic Memory Management with Jansson
 
-The runtime automatically configures jansson to use per-request arena allocators at startup by calling `json_set_alloc_funcs()` in `server.c`. This means that **plugin developers can use jansson JSON objects normally** without worrying about memory management - all JSON allocations will automatically use the per-request arena allocator.
+The runtime automatically configures jansson to use per-request arena allocators at startup by calling `json_set_alloc_funcs()` in `server.c`. This means that **middleware developers can use jansson JSON objects normally** without worrying about memory management - all JSON allocations will automatically use the per-request arena allocator.
 
-When creating, manipulating, or returning `json_t` objects in plugins:
+When creating, manipulating, or returning `json_t` objects in middleware:
 - Use standard jansson functions (`json_object()`, `json_array()`, `json_string()`, etc.)
 - No need to manually manage memory for JSON objects
 - All JSON memory is automatically freed when the request completes
-- The arena ensures no memory leaks even if plugins don't explicitly decref objects
+- The arena ensures no memory leaks even if middleware don't explicitly decref objects
 
-This seamless integration allows plugins to focus on business logic rather than memory management details.
+This seamless integration allows middleware to focus on business logic rather than memory management details.
 
-### Hello World Plugin Example
+### Hello World Middleware Example
 
-Here's a complete example of a simple plugin that adds a `hello` key to the JSON object:
+Here's a complete example of a simple middleware that adds a `hello` key to the JSON object:
 
 ```c
 #include <jansson.h>
@@ -278,15 +278,15 @@ Here's a complete example of a simple plugin that adds a `hello` key to the JSON
 #include <stdlib.h>
 #include <string.h>
 
-// Arena allocation function types for plugins
+// Arena allocation function types for middleware
 typedef void* (*arena_alloc_func)(void* arena, size_t size);
 typedef void (*arena_free_func)(void* arena);
 
 // Memory arena type (forward declaration)
 typedef struct MemoryArena MemoryArena;
 
-// Plugin interface function
-json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
+// Middleware interface function
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config) {
     // Suppress unused parameter warnings
     (void)free_func;
     
@@ -337,7 +337,7 @@ json_t *plugin_execute(json_t *input, void *arena, arena_alloc_func alloc_func, 
 }
 ```
 
-This plugin demonstrates:
+This middleware demonstrates:
 - **Arena Usage**: Uses the arena allocator to copy the config string
 - **Config Handling**: Takes a config parameter and uses it as the value (defaults to "world")
 - **JSON Manipulation**: Uses standard jansson functions which automatically use arena allocation
@@ -349,7 +349,7 @@ GET /hello
   |> hello: `world`
 ```
 
-The plugin receives the initial request JSON and adds `{ "hello": "world" }` to it.
+The middleware receives the initial request JSON and adds `{ "hello": "world" }` to it.
 
 ## Memory Management
 
@@ -364,7 +364,7 @@ This approach eliminates memory leaks and provides predictable performance chara
 ## Performance Features
 
 - **Compiled Pipelines**: Routes are parsed once at startup
-- **Plugin Caching**: Compiled jq programs and Lua scripts are cached
+- **Middleware Caching**: Compiled jq programs and Lua scripts are cached
 - **Arena Allocation**: Fast bump allocation with automatic cleanup
 - **Minimal Copying**: JSON data flows through pipeline with minimal serialization
 
@@ -398,7 +398,7 @@ Each error object contains:
 Common error types include:
 - `validationError`: Input validation failures
 - `sqlError`: Database operation errors
-- `internalError`: System/plugin internal errors
+- `internalError`: System/middleware internal errors
 - `authError`: Authentication/authorization failures
 
 ### Result Step Processing
@@ -410,9 +410,9 @@ The `result` step matches errors against condition types:
 - **Error Propagation**: Errors flow through the pipeline like regular data
 - **Fallback Handling**: `default` condition handles unmatched errors
 
-### Plugin Error Creation
+### Middleware Error Creation
 
-Plugins should create errors using the standardized format:
+Middleware should create errors using the standardized format:
 
 ```c
 json_t *error_obj = json_object();
