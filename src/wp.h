@@ -121,7 +121,7 @@ typedef void (*arena_free_func)(void* arena);
 typedef struct {
     char *name;
     void *handle;
-    json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType);
+    json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType, json_t *variables);
 } Middleware;
 
 // Function declarations

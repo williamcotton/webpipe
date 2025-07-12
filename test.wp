@@ -180,3 +180,72 @@ GET /hello-mustache
 GET /mustache-error-test
   |> jq: `{ invalid: "data" }`
   |> mustache: `{{syntax_error`
+
+mustache cardPartial = `
+  <div class="card">
+    <h3>{{title}}</h3>
+    <p>{{description}}</p>
+  </div>
+`
+
+mustache headerPartial = `
+  <header>
+    <h1>{{siteName}}</h1>
+    <nav>{{>navPartial}}</nav>
+  </header>
+`
+
+mustache navPartial = `
+  <ul>
+    <li><a href="/">Home</a></li>
+    <li><a href="/about">About</a></li>
+  </ul>
+`
+
+GET /test-partials
+  |> jq: `{ 
+    title: "Welcome", 
+    description: "This is a test card",
+    siteName: "My Website"
+  }`
+  |> mustache: `
+    <html>
+      <head>
+        <title>{{siteName}}</title>
+      </head>
+      <body>
+        {{>headerPartial}}
+        <main>
+          {{>cardPartial}}
+        </main>
+      </body>
+    </html>
+  `
+
+GET /test-missing-partial
+  |> jq: `{ title: "Test" }`
+  |> mustache: `
+    <html>
+      <body>
+        {{>nonexistentPartial}}
+      </body>
+    </html>
+  `
+
+GET /test-sql-error-mustache
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT * FROM nonexistent_table`
+  |> result
+    ok(200):
+      |> jq: `{success: true, data: .data}`
+    sqlError(500):
+      |> jq: `{
+        error: "Database error",
+        sqlstate: .errors[0].sqlstate,
+        message: .errors[0].message,
+        query: .errors[0].query
+      }`
+      |> mustache: `{{error}}`
+    default(500):
+      |> jq: `{error: "Internal server error"}`
+      |> mustache: `{{error}}`

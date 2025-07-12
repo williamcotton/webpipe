@@ -191,8 +191,8 @@ int load_middleware(const char *name) {
     }
     
     // Get middleware execute function
-    json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **) = 
-        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **))dlsym(handle, "middleware_execute");
+    json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **, json_t *) = 
+        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **, json_t *))dlsym(handle, "middleware_execute");
     if (!execute) {
         fprintf(stderr, "Error getting middleware_execute for %s: %s\n", name, dlerror());
         dlclose(handle);
@@ -524,7 +524,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         
         // Ensure arena context is set before middleware execution
         set_current_arena(arena);
-        json_t *result = middleware->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config, content_type);
+        json_t *result = middleware->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config, content_type, runtime->variables);
         // Ensure arena context is still set after middleware execution
         set_current_arena(arena);
         if (!result) {

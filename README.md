@@ -129,6 +129,67 @@ GET /hello-mustache
   `
 ```
 
+#### Mustache Partials
+
+The mustache middleware supports partials for reusable template components. Partials are defined as variables and can be included in other templates using the `{{>partialName}}` syntax.
+
+**Defining Partials:**
+
+```wp
+# Define reusable template components
+mustache cardPartial = `
+  <div class="card">
+    <h3>{{title}}</h3>
+    <p>{{description}}</p>
+  </div>
+`
+
+mustache headerPartial = `
+  <header>
+    <h1>{{siteName}}</h1>
+    <nav>{{>navPartial}}</nav>
+  </header>
+`
+
+mustache navPartial = `
+  <ul>
+    <li><a href="/">Home</a></li>
+    <li><a href="/about">About</a></li>
+  </ul>
+`
+```
+
+**Using Partials in Templates:**
+
+```wp
+GET /test-partials
+  |> jq: `{ 
+    title: "Welcome", 
+    description: "This is a test card",
+    siteName: "My Website"
+  }`
+  |> mustache: `
+    <html>
+      <head>
+        <title>{{siteName}}</title>
+      </head>
+      <body>
+        {{>headerPartial}}
+        <main>
+          {{>cardPartial}}
+        </main>
+      </body>
+    </html>
+  `
+```
+
+**Features of Mustache Partials:**
+- **Reusability**: Define once, use multiple times across different templates
+- **Nesting**: Partials can include other partials (e.g., `headerPartial` includes `navPartial`)
+- **Context Sharing**: Partials have access to the same JSON data context as the main template
+- **Error Handling**: Missing partials are handled gracefully (rendered as empty strings)
+- **Variable Scope**: All mustache variables defined in your `.wp` file are available as partials
+
 ## Building and Installation
 
 ### Prerequisites

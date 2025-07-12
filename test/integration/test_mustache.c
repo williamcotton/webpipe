@@ -6,7 +6,7 @@
 // Load the actual mustache middleware
 #include <dlfcn.h>
 static void *mustache_middleware_handle = NULL;
-static json_t *(*mustache_middleware_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **) = NULL;
+static json_t *(*mustache_middleware_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **, json_t *) = NULL;
 
 static int load_mustache_middleware(void) {
     if (mustache_middleware_handle) return 0; // Already loaded
@@ -18,7 +18,7 @@ static int load_mustache_middleware(void) {
     }
     
     void *middleware_func = dlsym(mustache_middleware_handle, "middleware_execute");
-    mustache_middleware_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **))
+    mustache_middleware_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **, json_t *))
                         (uintptr_t)middleware_func;
     if (!middleware_func) {
         fprintf(stderr, "Failed to find middleware_execute in mustache middleware: %s\n", dlerror());
@@ -64,7 +64,7 @@ static void test_mustache_basic_template(void) {
     
     // Execute mustache middleware
     char *content_type = NULL;
-    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type);
+    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type, NULL);
     
     // Verify result
     TEST_ASSERT_NOT_NULL(result);
@@ -102,7 +102,7 @@ static void test_mustache_template_with_loop(void) {
     
     // Execute mustache middleware
     char *content_type = NULL;
-    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type);
+    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type, NULL);
     
     // Verify result
     TEST_ASSERT_NOT_NULL(result);
@@ -138,7 +138,7 @@ static void test_mustache_template_with_conditionals(void) {
     
     // Execute mustache middleware
     char *content_type = NULL;
-    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type);
+    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type, NULL);
     
     // Verify result
     TEST_ASSERT_NOT_NULL(result);
@@ -169,7 +169,7 @@ static void test_mustache_template_error_handling(void) {
     
     // Execute mustache middleware
     char *content_type = NULL;
-    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type);
+    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type, NULL);
     
     // Verify result is an error object
     TEST_ASSERT_NOT_NULL(result);
@@ -213,7 +213,7 @@ static void test_mustache_empty_template(void) {
     
     // Execute mustache middleware
     char *content_type = NULL;
-    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type);
+    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type, NULL);
     
     // Verify result
     TEST_ASSERT_NOT_NULL(result);
@@ -243,7 +243,7 @@ static void test_mustache_missing_variables(void) {
     
     // Execute mustache middleware
     char *content_type = NULL;
-    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type);
+    json_t *result = mustache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, template, &content_type, NULL);
     
     // Verify result (mustache should render with empty values for missing variables)
     TEST_ASSERT_NOT_NULL(result);

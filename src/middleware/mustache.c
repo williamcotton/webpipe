@@ -2,7 +2,40 @@
 #include <string.h>
 #include <stdlib.h>
 #include "../../deps/mustach/mustach-jansson.h"
+#include "../../deps/mustach/mustach-wrap.h"
 #include "../wp.h"
+
+// Thread-local storage for current variables (during request processing)
+static __thread json_t *current_variables = NULL;
+
+// Function to find mustache partials from the variables
+static const char *find_partial(json_t *variables, const char *name) {
+    if (!variables || !name) {
+        return NULL;
+    }
+    
+    json_t *var_value = json_object_get(variables, name);
+    if (var_value && json_is_string(var_value)) {
+        return json_string_value(var_value);
+    }
+    return NULL;
+}
+
+// Partial handler callback for mustach library
+static int partial_handler(const char *name, struct mustach_sbuf *sbuf) {
+    if (!current_variables) {
+        return MUSTACH_ERROR_PARTIAL_NOT_FOUND;
+    }
+    
+    const char *template = find_partial(current_variables, name);
+    if (!template) {
+        return MUSTACH_ERROR_PARTIAL_NOT_FOUND;
+    }
+    
+    sbuf->value = template;
+    sbuf->freecb = NULL; // Template is managed by variables
+    return MUSTACH_OK;
+}
 
 // Local arena_strdup implementation (copied from server.c)
 static char *local_arena_strdup(void *arena, arena_alloc_func alloc_func, const char *str) {
@@ -26,26 +59,36 @@ json_t *middleware_execute(json_t *input, void *arena,
                           arena_alloc_func alloc_func, 
                           arena_free_func free_func, 
                           const char *template,
-                          char **contentType);
+                          char **contentType,
+                          json_t *variables);
 
 // Middleware interface function
 json_t *middleware_execute(json_t *input, void *arena, 
                           arena_alloc_func alloc_func, 
                           arena_free_func free_func, 
                           const char *template,
-                          char **contentType) {
+                          char **contentType,
+                          json_t *variables) {
     // Suppress unused parameter warnings
     (void)free_func;
+    
+    // Set up partials for this request
+    current_variables = variables;
+    mustach_wrap_get_partial = partial_handler;
     
     // Render mustache template with input JSON data
     char *html = render_mustache_template(template, input, arena, alloc_func);
     if (!html) {
-        // DON'T set content type for errors - return JSON error object
+        // Clean up and DON'T set content type for errors - return JSON error object
+        current_variables = NULL;
         return create_template_error("Template rendering failed", template);
     }
     
     // ONLY set content type to HTML on successful render
     *contentType = local_arena_strdup(arena, alloc_func, "text/html");
+    
+    // Clean up
+    current_variables = NULL;
     
     // Return HTML content as JSON string
     return json_string(html);

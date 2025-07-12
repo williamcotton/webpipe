@@ -118,6 +118,9 @@ $(BUILD_DIR)/test_lua: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_lua.c $
 $(BUILD_DIR)/test_mustache: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_mustache.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_mustache.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
+$(BUILD_DIR)/test_mustache_partials: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_mustache_partials.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_mustache_partials.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
+
 $(BUILD_DIR)/test_pg: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_pg.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_pg.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
@@ -135,7 +138,7 @@ $(BUILD_DIR)/test_perf: $(BUILD_DIR)/unity.o $(TEST_DIR)/system/test_perf.c $(TE
 
 # Test group targets
 TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_middleware
-TEST_INTEGRATION_BINS = $(BUILD_DIR)/test_jq $(BUILD_DIR)/test_lua $(BUILD_DIR)/test_mustache $(BUILD_DIR)/test_pg $(BUILD_DIR)/test_pipeline
+TEST_INTEGRATION_BINS = $(BUILD_DIR)/test_jq $(BUILD_DIR)/test_lua $(BUILD_DIR)/test_mustache $(BUILD_DIR)/test_mustache_partials $(BUILD_DIR)/test_pg $(BUILD_DIR)/test_pipeline
 TEST_SYSTEM_BINS = $(BUILD_DIR)/test_server $(BUILD_DIR)/test_e2e $(BUILD_DIR)/test_perf
 TEST_ALL_BINS = $(TEST_UNIT_BINS) $(TEST_INTEGRATION_BINS) $(TEST_SYSTEM_BINS)
 
