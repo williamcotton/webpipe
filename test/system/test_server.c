@@ -53,7 +53,7 @@ static void test_server_request_json_creation(void) {
     MemoryArena *arena = arena_create(1024 * 1024);  // Increased arena size
     set_current_arena(arena);
     
-    json_t *request = create_request_json(NULL, "/test", "GET", NULL, 0);
+    json_t *request = create_request_json(NULL, "/test", "GET", NULL);
     
     TEST_ASSERT_NOT_NULL(request);
     
@@ -121,7 +121,7 @@ static void test_server_memory_arena_per_request(void) {
     size_t initial_used = arena->used;
     
     // Simulate request processing
-    json_t *request = create_request_json(NULL, "/test", "GET", NULL, 0);
+    json_t *request = create_request_json(NULL, "/test", "GET", NULL);
     TEST_ASSERT_NOT_NULL(request);
     
     // Process request (would normally go through full pipeline)

@@ -163,6 +163,390 @@ PATCH /test-body
     hasBody: (.body != null)
   }`
 
+# Todo App - Mock Backend
+GET /
+  |> jq: `"redirect"`
+  |> mustache: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Todo App</title>
+      <meta http-equiv="refresh" content="0;url=/todos">
+    </head>
+    <body>
+      <p>Redirecting to todo app... <a href="/todos">Click here if not redirected.</a></p>
+    </body>
+    </html>
+  `
+
+GET /todos
+  |> jq: `{
+    todos: [
+      {
+        id: 1,
+        title: "Buy groceries",
+        description: "Milk, eggs, bread, and fruits",
+        completed: false,
+        created_at: "2024-01-15T10:30:00Z"
+      },
+      {
+        id: 2,
+        title: "Finish project",
+        description: "Complete the todo app implementation",
+        completed: false,
+        created_at: "2024-01-15T11:00:00Z"
+      },
+      {
+        id: 3,
+        title: "Exercise",
+        description: "Go for a 30-minute walk",
+        completed: true,
+        created_at: "2024-01-15T09:00:00Z"
+      },
+      {
+        id: 4,
+        title: "Read a book",
+        description: "Continue reading Clean Code",
+        completed: false,
+        created_at: "2024-01-15T08:00:00Z"
+      }
+    ],
+    pageTitle: "My Todo List"
+  }`
+  |> mustache: `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>{{pageTitle}}</title>
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          max-width: 800px;
+          margin: 0 auto;
+          padding: 20px;
+          background-color: #f5f5f5;
+        }
+        .container {
+          background-color: white;
+          padding: 20px;
+          border-radius: 8px;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+          color: #333;
+          border-bottom: 2px solid #007bff;
+          padding-bottom: 10px;
+        }
+        .add-form {
+          background-color: #f8f9fa;
+          padding: 20px;
+          border-radius: 5px;
+          margin-bottom: 20px;
+        }
+        .form-group {
+          margin-bottom: 15px;
+        }
+        label {
+          display: block;
+          margin-bottom: 5px;
+          font-weight: bold;
+        }
+        input[type="text"], textarea {
+          width: 100%;
+          padding: 8px;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+          font-size: 14px;
+          box-sizing: border-box;
+        }
+        textarea {
+          height: 60px;
+          resize: vertical;
+        }
+        .btn {
+          background-color: #007bff;
+          color: white;
+          padding: 10px 20px;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 14px;
+        }
+        .btn:hover {
+          background-color: #0056b3;
+        }
+        .btn-sm {
+          padding: 5px 10px;
+          font-size: 12px;
+        }
+        .btn-success {
+          background-color: #28a745;
+        }
+        .btn-success:hover {
+          background-color: #218838;
+        }
+        .todo-list {
+          list-style: none;
+          padding: 0;
+        }
+        .todo-item {
+          background-color: #f8f9fa;
+          margin-bottom: 10px;
+          padding: 15px;
+          border-radius: 5px;
+          border-left: 4px solid #007bff;
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+        }
+        .todo-item.completed {
+          background-color: #d4edda;
+          border-left-color: #28a745;
+        }
+        .todo-content {
+          flex: 1;
+        }
+        .todo-title {
+          font-weight: bold;
+          margin-bottom: 5px;
+        }
+        .todo-title.completed {
+          text-decoration: line-through;
+          color: #6c757d;
+        }
+        .todo-description {
+          color: #666;
+          font-size: 14px;
+          margin-bottom: 5px;
+        }
+        .todo-date {
+          font-size: 12px;
+          color: #999;
+        }
+        .todo-actions {
+          margin-left: 10px;
+        }
+        .empty-state {
+          text-align: center;
+          color: #666;
+          font-style: italic;
+          padding: 40px;
+        }
+        .success-message {
+          background-color: #d4edda;
+          color: #155724;
+          padding: 10px;
+          border-radius: 4px;
+          margin-bottom: 20px;
+          border: 1px solid #c3e6cb;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>{{pageTitle}}</h1>
+        
+        <div class="add-form">
+          <h3>Add New Todo</h3>
+          <form action="/todos" method="post">
+            <div class="form-group">
+              <label for="title">Title *</label>
+              <input type="text" id="title" name="title" required>
+            </div>
+            <div class="form-group">
+              <label for="description">Description</label>
+              <textarea id="description" name="description" placeholder="Optional description..."></textarea>
+            </div>
+            <button type="submit" class="btn">Add Todo</button>
+          </form>
+        </div>
+        
+        <ul class="todo-list">
+          {{#todos}}
+          <li class="todo-item {{#completed}}completed{{/completed}}">
+            <div class="todo-content">
+              <div class="todo-title {{#completed}}completed{{/completed}}">{{title}}</div>
+              {{#description}}
+              <div class="todo-description">{{description}}</div>
+              {{/description}}
+              <div class="todo-date">Created: {{created_at}}</div>
+            </div>
+            <div class="todo-actions">
+              <form action="/todos/{{id}}/toggle" method="post" style="display: inline;">
+                {{#completed}}
+                <button type="submit" class="btn btn-sm">Mark Incomplete</button>
+                {{/completed}}
+                {{^completed}}
+                <button type="submit" class="btn btn-sm btn-success">Mark Complete</button>
+                {{/completed}}
+              </form>
+            </div>
+          </li>
+          {{/todos}}
+          {{^todos}}
+          <li class="empty-state">
+            <p>No todos yet. Add your first todo above!</p>
+          </li>
+          {{/todos}}
+        </ul>
+      </div>
+    </body>
+    </html>
+  `
+
+POST /todos
+  |> jq: `{
+    title: .body.title,
+    description: (.body.description // ""),
+    newTodo: {
+      id: (now | tostring),
+      title: .body.title,
+      description: (.body.description // ""),
+      completed: false,
+      created_at: (now | todate)
+    }
+  }`
+  |> mustache: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Todo Added</title>
+      <meta http-equiv="refresh" content="2;url=/todos">
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          max-width: 600px;
+          margin: 50px auto;
+          padding: 20px;
+          background-color: #f5f5f5;
+        }
+        .success-container {
+          background-color: white;
+          padding: 30px;
+          border-radius: 8px;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+          text-align: center;
+        }
+        .success-icon {
+          font-size: 48px;
+          color: #28a745;
+          margin-bottom: 20px;
+        }
+        h1 {
+          color: #28a745;
+          margin-bottom: 20px;
+        }
+        .todo-preview {
+          background-color: #f8f9fa;
+          padding: 15px;
+          border-radius: 5px;
+          margin: 20px 0;
+          border-left: 4px solid #28a745;
+        }
+        .todo-title {
+          font-weight: bold;
+          margin-bottom: 5px;
+        }
+        .todo-description {
+          color: #666;
+          font-size: 14px;
+        }
+        .btn {
+          background-color: #007bff;
+          color: white;
+          padding: 10px 20px;
+          border: none;
+          border-radius: 4px;
+          text-decoration: none;
+          display: inline-block;
+          margin-top: 10px;
+        }
+        .btn:hover {
+          background-color: #0056b3;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="success-container">
+        <div class="success-icon">✓</div>
+        <h1>Todo Added Successfully!</h1>
+        <div class="todo-preview">
+          <div class="todo-title">{{newTodo.title}}</div>
+          {{#newTodo.description}}
+          <div class="todo-description">{{newTodo.description}}</div>
+          {{/newTodo.description}}
+        </div>
+        <p>Redirecting to todo list in 2 seconds...</p>
+        <a href="/todos" class="btn">Go to Todo List</a>
+      </div>
+    </body>
+    </html>
+  `
+
+POST /todos/:id/toggle
+  |> jq: `{
+    todoId: .params.id,
+    action: "toggle"
+  }`
+  |> mustache: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Todo Updated</title>
+      <meta http-equiv="refresh" content="1;url=/todos">
+      <style>
+        body {
+          font-family: Arial, sans-serif;
+          max-width: 600px;
+          margin: 50px auto;
+          padding: 20px;
+          background-color: #f5f5f5;
+        }
+        .success-container {
+          background-color: white;
+          padding: 30px;
+          border-radius: 8px;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+          text-align: center;
+        }
+        .success-icon {
+          font-size: 48px;
+          color: #28a745;
+          margin-bottom: 20px;
+        }
+        h1 {
+          color: #28a745;
+          margin-bottom: 20px;
+        }
+        .btn {
+          background-color: #007bff;
+          color: white;
+          padding: 10px 20px;
+          border: none;
+          border-radius: 4px;
+          text-decoration: none;
+          display: inline-block;
+          margin-top: 10px;
+        }
+        .btn:hover {
+          background-color: #0056b3;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="success-container">
+        <div class="success-icon">✓</div>
+        <h1>Todo Updated!</h1>
+        <p>Todo #{{todoId}} has been updated successfully.</p>
+        <p>Redirecting to todo list in 1 second...</p>
+        <a href="/todos" class="btn">Go to Todo List</a>
+      </div>
+    </body>
+    </html>
+  `
+
 GET /hello-mustache
   |> jq: `{ name: "World", message: "Hello from mustache!" }`
   |> mustache: `

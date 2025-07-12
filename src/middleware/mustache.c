@@ -5,6 +5,10 @@
 #include "../../deps/mustach/mustach-wrap.h"
 #include "../wp.h"
 
+// External arena allocator functions
+extern void *jansson_arena_malloc(size_t size);
+extern void jansson_arena_free(void *ptr);
+
 // Thread-local storage for current variables (during request processing)
 static __thread json_t *current_variables = NULL;
 
@@ -94,21 +98,34 @@ json_t *middleware_execute(json_t *input, void *arena,
     return json_string(html);
 }
 
-// Template rendering function
+// Template rendering function  
 static char *render_mustache_template(const char *template, json_t *data, void *arena, arena_alloc_func alloc_func) {
     char *result = NULL;
     size_t result_size = 0;
     
-    // Use mustach_jansson_mem to render template
+    // Save current jansson allocators
+    json_malloc_t current_malloc;
+    json_free_t current_free;
+    json_get_alloc_funcs(&current_malloc, &current_free);
+    
+    // Temporarily switch to standard malloc/free for mustache library
+    json_set_alloc_funcs(malloc, free);
+    
+    // Use mustach_jansson_mem to render template - this will use standard malloc
     int rc = mustach_jansson_mem(template, strlen(template), data,
                                 Mustach_With_AllExtensions, &result, &result_size);
+    
+    // Restore arena allocators for jansson
+    json_set_alloc_funcs(current_malloc, current_free);
     
     if (rc != MUSTACH_OK) {
         return NULL; // Return NULL for error, let caller handle
     }
     
-    // Copy result to arena and free original (following old_mustache.c pattern)
+    // Copy result from malloc memory to arena memory
     char *arena_result = local_arena_strdup(arena, alloc_func, result);
+    
+    // Free the malloc'd result since we copied it to arena
     free(result);
     
     return arena_result;

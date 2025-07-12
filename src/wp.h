@@ -183,6 +183,9 @@ typedef struct {
     char *post_data;
     size_t post_data_size;
     size_t post_data_capacity;
+    struct MHD_PostProcessor *post_processor;
+    json_t *form_data;  // Parsed form data as JSON object
+    int is_form_data;   // 1 if this is form data, 0 if raw data
 } PostData;
 
 #define POST_DATA_MAGIC 0x504F5354  // "POST" in ASCII
@@ -193,7 +196,7 @@ Middleware *find_middleware(const char *name);
 void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, int *middleware_count, int max_middleware);
 json_t *create_request_json(struct MHD_Connection *connection, 
                            const char *url, const char *method,
-                           const char *upload_data, size_t upload_data_size);
+                           PostData *post_data);
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
                                 json_t **final_response, int *response_code, char **content_type);
 int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena);

@@ -234,7 +234,11 @@ static void request_completed(void *cls, struct MHD_Connection *connection,
         // Check if it's a PostData structure by checking the magic number
         PostData *post_data = (PostData *)*con_cls;
         if (post_data->magic == POST_DATA_MAGIC) {
-            // It's a PostData structure, free the arena
+            // It's a PostData structure, clean up post processor if exists
+            if (post_data->post_processor) {
+                MHD_destroy_post_processor(post_data->post_processor);
+            }
+            // Free the arena
             MemoryArena *arena = post_data->arena;
             set_current_arena(NULL);
             arena_free(arena);
@@ -248,10 +252,43 @@ static void request_completed(void *cls, struct MHD_Connection *connection,
     }
 }
 
+// Form data iterator for MHD_PostProcessor
+static enum MHD_Result form_data_iterator(void *cls, enum MHD_ValueKind kind, 
+                                         const char *key, const char *filename, 
+                                         const char *content_type, const char *transfer_encoding,
+                                         const char *data, uint64_t off, size_t size) {
+    (void)kind;
+    (void)filename;
+    (void)content_type;
+    (void)transfer_encoding;
+    (void)off;
+    
+    PostData *post_data = (PostData *)cls;
+    
+    if (!post_data || !post_data->form_data || !key) {
+        return MHD_NO;
+    }
+    
+    if (size > 0 && data) {
+        // Create a null-terminated string from the data
+        char *value = arena_alloc(post_data->arena, size + 1);
+        if (!value) {
+            return MHD_NO;
+        }
+        memcpy(value, data, size);
+        value[size] = '\0';
+        
+        // Add to form data JSON object
+        json_object_set_new(post_data->form_data, key, json_string(value));
+    }
+    
+    return MHD_YES;
+}
+
 // HTTP request handling
 json_t *create_request_json(struct MHD_Connection *connection, 
                            const char *url, const char *method,
-                           const char *upload_data, size_t upload_data_size) {
+                           PostData *post_data) {
     (void)connection; // Suppress unused parameter warning
     json_t *request = json_object();
     
@@ -270,15 +307,22 @@ json_t *create_request_json(struct MHD_Connection *connection,
     json_object_set_new(request, "query", query);
     
     // Set body if present
-    if (upload_data && upload_data_size > 0) {
-        // Try to parse as JSON first
-        json_error_t error;
-        json_t *json_body = json_loadb(upload_data, upload_data_size, 0, &error);
-        if (json_body) {
-            json_object_set_new(request, "body", json_body);
+    if (post_data) {
+        if (post_data->is_form_data && post_data->form_data) {
+            // Use parsed form data
+            json_object_set_new(request, "body", json_deep_copy(post_data->form_data));
+        } else if (post_data->post_data && post_data->post_data_size > 0) {
+            // Try to parse as JSON first
+            json_error_t error;
+            json_t *json_body = json_loadb(post_data->post_data, post_data->post_data_size, 0, &error);
+            if (json_body) {
+                json_object_set_new(request, "body", json_body);
+            } else {
+                // If not valid JSON, store as string
+                json_object_set_new(request, "body", json_stringn(post_data->post_data, post_data->post_data_size));
+            }
         } else {
-            // If not valid JSON, store as string
-            json_object_set_new(request, "body", json_stringn(upload_data, upload_data_size));
+            json_object_set_new(request, "body", json_null());
         }
     } else {
         json_object_set_new(request, "body", json_null());
@@ -709,6 +753,21 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
             post_data->post_data = NULL;
             post_data->post_data_size = 0;
             post_data->post_data_capacity = 0;
+            post_data->post_processor = NULL;
+            post_data->form_data = NULL;
+            post_data->is_form_data = 0;
+            
+            // Check Content-Type to determine if this is form data
+            const char *content_type = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "Content-Type");
+            if (content_type && strstr(content_type, "application/x-www-form-urlencoded")) {
+                // This is form data, create post processor
+                post_data->post_processor = MHD_create_post_processor(connection, 1024, form_data_iterator, post_data);
+                if (post_data->post_processor) {
+                    post_data->is_form_data = 1;
+                    post_data->form_data = json_object();
+                }
+            }
+            
             *con_cls = post_data;
         } else {
             *con_cls = arena;
@@ -724,34 +783,41 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
         }
         set_current_arena(post_data->arena);
         
-        // If we have upload data, collect it
+        // If we have upload data, process it
         if (*upload_data_size > 0) {
-            // Ensure we have enough capacity
-            size_t new_size = post_data->post_data_size + *upload_data_size;
-            if (new_size > post_data->post_data_capacity) {
-                size_t new_capacity = new_size + 1024; // Add some buffer
-                char *new_buffer = arena_alloc(post_data->arena, new_capacity);
-                if (!new_buffer) {
-                    return MHD_NO;
+            if (post_data->is_form_data && post_data->post_processor) {
+                // Process form data using libmicrohttpd's post processor
+                enum MHD_Result result = MHD_post_process(post_data->post_processor, upload_data, *upload_data_size);
+                *upload_data_size = 0; // Mark as consumed
+                return result;
+            } else {
+                // Handle as raw data (JSON or other)
+                // Ensure we have enough capacity
+                size_t new_size = post_data->post_data_size + *upload_data_size;
+                if (new_size > post_data->post_data_capacity) {
+                    size_t new_capacity = new_size + 1024; // Add some buffer
+                    char *new_buffer = arena_alloc(post_data->arena, new_capacity);
+                    if (!new_buffer) {
+                        return MHD_NO;
+                    }
+                    if (post_data->post_data) {
+                        memcpy(new_buffer, post_data->post_data, post_data->post_data_size);
+                    }
+                    post_data->post_data = new_buffer;
+                    post_data->post_data_capacity = new_capacity;
                 }
-                if (post_data->post_data) {
-                    memcpy(new_buffer, post_data->post_data, post_data->post_data_size);
-                }
-                post_data->post_data = new_buffer;
-                post_data->post_data_capacity = new_capacity;
+                
+                // Append new data
+                memcpy(post_data->post_data + post_data->post_data_size, upload_data, *upload_data_size);
+                post_data->post_data_size += *upload_data_size;
+                *upload_data_size = 0; // Mark as consumed
+                
+                return MHD_YES; // Continue receiving data
             }
-            
-            // Append new data
-            memcpy(post_data->post_data + post_data->post_data_size, upload_data, *upload_data_size);
-            post_data->post_data_size += *upload_data_size;
-            *upload_data_size = 0; // Mark as consumed
-            
-            return MHD_YES; // Continue receiving data
         }
         
         // No more data to receive, process the request
-        json_t *request = create_request_json(connection, url, method, 
-                                             post_data->post_data, post_data->post_data_size);
+        json_t *request = create_request_json(connection, url, method, post_data);
         
         // Continue with normal request processing...
         MemoryArena *arena = post_data->arena;
@@ -768,8 +834,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     }
     set_current_arena(arena); // ALWAYS set arena for this thread on each request
     
-    json_t *request = create_request_json(connection, url, method, 
-                                         upload_data, *upload_data_size);
+    json_t *request = create_request_json(connection, url, method, NULL);
     
     // Process the request using the extracted helper function
     return find_and_process_route(connection, url, method, request, arena);

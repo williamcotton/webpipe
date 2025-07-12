@@ -61,6 +61,16 @@ void parser_consume_newlines(Parser *parser) {
   }
 }
 
+// Error recovery function to skip invalid tokens
+static void parser_skip_to_next_statement(Parser *parser) {
+  while (!parser_is_at_end(parser) &&
+         !parser_check(parser, TOKEN_HTTP_METHOD) &&
+         !parser_check(parser, TOKEN_IDENTIFIER) &&
+         !parser_check(parser, TOKEN_EOF)) {
+    parser_advance(parser);
+  }
+}
+
 PipelineStep *parser_parse_pipeline(Parser *parser) {
   PipelineStep *head = NULL;
   PipelineStep *tail = NULL;
@@ -68,6 +78,7 @@ PipelineStep *parser_parse_pipeline(Parser *parser) {
   while (parser_match(parser, TOKEN_PIPE)) {
     if (!parser_check(parser, TOKEN_IDENTIFIER)) {
       fprintf(stderr, "Expected middleware name after |>\n");
+      parser_skip_to_next_statement(parser);
       return head;
     }
 
@@ -106,6 +117,7 @@ PipelineStep *parser_parse_pipeline(Parser *parser) {
 
     if (!parser_match(parser, TOKEN_COLON)) {
       fprintf(stderr, "Expected : after middleware name\n");
+      parser_skip_to_next_statement(parser);
       return head;
     }
 
@@ -175,6 +187,7 @@ ASTNode *parser_parse_result_step(Parser *parser) {
         break;
       }
       fprintf(stderr, "Expected condition name\n");
+      parser_advance(parser); // Skip the invalid token to prevent infinite loop
       break;
     }
 
@@ -182,11 +195,13 @@ ASTNode *parser_parse_result_step(Parser *parser) {
 
     if (!parser_match(parser, TOKEN_LPAREN)) {
       fprintf(stderr, "Expected ( after condition name\n");
+      parser_advance(parser); // Skip the invalid token
       break;
     }
 
     if (!parser_check(parser, TOKEN_NUMBER)) {
       fprintf(stderr, "Expected status code number\n");
+      parser_advance(parser); // Skip the invalid token
       break;
     }
 
@@ -194,11 +209,13 @@ ASTNode *parser_parse_result_step(Parser *parser) {
 
     if (!parser_match(parser, TOKEN_RPAREN)) {
       fprintf(stderr, "Expected ) after status code\n");
+      parser_advance(parser); // Skip the invalid token
       break;
     }
 
     if (!parser_match(parser, TOKEN_COLON)) {
       fprintf(stderr, "Expected : after condition\n");
+      parser_advance(parser); // Skip the invalid token
       break;
     }
 
@@ -240,6 +257,7 @@ ASTNode *parser_parse_route_definition(Parser *parser) {
 
   if (!parser_check(parser, TOKEN_ROUTE)) {
     fprintf(stderr, "Expected route after HTTP method\n");
+    parser_advance(parser); // Skip the invalid token
     return NULL;
   }
 
@@ -270,11 +288,13 @@ ASTNode *parser_parse_variable_assignment(Parser *parser) {
 
   if (!parser_match(parser, TOKEN_EQUALS)) {
     fprintf(stderr, "Expected = in variable assignment\n");
+    parser_advance(parser); // Skip the invalid token
     return NULL;
   }
 
   if (!parser_check(parser, TOKEN_STRING)) {
     fprintf(stderr, "Expected string value in variable assignment\n");
+    parser_advance(parser); // Skip the invalid token
     return NULL;
   }
 
@@ -314,6 +334,12 @@ ASTNode *parser_parse_statement(Parser *parser) {
       }
     }
     parser->current = saved;
+  }
+
+  // If we can't parse a statement, skip the current token to prevent infinite loops
+  if (!parser_is_at_end(parser)) {
+    fprintf(stderr, "Unexpected token: %s\n", parser_peek(parser)->value);
+    parser_advance(parser);
   }
 
   return NULL;
