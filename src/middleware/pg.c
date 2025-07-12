@@ -215,15 +215,18 @@ json_t *execute_sql(const char *sql, json_t *params, void *arena,
       if (json_is_string(param)) {
         param_values[i] = json_string_value(param);
       } else if (json_is_integer(param)) {
-        // Convert integer to string using arena
+        // Convert integer to string using arena (no decimal point)
         char *str = alloc_func(arena, 32);
-        snprintf(str, 32, "%lld", json_integer_value(param));
+        snprintf(str, 32, "%ld", (long)json_integer_value(param));
         param_values[i] = str;
       } else if (json_is_real(param)) {
         // Convert real to string using arena
         char *str = alloc_func(arena, 32);
         snprintf(str, 32, "%f", json_real_value(param));
         param_values[i] = str;
+      } else if (json_is_boolean(param)) {
+        // Convert boolean to string using arena
+        param_values[i] = json_boolean_value(param) ? "true" : "false";
       } else if (json_is_null(param)) {
         param_values[i] = NULL;
       } else {

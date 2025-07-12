@@ -700,19 +700,10 @@ bool match_route(const char *pattern, const char *url, json_t *params) {
         if (pattern_parts[i][0] == ':') {
             // Parameter - extract the parameter name (remove the colon)
             char *param_name = pattern_parts[i] + 1;
-            // Try to parse as integer, otherwise store as string
-            char *endptr = NULL;
-            long val = strtol(url_parts[i], &endptr, 10);
-            if (*endptr == '\0') {
-                json_t *int_val = json_integer(val);
-                if (int_val) {
-                    json_object_set_new(params, param_name, int_val);
-                }
-            } else {
-                json_t *str_val = json_string(url_parts[i]);
-                if (str_val) {
-                    json_object_set_new(params, param_name, str_val);
-                }
+            // Always store URL parameters as strings
+            json_t *str_val = json_string(url_parts[i]);
+            if (str_val) {
+                json_object_set_new(params, param_name, str_val);
             }
         } else if (strcmp(pattern_parts[i], url_parts[i]) != 0) {
             free(pattern_copy);

@@ -39,8 +39,8 @@ static void test_server_route_matching(void) {
     
     json_t *id = json_object_get(params, "id");
     TEST_ASSERT_NOT_NULL(id);
-    TEST_ASSERT_TRUE(json_is_integer(id));
-    TEST_ASSERT_EQUAL(123, json_integer_value(id));
+    TEST_ASSERT_TRUE(json_is_string(id));
+    TEST_ASSERT_STRING_EQUAL("123", json_string_value(id));
     
     // Test no match
     match = match_route("/test", "/different", params);
