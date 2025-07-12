@@ -164,21 +164,6 @@ PATCH /test-body
   }`
 
 GET /
-  |> jq: `"redirect"`
-  |> mustache: `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Todo App</title>
-      <meta http-equiv="refresh" content="0;url=/todos">
-    </head>
-    <body>
-      <p>Redirecting to todo app... <a href="/todos">Click here if not redirected.</a></p>
-    </body>
-    </html>
-  `
-
-GET /todos
   |> jq: `{ sqlParams: [] }`
   |> pg: `SELECT id, title, completed, created_at, updated_at FROM todos ORDER BY created_at DESC`
   |> jq: `{
@@ -192,6 +177,7 @@ GET /todos
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>{{pageTitle}}</title>
+      <script src="https://unpkg.com/htmx.org@1.9.10"></script>
       <style>
         body {
           font-family: Arial, sans-serif;
@@ -322,38 +308,29 @@ GET /todos
         
         <div class="add-form">
           <h3>Add New Todo</h3>
-          <form action="/todos" method="post">
+          <form hx-post="/todos/add" hx-target="#todo-list" hx-swap="afterbegin" hx-on::after-request="this.reset()">
             <div class="form-group">
               <label for="title">Title *</label>
               <input type="text" id="title" name="title" required>
-            </div>
-            <div class="form-group">
-              <label for="description">Description</label>
-              <textarea id="description" name="description" placeholder="Optional description..."></textarea>
             </div>
             <button type="submit" class="btn">Add Todo</button>
           </form>
         </div>
         
-        <ul class="todo-list">
+        <ul class="todo-list" id="todo-list">
           {{#todos}}
           <li class="todo-item {{#completed}}completed{{/completed}}">
             <div class="todo-content">
               <div class="todo-title {{#completed}}completed{{/completed}}">{{title}}</div>
-              {{#description}}
-              <div class="todo-description">{{description}}</div>
-              {{/description}}
               <div class="todo-date">Created: {{created_at}}</div>
             </div>
             <div class="todo-actions">
-              <form action="/todos/{{id}}/toggle" method="post" style="display: inline;">
-                {{#completed}}
-                <button type="submit" class="btn btn-sm">Mark Incomplete</button>
-                {{/completed}}
-                {{^completed}}
-                <button type="submit" class="btn btn-sm btn-success">Mark Complete</button>
-                {{/completed}}
-              </form>
+              {{#completed}}
+              <button hx-post="/todos/{{id}}/toggle" hx-target="closest .todo-item" hx-swap="outerHTML" class="btn btn-sm">Mark Incomplete</button>
+              {{/completed}}
+              {{^completed}}
+              <button hx-post="/todos/{{id}}/toggle" hx-target="closest .todo-item" hx-swap="outerHTML" class="btn btn-sm btn-success">Mark Complete</button>
+              {{/completed}}
             </div>
           </li>
           {{/todos}}
@@ -368,158 +345,234 @@ GET /todos
     </html>
   `
 
-POST /todos
-  |> jq: `{ 
-    sqlParams: [.body.title, false, "1"]
-  }`
-  |> pg: `INSERT INTO todos (title, completed, user_id) VALUES ($1, $2, $3) RETURNING *`
+GET /todos
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT id, title, completed, created_at, updated_at FROM todos ORDER BY created_at DESC`
   |> jq: `{
-    newTodo: .data.rows[0]
+    todos: .data.rows | map(. + {id: (.id | tostring)}),
+    pageTitle: "My Todo List"
   }`
   |> mustache: `
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
-      <title>Todo Added</title>
-      <meta http-equiv="refresh" content="2;url=/todos">
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>{{pageTitle}}</title>
+      <script src="https://unpkg.com/htmx.org@1.9.10"></script>
       <style>
         body {
           font-family: Arial, sans-serif;
-          max-width: 600px;
-          margin: 50px auto;
+          max-width: 800px;
+          margin: 0 auto;
           padding: 20px;
           background-color: #f5f5f5;
         }
-        .success-container {
+        .container {
           background-color: white;
-          padding: 30px;
+          padding: 20px;
           border-radius: 8px;
           box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-          text-align: center;
-        }
-        .success-icon {
-          font-size: 48px;
-          color: #28a745;
-          margin-bottom: 20px;
         }
         h1 {
-          color: #28a745;
+          color: #333;
+          border-bottom: 2px solid #007bff;
+          padding-bottom: 10px;
+        }
+        .add-form {
+          background-color: #f8f9fa;
+          padding: 20px;
+          border-radius: 5px;
           margin-bottom: 20px;
         }
-        .todo-preview {
+        .form-group {
+          margin-bottom: 15px;
+        }
+        label {
+          display: block;
+          margin-bottom: 5px;
+          font-weight: bold;
+        }
+        input[type="text"], textarea {
+          width: 100%;
+          padding: 8px;
+          border: 1px solid #ddd;
+          border-radius: 4px;
+          font-size: 14px;
+          box-sizing: border-box;
+        }
+        textarea {
+          height: 60px;
+          resize: vertical;
+        }
+        .btn {
+          background-color: #007bff;
+          color: white;
+          padding: 10px 20px;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 14px;
+        }
+        .btn:hover {
+          background-color: #0056b3;
+        }
+        .btn-sm {
+          padding: 5px 10px;
+          font-size: 12px;
+        }
+        .btn-success {
+          background-color: #28a745;
+        }
+        .btn-success:hover {
+          background-color: #218838;
+        }
+        .todo-list {
+          list-style: none;
+          padding: 0;
+        }
+        .todo-item {
           background-color: #f8f9fa;
+          margin-bottom: 10px;
           padding: 15px;
           border-radius: 5px;
-          margin: 20px 0;
-          border-left: 4px solid #28a745;
+          border-left: 4px solid #007bff;
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+        }
+        .todo-item.completed {
+          background-color: #d4edda;
+          border-left-color: #28a745;
+        }
+        .todo-content {
+          flex: 1;
         }
         .todo-title {
           font-weight: bold;
           margin-bottom: 5px;
         }
+        .todo-title.completed {
+          text-decoration: line-through;
+          color: #6c757d;
+        }
         .todo-description {
           color: #666;
           font-size: 14px;
+          margin-bottom: 5px;
         }
-        .btn {
-          background-color: #007bff;
-          color: white;
-          padding: 10px 20px;
-          border: none;
+        .todo-date {
+          font-size: 12px;
+          color: #999;
+        }
+        .todo-actions {
+          margin-left: 10px;
+        }
+        .empty-state {
+          text-align: center;
+          color: #666;
+          font-style: italic;
+          padding: 40px;
+        }
+        .success-message {
+          background-color: #d4edda;
+          color: #155724;
+          padding: 10px;
           border-radius: 4px;
-          text-decoration: none;
-          display: inline-block;
-          margin-top: 10px;
-        }
-        .btn:hover {
-          background-color: #0056b3;
+          margin-bottom: 20px;
+          border: 1px solid #c3e6cb;
         }
       </style>
     </head>
     <body>
-      <div class="success-container">
-        <div class="success-icon">✓</div>
-        <h1>Todo Added Successfully!</h1>
-        <div class="todo-preview">
-          <div class="todo-title">{{newTodo.title}}</div>
-          {{#newTodo.description}}
-          <div class="todo-description">{{newTodo.description}}</div>
-          {{/newTodo.description}}
+      <div class="container">
+        <h1>{{pageTitle}}</h1>
+        
+        <div class="add-form">
+          <h3>Add New Todo</h3>
+          <form hx-post="/todos/add" hx-target="#todo-list" hx-swap="afterbegin" hx-on::after-request="this.reset()">
+            <div class="form-group">
+              <label for="title">Title *</label>
+              <input type="text" id="title" name="title" required>
+            </div>
+            <button type="submit" class="btn">Add Todo</button>
+          </form>
         </div>
-        <p>Redirecting to todo list in 2 seconds...</p>
-        <a href="/todos" class="btn">Go to Todo List</a>
+        
+        <ul class="todo-list" id="todo-list">
+          {{#todos}}
+          <li class="todo-item {{#completed}}completed{{/completed}}">
+            <div class="todo-content">
+              <div class="todo-title {{#completed}}completed{{/completed}}">{{title}}</div>
+              <div class="todo-date">Created: {{created_at}}</div>
+            </div>
+            <div class="todo-actions">
+              {{#completed}}
+              <button hx-post="/todos/{{id}}/toggle" hx-target="closest .todo-item" hx-swap="outerHTML" class="btn btn-sm">Mark Incomplete</button>
+              {{/completed}}
+              {{^completed}}
+              <button hx-post="/todos/{{id}}/toggle" hx-target="closest .todo-item" hx-swap="outerHTML" class="btn btn-sm btn-success">Mark Complete</button>
+              {{/completed}}
+            </div>
+          </li>
+          {{/todos}}
+          {{^todos}}
+          <li class="empty-state">
+            <p>No todos yet. Add your first todo above!</p>
+          </li>
+          {{/todos}}
+        </ul>
       </div>
     </body>
     </html>
   `
 
+POST /todos/add
+  |> jq: `{ 
+    sqlParams: [.body.title, false, "1"]
+  }`
+  |> pg: `INSERT INTO todos (title, completed, user_id) VALUES ($1, $2, $3) RETURNING *`
+  |> jq: `{
+    newTodo: (.data.rows[0] | . + {id: (.id | tostring)})
+  }`
+  |> mustache: `
+          <li class="todo-item">
+            <div class="todo-content">
+              <div class="todo-title">{{newTodo.title}}</div>
+              <div class="todo-date">Created: {{newTodo.created_at}}</div>
+            </div>
+            <div class="todo-actions">
+              <button hx-post="/todos/{{newTodo.id}}/toggle" hx-target="closest .todo-item" hx-swap="outerHTML" class="btn btn-sm btn-success">Mark Complete</button>
+            </div>
+          </li>
+  `
+
 POST /todos/:id/toggle
   |> jq: `{ sqlParams: [.params.id], todoId: .params.id }`
-  |> pg: `SELECT completed FROM todos WHERE id = $1`
+  |> pg: `SELECT * FROM todos WHERE id = $1`
   |> jq: `{ 
-    sqlParams: [(.data.rows[0].completed | not), .todoId]
+    sqlParams: [(.data.rows[0].completed | not), .todoId],
+    currentTodo: .data.rows[0]
   }`
   |> pg: `UPDATE todos SET completed = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *`
   |> jq: `{
-    todoId: .todoId,
-    action: "toggle",
-    updatedTodo: .data.rows[0]
+    todo: (.data.rows[0] | . + {id: (.id | tostring)})
   }`
   |> mustache: `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Todo Updated</title>
-      <meta http-equiv="refresh" content="1;url=/todos">
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          max-width: 600px;
-          margin: 50px auto;
-          padding: 20px;
-          background-color: #f5f5f5;
-        }
-        .success-container {
-          background-color: white;
-          padding: 30px;
-          border-radius: 8px;
-          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-          text-align: center;
-        }
-        .success-icon {
-          font-size: 48px;
-          color: #28a745;
-          margin-bottom: 20px;
-        }
-        h1 {
-          color: #28a745;
-          margin-bottom: 20px;
-        }
-        .btn {
-          background-color: #007bff;
-          color: white;
-          padding: 10px 20px;
-          border: none;
-          border-radius: 4px;
-          text-decoration: none;
-          display: inline-block;
-          margin-top: 10px;
-        }
-        .btn:hover {
-          background-color: #0056b3;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="success-container">
-        <div class="success-icon">✓</div>
-        <h1>Todo Updated!</h1>
-        <p>Todo #{{todoId}} has been updated successfully.</p>
-        <p>Redirecting to todo list in 1 second...</p>
-        <a href="/todos" class="btn">Go to Todo List</a>
-      </div>
-    </body>
-    </html>
+          <li class="todo-item {{#todo.completed}}completed{{/todo.completed}}">
+            <div class="todo-content">
+              <div class="todo-title {{#todo.completed}}completed{{/todo.completed}}">{{todo.title}}</div>
+              <div class="todo-date">Created: {{todo.created_at}}</div>
+            </div>
+            <div class="todo-actions">
+              {{#todo.completed}}
+              <button hx-post="/todos/{{todo.id}}/toggle" hx-target="closest .todo-item" hx-swap="outerHTML" class="btn btn-sm">Mark Incomplete</button>
+              {{/todo.completed}}
+              {{^todo.completed}}
+              <button hx-post="/todos/{{todo.id}}/toggle" hx-target="closest .todo-item" hx-swap="outerHTML" class="btn btn-sm btn-success">Mark Complete</button>
+              {{/todo.completed}}
+            </div>
+          </li>
   `
 
 GET /hello-mustache
