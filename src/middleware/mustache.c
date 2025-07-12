@@ -21,6 +21,13 @@ static char *local_arena_strdup(void *arena, arena_alloc_func alloc_func, const 
 static char *render_mustache_template(const char *template, json_t *data, void *arena, arena_alloc_func alloc_func);
 static json_t *create_template_error(const char *message, const char *template);
 
+// Middleware interface function declaration
+json_t *middleware_execute(json_t *input, void *arena, 
+                          arena_alloc_func alloc_func, 
+                          arena_free_func free_func, 
+                          const char *template,
+                          char **contentType);
+
 // Middleware interface function
 json_t *middleware_execute(json_t *input, void *arena, 
                           arena_alloc_func alloc_func, 

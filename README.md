@@ -110,6 +110,25 @@ GET /users/:id
   |> pg: `SELECT * FROM users WHERE id = $1`
 ```
 
+### Mustache Middleware
+Renders HTML templates using mustache syntax with JSON data.
+
+```wp
+GET /hello-mustache
+  |> jq: `{ name: "World", message: "Hello from mustache!" }`
+  |> mustache: `
+    <html>
+      <head>
+        <title>{{message}}</title>
+      </head>
+      <body>
+        <h1>{{message}}</h1>
+        <p>Hello, {{name}}!</p>
+      </body>
+    </html>
+  `
+```
+
 ## Building and Installation
 
 ### Prerequisites
@@ -248,6 +267,52 @@ The runtime supports multiple content types beyond the default `application/json
 - **text/javascript**: JavaScript code
 - **Other text/***: Any text-based content type
 
+### Mustache Middleware
+
+The runtime includes a mustache middleware for HTML template rendering. This middleware processes JSON data with mustache templates to generate HTML responses.
+
+```wp
+GET /hello-mustache
+  |> jq: `{ name: "World", message: "Hello from mustache!" }`
+  |> mustache: `
+    <html>
+      <head>
+        <title>{{message}}</title>
+      </head>
+      <body>
+        <h1>{{message}}</h1>
+        <p>Hello, {{name}}!</p>
+      </body>
+    </html>
+  `
+```
+
+**Features:**
+- Variable substitution with `{{variable}}`
+- Conditional sections with `{{#condition}}...{{/condition}}`
+- Array iteration with `{{#array}}...{{/array}}`
+- Missing variable handling (empty string substitution)
+- Error handling for malformed templates
+- Automatic content-type setting to `text/html`
+
+**Template Syntax Examples:**
+```mustache
+<!-- Basic variable substitution -->
+<h1>{{title}}</h1>
+
+<!-- Conditional rendering -->
+{{#showMessage}}
+<p>{{message}}</p>
+{{/showMessage}}
+
+<!-- Array iteration -->
+<ul>
+{{#items}}
+  <li>{{.}}</li>
+{{/items}}
+</ul>
+```
+
 ### Setting Content Type in Middleware
 
 Middleware can set the content type by assigning to the `contentType` parameter:
@@ -275,24 +340,6 @@ The server automatically handles different content types:
 
 This enables seamless support for web pages, APIs, and other content types in the same pipeline framework.
 
-### Future Template Support
-
-The content-type system is designed to support template engines like Mustache. Future middleware could enable:
-
-```wp
-GET /page/:id
-  |> jq: `{ id: .params.id, name: "John Doe" }`
-  |> mustache: `
-    <html>
-      <body>
-        <h1>User {{id}}</h1>
-        <p>Welcome, {{name}}!</p>
-      </body>
-    </html>
-  `
-```
-
-Where the mustache middleware would set `*contentType = "text/html"` and render the template with the JSON data.
 
 ## Middleware Development
 

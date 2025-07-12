@@ -313,7 +313,7 @@ static const char *get_first_error_type(json_t *json) {
 
 // Helper function to send response with flexible content type
 static enum MHD_Result send_response(struct MHD_Connection *connection, 
-                                   json_t *json_data, int status_code, const char *content_type) {
+                                   json_t *json_data, int status_code, const char *content_type, MemoryArena *arena) {
     char *response_str = NULL;
     size_t response_len = 0;
     
@@ -334,9 +334,8 @@ static enum MHD_Result send_response(struct MHD_Connection *connection,
         if (json_is_string(json_data)) {
             const char *content = json_string_value(json_data);
             response_len = strlen(content);
-            response_str = malloc(response_len + 1);
-            memcpy(response_str, content, response_len);
-            response_str[response_len] = '\0';
+            // Use arena_strdup to prevent memory leak
+            response_str = arena_strdup(arena, content);
         } else {
             // Fallback to JSON if not a string
             response_str = json_dumps(json_data, JSON_COMPACT);
@@ -364,8 +363,8 @@ static enum MHD_Result send_response(struct MHD_Connection *connection,
 
 // Helper function to send JSON response (backward compatibility)
 static enum MHD_Result send_json_response(struct MHD_Connection *connection, 
-                                         json_t *json_data, int status_code) {
-    return send_response(connection, json_data, status_code, "application/json");
+                                         json_t *json_data, int status_code, MemoryArena *arena) {
+    return send_response(connection, json_data, status_code, "application/json", arena);
 }
 
 // Helper function to send error response
@@ -387,7 +386,7 @@ static enum MHD_Result process_route(struct MHD_Connection *connection,
     // If pipeline is empty, return the request object as the response
     if (!route_stmt->data.route_def.pipeline) {
         set_current_arena(arena);
-        return send_json_response(connection, request, 200);
+        return send_json_response(connection, request, 200, arena);
     }
     
     // Execute pipeline with result handling
@@ -400,7 +399,7 @@ static enum MHD_Result process_route(struct MHD_Connection *connection,
     
     if (result == 0 && final_response) {
         set_current_arena(arena);
-        return send_response(connection, final_response, response_code, content_type);
+        return send_response(connection, final_response, response_code, content_type, arena);
     } else {
         // Error in pipeline execution
         return send_error_response(connection, 

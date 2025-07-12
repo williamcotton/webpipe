@@ -431,6 +431,123 @@ static void test_e2e_body_handling(void) {
     json_decref(response);
 }
 
+// Helper function to check if response is HTML
+static int is_html_response(const char *response_body) {
+    return strstr(response_body, "<html>") != NULL && strstr(response_body, "</html>") != NULL;
+}
+
+// Helper function to make HTTP request and get raw response
+static char *makeRawRequest(const char *url, const char *method, const char *data, long *status_code_out, char **content_type_out) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&response);
+
+    // Headers list for extracting content-type
+    struct curl_slist *headers = NULL;
+    if (data) {
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    }
+
+    if (strcmp(method, "POST") == 0) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    
+    if (status_code_out) {
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, status_code_out);
+    }
+    
+    // Get content type
+    if (content_type_out) {
+        char *ct = NULL;
+        curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct);
+        *content_type_out = ct ? strdup(ct) : NULL;
+    }
+
+    if (headers) curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        printf("CURL error: %s\n", curl_easy_strerror(res));
+        free(response.data);
+        return NULL;
+    }
+
+    return response.data;
+}
+
+static void test_e2e_mustache_html_response(void) {
+    // Test mustache middleware HTML response
+    long status_code;
+    char *content_type = NULL;
+    char *response_body = makeRawRequest("http://localhost:8080/hello-mustache", "GET", NULL, &status_code, &content_type);
+    
+    TEST_ASSERT_EQUAL(200, status_code);
+    TEST_ASSERT_NOT_NULL(response_body);
+    TEST_ASSERT_NOT_NULL(content_type);
+    
+    // Check content type is HTML
+    TEST_ASSERT_TRUE(strstr(content_type, "text/html") != NULL);
+    
+    // Check HTML content
+    TEST_ASSERT_TRUE(is_html_response(response_body));
+    TEST_ASSERT_TRUE(strstr(response_body, "Hello from mustache!") != NULL);
+    TEST_ASSERT_TRUE(strstr(response_body, "Hello, World!") != NULL);
+    TEST_ASSERT_TRUE(strstr(response_body, "<title>Hello from mustache!</title>") != NULL);
+    
+    free(response_body);
+    free(content_type);
+}
+
+static void test_e2e_mustache_error_response(void) {
+    // Test mustache middleware error response
+    long status_code;
+    char *content_type = NULL;
+    char *response_body = makeRawRequest("http://localhost:8080/mustache-error-test", "GET", NULL, &status_code, &content_type);
+    
+    TEST_ASSERT_EQUAL(200, status_code);
+    TEST_ASSERT_NOT_NULL(response_body);
+    TEST_ASSERT_NOT_NULL(content_type);
+    
+    // Check content type is JSON (error fallback)
+    TEST_ASSERT_TRUE(strstr(content_type, "application/json") != NULL);
+    
+    // Parse as JSON to verify error structure
+    json_error_t error;
+    json_t *response_json = json_loads(response_body, 0, &error);
+    TEST_ASSERT_NOT_NULL_MESSAGE(response_json, "Response should be valid JSON");
+    
+    // Check error structure
+    json_t *errors = json_object_get(response_json, "errors");
+    TEST_ASSERT_NOT_NULL(errors);
+    TEST_ASSERT_TRUE(json_is_array(errors));
+    TEST_ASSERT_EQUAL_INT(1, json_array_size(errors));
+    
+    json_t *error_obj = json_array_get(errors, 0);
+    TEST_ASSERT_NOT_NULL(error_obj);
+    
+    json_t *error_type = json_object_get(error_obj, "type");
+    TEST_ASSERT_NOT_NULL(error_type);
+    TEST_ASSERT_EQUAL_STRING("templateError", json_string_value(error_type));
+    
+    json_t *error_message = json_object_get(error_obj, "message");
+    TEST_ASSERT_NOT_NULL(error_message);
+    TEST_ASSERT_EQUAL_STRING("Template rendering failed", json_string_value(error_message));
+    
+    json_decref(response_json);
+    free(response_body);
+    free(content_type);
+}
+
 int main(void) {
     // Initialize curl
     curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -451,6 +568,8 @@ int main(void) {
     RUN_TEST(test_e2e_put_request);
     RUN_TEST(test_e2e_patch_request);
     RUN_TEST(test_e2e_body_handling);
+    RUN_TEST(test_e2e_mustache_html_response);
+    RUN_TEST(test_e2e_mustache_error_response);
     
     // Cleanup curl
     curl_global_cleanup();
