@@ -3,7 +3,10 @@
 #include <stdlib.h>
 #include "../../deps/mustach/mustach-jansson.h"
 #include "../../deps/mustach/mustach-wrap.h"
-#include "../wp.h"
+
+// Arena allocation function types for middlewares
+typedef void *(*arena_alloc_func)(void *arena, size_t size);
+typedef void (*arena_free_func)(void *arena);
 
 // External arena allocator functions
 extern void *jansson_arena_malloc(size_t size);
