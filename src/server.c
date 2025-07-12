@@ -361,34 +361,78 @@ static enum MHD_Result send_response(struct MHD_Connection *connection,
     char *response_str = NULL;
     size_t response_len = 0;
     
-    // Default content type if not specified
-    if (!content_type) {
-        content_type = "application/json";
+    // Validate inputs
+    if (!connection) {
+        fprintf(stderr, "Error: connection is NULL in send_response\n");
+        return MHD_NO;
     }
     
-    // Handle different content types
-    if (strcmp(content_type, "application/json") == 0) {
-        // JSON response
-        response_str = json_dumps(json_data, JSON_COMPACT);
+    if (!json_data) {
+        fprintf(stderr, "Error: json_data is NULL in send_response\n");
+        // Create a fallback error response
+        response_str = arena_strdup(arena, "{\"error\":\"Internal server error\"}");
         response_len = strlen(response_str);
-    } else if (strcmp(content_type, "text/html") == 0 || 
-               strcmp(content_type, "text/plain") == 0 ||
-               strncmp(content_type, "text/", 5) == 0) {
-        // HTML or text response - extract string from JSON
-        if (json_is_string(json_data)) {
-            const char *content = json_string_value(json_data);
-            response_len = strlen(content);
-            // Use arena_strdup to prevent memory leak
-            response_str = arena_strdup(arena, content);
-        } else {
-            // Fallback to JSON if not a string
+        content_type = "application/json";
+        status_code = 500;
+    } else {
+        // Default content type if not specified
+        if (!content_type) {
+            content_type = "application/json";
+        }
+        
+        // Handle different content types
+        if (strcmp(content_type, "application/json") == 0) {
+            // JSON response
             response_str = json_dumps(json_data, JSON_COMPACT);
+            if (!response_str) {
+                fprintf(stderr, "Error: json_dumps failed in send_response\n");
+                response_str = arena_strdup(arena, "{\"error\":\"JSON serialization failed\"}");
+                response_len = strlen(response_str);
+            } else {
+                response_len = strlen(response_str);
+            }
+        } else if (strcmp(content_type, "text/html") == 0 || 
+                   strcmp(content_type, "text/plain") == 0 ||
+                   strncmp(content_type, "text/", 5) == 0) {
+            // HTML or text response - extract string from JSON
+            if (json_is_string(json_data)) {
+                const char *content = json_string_value(json_data);
+                if (content) {
+                    response_len = strlen(content);
+                    // Use arena_strdup to prevent memory leak
+                    response_str = arena_strdup(arena, content);
+                } else {
+                    fprintf(stderr, "Error: json_string_value returned NULL\n");
+                    response_str = arena_strdup(arena, "Internal server error");
+                    response_len = strlen(response_str);
+                    content_type = "text/plain";
+                }
+            } else {
+                // Fallback to JSON if not a string
+                response_str = json_dumps(json_data, JSON_COMPACT);
+                if (!response_str) {
+                    fprintf(stderr, "Error: json_dumps fallback failed\n");
+                    response_str = arena_strdup(arena, "{\"error\":\"JSON serialization failed\"}");
+                }
+                response_len = strlen(response_str);
+                content_type = "application/json";
+            }
+        } else {
+            // Default to JSON for unknown content types
+            response_str = json_dumps(json_data, JSON_COMPACT);
+            if (!response_str) {
+                fprintf(stderr, "Error: json_dumps failed for unknown content type\n");
+                response_str = arena_strdup(arena, "{\"error\":\"JSON serialization failed\"}");
+            }
             response_len = strlen(response_str);
             content_type = "application/json";
         }
-    } else {
-        // Default to JSON for unknown content types
-        response_str = json_dumps(json_data, JSON_COMPACT);
+    }
+    
+    // Final check that we have a valid response string
+    if (!response_str) {
+        fprintf(stderr, "Error: response_str is still NULL after processing\n");
+        response_str = "{\"error\":\"Critical error\"}";
         response_len = strlen(response_str);
         content_type = "application/json";
     }
