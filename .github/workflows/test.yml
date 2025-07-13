@@ -59,26 +59,26 @@ jobs:
     - name: Run integration tests
       run: make test-integration
       env:
-        PGHOST: localhost
-        PGUSER: postgres
-        PGPASSWORD: postgres
-        PGDATABASE: wp-test
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_PASSWORD: postgres
+        WP_PG_DATABASE: wp-test
 
     - name: Run system tests
       run: make test-system
       env:
-        PGHOST: localhost
-        PGUSER: postgres
-        PGPASSWORD: postgres
-        PGDATABASE: wp-test
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_PASSWORD: postgres
+        WP_PG_DATABASE: wp-test
 
     - name: Run leak detection
       run: make test-leaks
       env:
-        PGHOST: localhost
-        PGUSER: postgres
-        PGPASSWORD: postgres
-        PGDATABASE: wp-test
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_PASSWORD: postgres
+        WP_PG_DATABASE: wp-test
 
   test-macos:
     runs-on: macos-latest
@@ -121,23 +121,23 @@ jobs:
     - name: Run integration tests
       run: make test-integration
       env:
-        PGHOST: localhost
-        PGUSER: postgres
-        PGDATABASE: wp-test
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_DATABASE: wp-test
 
     - name: Run system tests
       run: make test-system
       env:
-        PGHOST: localhost
-        PGUSER: postgres
-        PGDATABASE: wp-test
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_DATABASE: wp-test
 
     - name: Run leak detection
       run: make test-leaks
       env:
-        PGHOST: localhost
-        PGUSER: postgres
-        PGDATABASE: wp-test
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_DATABASE: wp-test
 
     - name: Stop PostgreSQL
       if: always()

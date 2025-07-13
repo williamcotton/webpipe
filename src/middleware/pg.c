@@ -18,12 +18,31 @@ static PGconn *pg_connection = NULL;
 static pthread_mutex_t pg_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int connection_failed = 0;
 
-// Connection parameters (should be configurable)
-static const char *pg_host = "localhost";
-static const char *pg_port = "5432";
-static const char *pg_dbname = "express-test";
-static const char *pg_user = "postgres";
-static const char *pg_password = "postgres";
+// Connection parameters with environment variable support
+static const char *get_pg_config(const char *env_var, const char *default_value) {
+  const char *value = getenv(env_var);
+  return value ? value : default_value;
+}
+
+static const char *get_pg_host(void) {
+  return get_pg_config("WP_PG_HOST", "localhost");
+}
+
+static const char *get_pg_port(void) {
+  return get_pg_config("WP_PG_PORT", "5432");
+}
+
+static const char *get_pg_dbname(void) {
+  return get_pg_config("WP_PG_DATABASE", "wp-test");
+}
+
+static const char *get_pg_user(void) {
+  return get_pg_config("WP_PG_USER", "postgres");
+}
+
+static const char *get_pg_password(void) {
+  return get_pg_config("WP_PG_PASSWORD", "postgres");
+}
 
 // Function prototypes
 static int pg_middleware_init(void);
@@ -51,8 +70,8 @@ int pg_middleware_init() {
   // Try to connect
   char conninfo[512];
   snprintf(conninfo, sizeof(conninfo),
-           "host=%s port=%s dbname=%s user=%s password=%s gssencmode=disable", pg_host, pg_port,
-           pg_dbname, pg_user, pg_password);
+           "host=%s port=%s dbname=%s user=%s password=%s gssencmode=disable", 
+           get_pg_host(), get_pg_port(), get_pg_dbname(), get_pg_user(), get_pg_password());
 
   PGconn *new_conn = PQconnectdb(conninfo);
 

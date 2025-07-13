@@ -238,25 +238,92 @@ arena_alloc_func get_arena_alloc_wrapper(void) {
     return arena_alloc_wrapper;
 }
 
-// Database testing utilities - placeholder implementations
+// Database testing utilities
+#include <libpq-fe.h>
+
+static PGconn *test_db_connection = NULL;
+
+static const char *get_test_pg_config(const char *env_var, const char *default_value) {
+    const char *value = getenv(env_var);
+    return value ? value : default_value;
+}
+
 void setup_test_database(void) {
-    // TODO: Implement test database setup
+    // Connect to test database using environment variables or defaults
+    char conninfo[512];
+    snprintf(conninfo, sizeof(conninfo),
+             "host=%s port=%s dbname=%s user=%s password=%s gssencmode=disable",
+             get_test_pg_config("WP_PG_HOST", "localhost"),
+             get_test_pg_config("WP_PG_PORT", "5432"),
+             get_test_pg_config("WP_PG_DATABASE", "wp-test"),
+             get_test_pg_config("WP_PG_USER", "postgres"),
+             get_test_pg_config("WP_PG_PASSWORD", "postgres"));
+
+    test_db_connection = PQconnectdb(conninfo);
+    
+    if (PQstatus(test_db_connection) != CONNECTION_OK) {
+        fprintf(stderr, "Test database connection failed: %s\n", PQerrorMessage(test_db_connection));
+        PQfinish(test_db_connection);
+        test_db_connection = NULL;
+        return;
+    }
+    
+    create_test_tables();
+    insert_test_data();
 }
 
 void teardown_test_database(void) {
-    // TODO: Implement test database teardown
+    if (test_db_connection) {
+        clear_test_data();
+        PQfinish(test_db_connection);
+        test_db_connection = NULL;
+    }
 }
 
 void create_test_tables(void) {
-    // TODO: Implement test table creation
+    if (!test_db_connection) return;
+    
+    // Create teams table for testing
+    const char *create_teams_sql = 
+        "CREATE TABLE IF NOT EXISTS teams ("
+        "id SERIAL PRIMARY KEY, "
+        "name VARCHAR(100) NOT NULL, "
+        "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+        ")";
+    
+    PGresult *result = PQexec(test_db_connection, create_teams_sql);
+    if (PQresultStatus(result) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Failed to create teams table: %s\n", PQerrorMessage(test_db_connection));
+    }
+    PQclear(result);
 }
 
 void insert_test_data(void) {
-    // TODO: Implement test data insertion
+    if (!test_db_connection) return;
+    
+    // Insert test team data
+    const char *insert_team_sql = 
+        "INSERT INTO teams (id, name) VALUES (123, 'Test Team') "
+        "ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name";
+    
+    PGresult *result = PQexec(test_db_connection, insert_team_sql);
+    if (PQresultStatus(result) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Failed to insert test data: %s\n", PQerrorMessage(test_db_connection));
+    }
+    PQclear(result);
 }
 
 void clear_test_data(void) {
-    // TODO: Implement test data clearing
+    if (!test_db_connection) return;
+    
+    // Clean up test data
+    const char *cleanup_sql = "DROP TABLE IF EXISTS teams CASCADE";
+    
+    PGresult *result = PQexec(test_db_connection, cleanup_sql);
+    if (PQresultStatus(result) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Failed to clear test data: %s\n", PQerrorMessage(test_db_connection));
+    }
+    PQclear(result);
 }
 
 // HTTP testing utilities - placeholder implementations
