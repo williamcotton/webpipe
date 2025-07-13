@@ -886,7 +886,7 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
             }
             break;
             
-        case AST_ROUTE_DEFINITION:
+        case AST_ROUTE_DEFINITION: {
             // Collect middleware from the main pipeline
             PipelineStep *step = node->data.route_def.pipeline;
             while (step) {
@@ -937,6 +937,7 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
                 step = step->next;
             }
             break;
+        }
             
         case AST_VARIABLE_ASSIGNMENT:
             // Variable assignments don't contain pipeline steps
