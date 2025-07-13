@@ -44,6 +44,9 @@ jobs:
     - name: Build application
       run: make all
 
+    - name: Install middleware
+      run: make install-middleware
+
     - name: Run static analysis
       run: make test-analyze
 
@@ -102,6 +105,9 @@ jobs:
 
     - name: Build application
       run: make all
+
+    - name: Install middleware
+      run: make install-middleware
 
     - name: Run static analysis
       run: make test-analyze
