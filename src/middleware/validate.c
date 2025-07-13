@@ -68,20 +68,21 @@ static ValidationRule *parse_validation_dsl(const char *dsl, void *arena, arena_
     memcpy(dsl_copy, dsl, dsl_len);
     dsl_copy[dsl_len] = '\0';
     
-    char *line = strtok(dsl_copy, "\n");
+    char *saveptr;
+    char *line = strtok_r(dsl_copy, "\n", &saveptr);
     
     while (line) {
         // Skip empty lines and whitespace
         while (*line && isspace(*line)) line++;
         if (!*line) {
-            line = strtok(NULL, "\n");
+            line = strtok_r(NULL, "\n", &saveptr);
             continue;
         }
         
         // Find the colon separator
         char *colon = strchr(line, ':');
         if (!colon) {
-            line = strtok(NULL, "\n");
+            line = strtok_r(NULL, "\n", &saveptr);
             continue;
         }
         
@@ -190,7 +191,7 @@ static ValidationRule *parse_validation_dsl(const char *dsl, void *arena, arena_
             rules_tail = rule;
         }
         
-        line = strtok(NULL, "\n");
+        line = strtok_r(NULL, "\n", &saveptr);
     }
     
     return rules_head;
