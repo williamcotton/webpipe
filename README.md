@@ -254,6 +254,7 @@ sudo apt-get install -y \
   libjansson-dev \
   libjq-dev \
   liblua5.4-dev \
+  libcurl4-openssl-dev \
   postgresql-client \
   valgrind
 ```
