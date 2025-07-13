@@ -164,6 +164,15 @@ test-system: $(TEST_SYSTEM_BINS)
 test-leaks: $(TEST_ALL_BINS)
 	./test-runner.sh leaks $(TEST_ALL_BINS)
 
+test-leaks-unit: $(TEST_UNIT_BINS)
+	./test-runner.sh leaks $(TEST_UNIT_BINS)
+
+test-leaks-integration: $(TEST_INTEGRATION_BINS)
+	./test-runner.sh leaks $(TEST_INTEGRATION_BINS)
+
+test-leaks-system: $(BUILD_DIR)/test_server $(BUILD_DIR)/test_perf
+	./test-runner.sh leaks $(BUILD_DIR)/test_server $(BUILD_DIR)/test_perf
+
 test-perf: $(BUILD_DIR)/test_perf
 	@echo "Running performance tests..."
 	$(BUILD_DIR)/test_perf
@@ -192,4 +201,4 @@ clean:
 	rm -rf $(BUILD_DIR)
 	rm -f ./middleware/*.so
 
-.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run middleware install-middleware
+.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run middleware install-middleware test-leaks test-leaks-unit test-leaks-integration test-leaks-system

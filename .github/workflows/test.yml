@@ -73,8 +73,24 @@ jobs:
         WP_PG_PASSWORD: postgres
         WP_PG_DATABASE: wp-test
 
-    - name: Run leak detection
-      run: make test-leaks
+    - name: Run unit leak detection
+      run: make test-leaks-unit
+      env:
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_PASSWORD: postgres
+        WP_PG_DATABASE: wp-test
+
+    - name: Run integration leak detection
+      run: make test-leaks-integration
+      env:
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_PASSWORD: postgres
+        WP_PG_DATABASE: wp-test
+
+    - name: Run system leak detection
+      run: make test-leaks-system
       env:
         WP_PG_HOST: localhost
         WP_PG_USER: postgres
@@ -133,8 +149,22 @@ jobs:
         WP_PG_USER: postgres
         WP_PG_DATABASE: wp-test
 
-    - name: Run leak detection
-      run: make test-leaks
+    - name: Run unit leak detection
+      run: make test-leaks-unit
+      env:
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_DATABASE: wp-test
+
+    - name: Run integration leak detection
+      run: make test-leaks-integration
+      env:
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_DATABASE: wp-test
+
+    - name: Run system leak detection
+      run: make test-leaks-system
       env:
         WP_PG_HOST: localhost
         WP_PG_USER: postgres
