@@ -24,6 +24,41 @@ static jq_cache_entry *jq_cache[HASH_TABLE_SIZE];
 static pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int cache_initialized = 0;
 
+// Cleanup function to free all cached jq states
+static void cleanup_jq_cache(void) {
+  pthread_mutex_lock(&cache_mutex);
+  
+  for (int i = 0; i < HASH_TABLE_SIZE; i++) {
+    jq_cache_entry *entry = jq_cache[i];
+    while (entry) {
+      jq_cache_entry *next = entry->next;
+      
+      // Clean up this entry
+      if (entry->jq) {
+        jq_teardown(&entry->jq);
+      }
+      pthread_mutex_destroy(&entry->mutex);
+      free(entry->filter);
+      free(entry);
+      
+      entry = next;
+    }
+    jq_cache[i] = NULL;
+  }
+  
+  cache_initialized = 0;
+  pthread_mutex_unlock(&cache_mutex);
+}
+
+// Register cleanup function with atexit
+static void ensure_cleanup_registered(void) {
+  static int cleanup_registered = 0;
+  if (!cleanup_registered) {
+    atexit(cleanup_jq_cache);
+    cleanup_registered = 1;
+  }
+}
+
 static uint32_t hash_string(const char *str) {
   uint32_t hash = 5381;
   int c;
@@ -38,6 +73,7 @@ static void init_cache(void) {
   if (!cache_initialized) {
     memset(jq_cache, 0, sizeof(jq_cache));
     cache_initialized = 1;
+    ensure_cleanup_registered();
   }
   pthread_mutex_unlock(&cache_mutex);
 }

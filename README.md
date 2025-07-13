@@ -1,3 +1,5 @@
+![Test Suite](https://github.com/williamcotton/webpipe/workflows/Test%20Suite/badge.svg)
+
 # Web Pipe (wp)
 
 A high-performance web server runtime that processes HTTP requests through declarative pipeline configurations. Built in C with libmicrohttpd and JSON data flow between pipeline steps.
