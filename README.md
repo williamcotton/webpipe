@@ -1,4 +1,4 @@
-# Web Pipeline (wp)
+# Web Pipe (wp)
 
 A high-performance web server runtime that processes HTTP requests through declarative pipeline configurations. Built in C with libmicrohttpd and JSON data flow between pipeline steps.
 
@@ -9,7 +9,7 @@ GET /hello
 
 ## Overview
 
-Web Pipeline (wp) is a DSL and runtime for building web APIs through pipeline-based request processing. Each HTTP request flows through a series of middleware that transform JSON data, enabling powerful composition of data processing steps.
+Web Pipe (wp) is a DSL and runtime for building web APIs through pipeline-based request processing. Each HTTP request flows through a series of middleware that transform JSON data, enabling powerful composition of data processing steps.
 
 ## Architecture
 

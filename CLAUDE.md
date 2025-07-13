@@ -1,4 +1,4 @@
-# Web Pipeline (wp)
+# Web Pipe (wp)
 
 You are to make a web server runtime for the following language:
 
