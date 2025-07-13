@@ -195,10 +195,18 @@ test-wp: $(BUILD_DIR)/wp
 run: $(BUILD_DIR)/wp install-middleware
 	$(BUILD_DIR)/wp test.wp
 
+# Run server with debug binary (AddressSanitizer enabled)
+run-debug: $(BUILD_DIR)/wp-debug install-middleware
+	$(BUILD_DIR)/wp-debug test.wp
+
+# Run with existing express-test database
+run-express-test: $(BUILD_DIR)/wp-debug install-middleware
+	WP_PG_DATABASE=express-test WP_PG_USER=postgres $(BUILD_DIR)/wp-debug test.wp --port 8085
+
 # Clean
 clean:
 	rm -f wp wp_debug wp_runtime wp_runtime_debug
 	rm -rf $(BUILD_DIR)
 	rm -f ./middleware/*.so
 
-.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run middleware install-middleware test-leaks test-leaks-unit test-leaks-integration test-leaks-system
+.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run run-debug run-express-test middleware install-middleware test-leaks test-leaks-unit test-leaks-integration test-leaks-system
