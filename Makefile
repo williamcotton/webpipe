@@ -72,7 +72,7 @@ $(BUILD_DIR)/jq.so: $(MIDDLEWARE_DIR)/jq.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -ljq
 
 $(BUILD_DIR)/lua.so: $(MIDDLEWARE_DIR)/lua.c
-	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -llua
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson $(LUA_LIB)
 
 $(BUILD_DIR)/pg.so: $(MIDDLEWARE_DIR)/pg.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -lpq
