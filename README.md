@@ -110,6 +110,55 @@ GET /users/:id
   |> pg: `SELECT * FROM users WHERE id = $1`
 ```
 
+### Validate Middleware
+Validates request body fields using a simple DSL with built-in validation rules.
+
+```wp
+POST /api/users
+  |> validate: `
+    name: string(3..50)
+    email: email
+    age?: number(18..120)
+    team_id?: number
+  `
+  |> jq: `{ sqlParams: [.body.name, .body.email, .body.age] }`
+  |> pg: `INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING *`
+  |> result
+    ok(201):
+      |> jq: `{ success: true, user: .data.rows[0] }`
+    validationError(400):
+      |> jq: `{
+        error: "Validation failed",
+        field: .errors[0].field,
+        rule: .errors[0].rule,
+        message: .errors[0].message
+      }`
+```
+
+**Validation Rules:**
+- `string(min..max)` - String with length constraints
+- `string` - String without constraints  
+- `number(min..max)` - Number with range constraints
+- `number` - Number without constraints
+- `email` - Valid email format validation
+- `boolean` - Boolean value validation
+- `field?: type` - Optional field (with `?` suffix)
+
+**Error Format:**
+Returns standardized validation errors when constraints are violated:
+```json
+{
+  "errors": [
+    {
+      "type": "validationError",
+      "field": "name",
+      "rule": "minLength", 
+      "message": "String must be at least 3 characters long"
+    }
+  ]
+}
+```
+
 ### Mustache Middleware
 Renders HTML templates using mustache syntax with JSON data.
 
