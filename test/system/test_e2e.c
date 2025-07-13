@@ -100,6 +100,9 @@ static json_t *makeRequest(const char *url, const char *method, const char *data
 
 // Start the WP server in background
 static int startServer(void) {
+    // Set up test database before starting server
+    setup_test_database();
+    
     // Fork a child process to run the server
     server_pid = fork();
     
@@ -146,6 +149,8 @@ static void stopServer(void) {
         waitpid(server_pid, &status, 0);
         server_pid = 0;
     }
+    // Clean up test database
+    teardown_test_database();
 }
 
 void setUp(void) {
