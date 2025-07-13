@@ -23,6 +23,15 @@ CREATE TABLE IF NOT EXISTS posts (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS todos (
+    id SERIAL PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    completed BOOLEAN DEFAULT FALSE,
+    user_id INTEGER REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Insert test data
 INSERT INTO teams (name) VALUES 
     ('Engineering'),
@@ -45,4 +54,14 @@ INSERT INTO posts (title, content, user_id) VALUES
     ('Third Post', 'This is the third test post', 1),
     ('Fourth Post', 'This is the fourth test post', 3),
     ('Fifth Post', 'This is the fifth test post', 4)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO todos (title, completed, user_id) VALUES 
+    ('Buy groceries', false, 1),
+    ('Complete project proposal', true, 1),
+    ('Review code changes', false, 2),
+    ('Update documentation', false, 2),
+    ('Schedule team meeting', true, 3),
+    ('Fix bug in authentication', false, 1),
+    ('Prepare quarterly report', false, 4)
 ON CONFLICT DO NOTHING;
