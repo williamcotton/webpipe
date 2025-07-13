@@ -157,7 +157,7 @@ ASTNode *parser_parse_result_step(Parser *parser);
 void free_ast(ASTNode *node);
 void free_tokens(Token *tokens, int count);
 void stringify_node(FILE *out, ASTNode *node, int level);
-int wp_runtime_init(const char *wp_file);
+int wp_runtime_init(const char *wp_file, int port);
 void wp_runtime_cleanup(void);
 
 // Internal function declarations (static functions that need prototypes)

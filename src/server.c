@@ -954,7 +954,7 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
 }
 
 // Runtime initialization
-int wp_runtime_init(const char *wp_file) {
+int wp_runtime_init(const char *wp_file, int port) {
     printf("Initializing runtime\n");
     
     // Check if we can access microhttpd functions
@@ -1041,36 +1041,22 @@ int wp_runtime_init(const char *wp_file) {
     }
     
     // Start HTTP server
-    printf("Starting HTTP server on port 8080...\n");
+    printf("Starting HTTP server on port %d...\n", port);
     
     // Try to start the daemon with more detailed error handling
     runtime->daemon = MHD_start_daemon(MHD_USE_THREAD_PER_CONNECTION,
-                                      8080, NULL, NULL,
+                                      (uint16_t)port, NULL, NULL,
                                       &handle_request, NULL,
                                       MHD_OPTION_NOTIFY_COMPLETED, request_completed, NULL,
                                       MHD_OPTION_END);
     
     if (!runtime->daemon) {
-        fprintf(stderr, "Error starting HTTP server on port 8080\n");
-        
-        // Try alternative port
-        printf("Trying port 8081...\n");
-        runtime->daemon = MHD_start_daemon(MHD_USE_THREAD_PER_CONNECTION,
-                                          8081, NULL, NULL,
-                                          &handle_request, NULL,
-                                          MHD_OPTION_NOTIFY_COMPLETED, request_completed, NULL,
-                                          MHD_OPTION_END);
-        
-        if (!runtime->daemon) {
-            fprintf(stderr, "Error starting HTTP server on port 8081 as well\n");
-            fprintf(stderr, "Check if ports are in use or if you have permission to bind to them\n");
-            free(source);
-            return -1;
-        } else {
-            printf("HTTP server started successfully on port 8081\n");
-        }
+        fprintf(stderr, "Error starting HTTP server on port %d\n", port);
+        fprintf(stderr, "Check if port is in use or if you have permission to bind to it\n");
+        free(source);
+        return -1;
     } else {
-        printf("HTTP server started successfully on port 8080\n");
+        printf("HTTP server started successfully on port %d\n", port);
     }
     
     parser_free(parser);

@@ -39,13 +39,14 @@ static void print_usage(const char *program_name) {
     fprintf(stderr, "  --daemon         Run in daemon mode (background service)\n");
     fprintf(stderr, "  --test           Run in test mode (until SIGTERM)\n");
     fprintf(stderr, "  --timeout <sec>  Run for specified seconds then exit\n");
+    fprintf(stderr, "  --port <num>     Port to listen on (default: 8080, env: WP_PORT)\n");
     fprintf(stderr, "  -f <wp_file>     Parse only (don't start server)\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "Default mode is interactive (press Enter to stop)\n");
 }
 
 // Parse command line arguments
-static wp_execution_mode_t parse_arguments(int argc, char *argv[], char **wp_file, int *timeout) {
+static wp_execution_mode_t parse_arguments(int argc, char *argv[], char **wp_file, int *timeout, int *port) {
     if (argc < 2) {
         print_usage(argv[0]);
         exit(1);
@@ -53,6 +54,16 @@ static wp_execution_mode_t parse_arguments(int argc, char *argv[], char **wp_fil
 
     *wp_file = argv[1];
     *timeout = 0;
+    *port = 8080; // Default port
+    
+    // Check for environment variable
+    const char *env_port = getenv("WP_PORT");
+    if (env_port) {
+        int env_port_num = atoi(env_port);
+        if (env_port_num > 0 && env_port_num <= 65535) {
+            *port = env_port_num;
+        }
+    }
     
     // Default to interactive mode
     wp_execution_mode_t mode = WP_MODE_INTERACTIVE;
@@ -75,6 +86,17 @@ static wp_execution_mode_t parse_arguments(int argc, char *argv[], char **wp_fil
             }
             mode = WP_MODE_TIMEOUT;
             i++; // Skip the timeout value
+        } else if (strcmp(argv[i], "--port") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --port requires a port number\n");
+                exit(1);
+            }
+            *port = atoi(argv[i + 1]);
+            if (*port <= 0 || *port > 65535) {
+                fprintf(stderr, "Error: port must be between 1 and 65535\n");
+                exit(1);
+            }
+            i++; // Skip the port value
         } else {
             fprintf(stderr, "Error: Unknown option '%s'\n", argv[i]);
             print_usage(argv[0]);
@@ -99,16 +121,16 @@ static void setup_signal_handlers(wp_execution_mode_t mode) {
 }
 
 // Wait for shutdown based on execution mode
-static void wait_for_shutdown(wp_execution_mode_t mode) {
+static void wait_for_shutdown(wp_execution_mode_t mode, int port) {
     switch (mode) {
         case WP_MODE_INTERACTIVE:
-            printf("WP Runtime started on port 8080\n");
+            printf("WP Runtime started on port %d\n", port);
             printf("Press Enter to stop...\n");
             getchar();
             break;
             
         case WP_MODE_DAEMON:
-            printf("WP Runtime started in daemon mode on port 8080\n");
+            printf("WP Runtime started in daemon mode on port %d\n", port);
             while (!shutdown_requested) {
                 sleep(1);
             }
@@ -116,14 +138,14 @@ static void wait_for_shutdown(wp_execution_mode_t mode) {
             break;
             
         case WP_MODE_TEST:
-            printf("WP Runtime started in test mode on port 8080\n");
+            printf("WP Runtime started in test mode on port %d\n", port);
             while (!shutdown_requested) {
                 sleep(1);
             }
             break;
             
         case WP_MODE_TIMEOUT:
-            printf("WP Runtime started with %d second timeout on port 8080\n", timeout_seconds);
+            printf("WP Runtime started with %d second timeout on port %d\n", timeout_seconds, port);
             while (!shutdown_requested) {
                 sleep(1);
             }
@@ -179,18 +201,19 @@ int main(int argc, char *argv[]) {
 
     // Parse command line arguments
     char *wp_file;
-    wp_execution_mode_t mode = parse_arguments(argc, argv, &wp_file, &timeout_seconds);
+    int port;
+    wp_execution_mode_t mode = parse_arguments(argc, argv, &wp_file, &timeout_seconds, &port);
     
     // Set up signal handlers
     setup_signal_handlers(mode);
     
     // Server mode - run the runtime
-    if (wp_runtime_init(wp_file) != 0) {
+    if (wp_runtime_init(wp_file, port) != 0) {
         return 1;
     }
     
     // Wait for shutdown based on mode
-    wait_for_shutdown(mode);
+    wait_for_shutdown(mode, port);
     
     // Cleanup
     wp_runtime_cleanup();

@@ -149,7 +149,7 @@ TEST_SYSTEM_BINS = $(BUILD_DIR)/test_server $(BUILD_DIR)/test_e2e $(BUILD_DIR)/t
 TEST_ALL_BINS = $(TEST_UNIT_BINS) $(TEST_INTEGRATION_BINS) $(TEST_SYSTEM_BINS)
 
 # Test commands
-test: $(TEST_ALL_BINS)
+test: $(TEST_ALL_BINS) install-middleware
 	./test-runner.sh all $(TEST_ALL_BINS)
 
 test-unit: $(TEST_UNIT_BINS)

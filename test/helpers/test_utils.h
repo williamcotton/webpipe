@@ -88,6 +88,10 @@ void restore_middleware_functions(void);
 int init_test_runtime(const char *wp_file);
 void cleanup_test_runtime(void);
 
+// Test port configuration
+#define TEST_PORT 9080
+int get_test_port(void);
+
 // Test runtime access - forward declaration  
 struct WPRuntime;
 extern struct WPRuntime *test_runtime;

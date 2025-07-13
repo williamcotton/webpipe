@@ -436,3 +436,7 @@ void cleanup_test_runtime(void) {
         test_runtime = NULL;
     }
 }
+
+int get_test_port(void) {
+    return TEST_PORT;
+}

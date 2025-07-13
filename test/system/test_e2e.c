@@ -20,6 +20,13 @@ typedef struct {
     size_t size;
 } ResponseBuffer;
 
+// Helper to build test URL with correct port
+static char *build_test_url(const char *path) {
+    static char url[256];
+    snprintf(url, sizeof(url), "http://localhost:%d%s", get_test_port(), path);
+    return url;
+}
+
 // CURL write callback
 static size_t writeCallback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
@@ -105,7 +112,10 @@ static int startServer(void) {
         // Redirect stdin from /dev/null so getchar() doesn't block
         freopen("/dev/null", "r", stdin);
         
-        execl("./build/wp", "./build/wp", "test.wp", "--test", NULL);
+        // Use test port to avoid conflicts
+        char port_arg[16];
+        snprintf(port_arg, sizeof(port_arg), "%d", get_test_port());
+        execl("./build/wp", "./build/wp", "test.wp", "--test", "--port", port_arg, NULL);
         exit(1); // Should not reach here
     } else if (server_pid > 0) {
         // Parent process - wait a moment for server to start
@@ -157,7 +167,7 @@ void tearDown(void) {
 static void test_e2e_simple_route(void) {
     // Test the /test route
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/test", "GET", NULL, &status_code);
+    json_t *response = makeRequest(build_test_url("/test"), "GET", NULL, &status_code);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -172,7 +182,7 @@ static void test_e2e_simple_route(void) {
 static void test_e2e_parameterized_route(void) {
     // Test the /page/:id route
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/page/123", "GET", NULL, &status_code);
+    json_t *response = makeRequest(build_test_url("/page/123"), "GET", NULL, &status_code);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -186,7 +196,7 @@ static void test_e2e_parameterized_route(void) {
 static void test_e2e_result_step_success(void) {
     // Test the /test3 route with result step
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/test3", "GET", NULL, &status_code);
+    json_t *response = makeRequest(build_test_url("/test3"), "GET", NULL, &status_code);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -201,7 +211,7 @@ static void test_e2e_result_step_success(void) {
 static void test_e2e_result_step_validation_error(void) {
     // Test the /test4 route with validation error
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/test4", "GET", NULL, &status_code);
+    json_t *response = makeRequest(build_test_url("/test4"), "GET", NULL, &status_code);
     
     TEST_ASSERT_EQUAL(400, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -216,7 +226,7 @@ static void test_e2e_result_step_validation_error(void) {
 static void test_e2e_result_step_sql_error(void) {
     // Test the /test-sql-error route
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/test-sql-error", "GET", NULL, &status_code);
+    json_t *response = makeRequest(build_test_url("/test-sql-error"), "GET", NULL, &status_code);
     
     TEST_ASSERT_EQUAL(500, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -231,7 +241,7 @@ static void test_e2e_result_step_sql_error(void) {
 static void test_e2e_variable_usage(void) {
     // Test the /teams route that uses teamsQuery variable
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/teams", "GET", NULL, &status_code);
+    json_t *response = makeRequest(build_test_url("/teams"), "GET", NULL, &status_code);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -249,7 +259,7 @@ static void test_e2e_variable_usage(void) {
 static void test_e2e_pipeline_chain(void) {
     // Test a multi-step pipeline
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/page/123", "GET", NULL, &status_code);
+    json_t *response = makeRequest(build_test_url("/page/123"), "GET", NULL, &status_code);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -264,7 +274,7 @@ static void test_e2e_pipeline_chain(void) {
 static void test_e2e_invalid_route(void) {
     // Test non-existent route
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/nonexistent", "GET", NULL, &status_code);
+    json_t *response = makeRequest(build_test_url("/nonexistent"), "GET", NULL, &status_code);
     
     TEST_ASSERT_EQUAL(404, status_code);
     
@@ -276,7 +286,7 @@ static void test_e2e_invalid_route(void) {
 static void test_e2e_invalid_method(void) {
     // Test invalid HTTP method - but most servers accept any method, so just test that we get a response
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/test", "INVALID", NULL, &status_code);
+    json_t *response = makeRequest(build_test_url("/test"), "INVALID", NULL, &status_code);
     
     // Accept any reasonable response for invalid method
     TEST_ASSERT_TRUE(status_code == 405 || status_code == 400 || status_code == 200);
@@ -290,7 +300,7 @@ static void test_e2e_concurrent_requests(void) {
     // Test concurrent request handling by making multiple requests
     for (int i = 0; i < 5; i++) {
         long status_code;
-        json_t *response = makeRequest("http://localhost:8080/test", "GET", NULL, &status_code);
+        json_t *response = makeRequest(build_test_url("/test"), "GET", NULL, &status_code);
         TEST_ASSERT_EQUAL(200, status_code);
         TEST_ASSERT_NOT_NULL(response);
         json_decref(response);
@@ -302,7 +312,7 @@ static void test_e2e_concurrent_requests(void) {
 static void test_e2e_post_request(void) {
     // Test POST request with JSON body
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/users", "POST", "{\"name\": \"John Doe\", \"email\": \"john@example.com\"}", &status_code);
+    json_t *response = makeRequest(build_test_url("/users"), "POST", "{\"name\": \"John Doe\", \"email\": \"john@example.com\"}", &status_code);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -323,7 +333,7 @@ static void test_e2e_post_request(void) {
 static void test_e2e_put_request(void) {
     // Test PUT request with JSON body
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/users/123", "PUT", "{\"name\": \"Jane Doe\", \"email\": \"jane@example.com\"}", &status_code);
+    json_t *response = makeRequest(build_test_url("/users/123"), "PUT", "{\"name\": \"Jane Doe\", \"email\": \"jane@example.com\"}", &status_code);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -348,7 +358,7 @@ static void test_e2e_put_request(void) {
 static void test_e2e_patch_request(void) {
     // Test PATCH request with JSON body
     long status_code;
-    json_t *response = makeRequest("http://localhost:8080/users/456", "PATCH", "{\"email\": \"newemail@example.com\"}", &status_code);
+    json_t *response = makeRequest(build_test_url("/users/456"), "PATCH", "{\"email\": \"newemail@example.com\"}", &status_code);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -377,7 +387,7 @@ static void test_e2e_body_handling(void) {
     long status_code;
     
     // Test POST with body
-    json_t *response = makeRequest("http://localhost:8080/test-body", "POST", "{\"test\": \"post data\"}", &status_code);
+    json_t *response = makeRequest(build_test_url("/test-body"), "POST", "{\"test\": \"post data\"}", &status_code);
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
     
@@ -395,7 +405,7 @@ static void test_e2e_body_handling(void) {
     json_decref(response);
     
     // Test PUT with body
-    response = makeRequest("http://localhost:8080/test-body", "PUT", "{\"test\": \"put data\"}", &status_code);
+    response = makeRequest(build_test_url("/test-body"), "PUT", "{\"test\": \"put data\"}", &status_code);
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
     
@@ -413,7 +423,7 @@ static void test_e2e_body_handling(void) {
     json_decref(response);
     
     // Test PATCH with body
-    response = makeRequest("http://localhost:8080/test-body", "PATCH", "{\"test\": \"patch data\"}", &status_code);
+    response = makeRequest(build_test_url("/test-body"), "PATCH", "{\"test\": \"patch data\"}", &status_code);
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
     
@@ -489,7 +499,7 @@ static void test_e2e_mustache_html_response(void) {
     // Test mustache middleware HTML response
     long status_code;
     char *content_type = NULL;
-    char *response_body = makeRawRequest("http://localhost:8080/hello-mustache", "GET", NULL, &status_code, &content_type);
+    char *response_body = makeRawRequest(build_test_url("/hello-mustache"), "GET", NULL, &status_code, &content_type);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response_body);
@@ -512,7 +522,7 @@ static void test_e2e_mustache_error_response(void) {
     // Test mustache middleware error response
     long status_code;
     char *content_type = NULL;
-    char *response_body = makeRawRequest("http://localhost:8080/mustache-error-test", "GET", NULL, &status_code, &content_type);
+    char *response_body = makeRawRequest(build_test_url("/mustache-error-test"), "GET", NULL, &status_code, &content_type);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response_body);
