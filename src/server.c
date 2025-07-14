@@ -285,11 +285,68 @@ static enum MHD_Result form_data_iterator(void *cls, enum MHD_ValueKind kind,
     return MHD_YES;
 }
 
+// Helper function to parse cookies from Cookie header
+json_t *parse_cookies(const char *cookie_header) {
+    json_t *cookies = json_object();
+    if (!cookie_header) {
+        return cookies;
+    }
+    
+    // Make a copy of the header for parsing
+    char *header_copy = strdup(cookie_header);
+    if (!header_copy) {
+        return cookies;
+    }
+    
+    // Parse each cookie pair
+    char *saveptr = NULL;
+    char *cookie_pair = strtok_r(header_copy, ";", &saveptr);
+    
+    while (cookie_pair) {
+        // Skip leading whitespace
+        while (*cookie_pair == ' ') cookie_pair++;
+        
+        // Find the '=' separator
+        char *equal_sign = strchr(cookie_pair, '=');
+        if (equal_sign) {
+            *equal_sign = '\0'; // Split the string
+            char *name = cookie_pair;
+            char *value = equal_sign + 1;
+            
+            // Skip trailing whitespace from name
+            char *name_end = name + strlen(name) - 1;
+            while (name_end > name && *name_end == ' ') {
+                *name_end = '\0';
+                name_end--;
+            }
+            
+            // Skip leading whitespace from value
+            while (*value == ' ') value++;
+            
+            // Skip trailing whitespace from value
+            char *value_end = value + strlen(value) - 1;
+            while (value_end > value && *value_end == ' ') {
+                *value_end = '\0';
+                value_end--;
+            }
+            
+            // Add to cookies object if both name and value are valid
+            if (strlen(name) > 0 && strlen(value) > 0) {
+                json_object_set_new(cookies, name, json_string(value));
+            }
+        }
+        
+        cookie_pair = strtok_r(NULL, ";", &saveptr);
+    }
+    
+    free(header_copy);
+    return cookies;
+}
+
 // HTTP request handling
 json_t *create_request_json(struct MHD_Connection *connection, 
                            const char *url, const char *method,
                            PostData *post_data) {
-    (void)connection; // Suppress unused parameter warning
     json_t *request = json_object();
     
     // Set method
@@ -305,6 +362,11 @@ json_t *create_request_json(struct MHD_Connection *connection,
     // Parse query string
     json_t *query = json_object();
     json_object_set_new(request, "query", query);
+    
+    // Parse cookies from Cookie header
+    const char *cookie_header = MHD_lookup_connection_value(connection, MHD_HEADER_KIND, "Cookie");
+    json_t *cookies = parse_cookies(cookie_header);
+    json_object_set_new(request, "cookies", cookies);
     
     // Set body if present
     if (post_data) {

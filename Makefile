@@ -53,7 +53,7 @@ debug: $(BUILD_DIR)/wp-debug middleware
 
 # Debug executable
 $(BUILD_DIR)/wp-debug: $(BUILD_DIR) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/wp.h
-	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(LDFLAGS) -fsanitize=address,undefined
+	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(LDFLAGS)
 ifneq ($(CODESIGN_CMD),)
 	$(CODESIGN_CMD) ./build/wp-debug
 endif
@@ -112,6 +112,9 @@ $(BUILD_DIR)/test_parser: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_parser.c $(
 $(BUILD_DIR)/test_middleware: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_middleware.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_middleware.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
+$(BUILD_DIR)/test_cookies: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_cookies.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_cookies.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
+
 $(BUILD_DIR)/test_jq: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
@@ -133,6 +136,9 @@ $(BUILD_DIR)/test_pipeline: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_pi
 $(BUILD_DIR)/test_validate: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_validate.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_validate.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
+$(BUILD_DIR)/test_cookies_integration: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_cookies.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_cookies.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS) -lcurl
+
 $(BUILD_DIR)/test_server: $(BUILD_DIR)/unity.o $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
@@ -143,8 +149,8 @@ $(BUILD_DIR)/test_perf: $(BUILD_DIR)/unity.o $(TEST_DIR)/system/test_perf.c $(TE
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
 # Test group targets
-TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_middleware
-TEST_INTEGRATION_BINS = $(BUILD_DIR)/test_jq $(BUILD_DIR)/test_lua $(BUILD_DIR)/test_mustache $(BUILD_DIR)/test_mustache_partials $(BUILD_DIR)/test_pg $(BUILD_DIR)/test_pipeline $(BUILD_DIR)/test_validate
+TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_middleware $(BUILD_DIR)/test_cookies
+TEST_INTEGRATION_BINS = $(BUILD_DIR)/test_jq $(BUILD_DIR)/test_lua $(BUILD_DIR)/test_mustache $(BUILD_DIR)/test_mustache_partials $(BUILD_DIR)/test_pg $(BUILD_DIR)/test_pipeline $(BUILD_DIR)/test_validate $(BUILD_DIR)/test_cookies_integration
 TEST_SYSTEM_BINS = $(BUILD_DIR)/test_server $(BUILD_DIR)/test_e2e $(BUILD_DIR)/test_perf
 TEST_ALL_BINS = $(TEST_UNIT_BINS) $(TEST_INTEGRATION_BINS) $(TEST_SYSTEM_BINS)
 

@@ -202,4 +202,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
 int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena);
 bool match_route(const char *pattern, const char *url, json_t *params);
 
+// Cookie parsing function
+json_t *parse_cookies(const char *cookie_header);
+
 #endif // WP_H
