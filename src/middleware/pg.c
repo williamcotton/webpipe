@@ -69,9 +69,27 @@ int pg_middleware_init() {
 
   // Try to connect
   char conninfo[512];
+  
+  // Check if any environment variable would cause buffer overflow
+  const char *host = get_pg_host();
+  const char *port = get_pg_port();
+  const char *dbname = get_pg_dbname();
+  const char *user = get_pg_user();
+  const char *password = get_pg_password();
+  
+  // Estimate required buffer size (with some margin for format string)
+  size_t required_size = strlen(host) + strlen(port) + strlen(dbname) + 
+                        strlen(user) + strlen(password) + 100;  // 100 for format string
+  
+  if (required_size >= sizeof(conninfo)) {
+    fprintf(stderr, "Error: PostgreSQL connection string too long (%zu bytes, max %zu)\n", 
+            required_size, sizeof(conninfo));
+    return NULL;
+  }
+  
   snprintf(conninfo, sizeof(conninfo),
            "host=%s port=%s dbname=%s user=%s password=%s gssencmode=disable", 
-           get_pg_host(), get_pg_port(), get_pg_dbname(), get_pg_user(), get_pg_password());
+           host, port, dbname, user, password);
 
   PGconn *new_conn = PQconnectdb(conninfo);
 

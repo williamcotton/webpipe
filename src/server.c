@@ -182,6 +182,13 @@ int load_middleware(const char *name) {
     }
     
     char middleware_path[256];
+    
+    // Check if middleware name would cause buffer overflow
+    if (strlen(name) > 240) {  // Reserve space for "./middleware/" and ".so\0"
+        fprintf(stderr, "Error: Middleware name too long: %s\n", name);
+        return -1;
+    }
+    
     snprintf(middleware_path, sizeof(middleware_path), "./middleware/%s.so", name);
     
     void *handle = dlopen(middleware_path, RTLD_LAZY);
