@@ -772,6 +772,158 @@ static void test_cookies_whitespace_handling(void) {
     arena_free(arena);
 }
 
+// Header capture structure for CURL
+typedef struct {
+    char **headers;
+    size_t header_count;
+    size_t header_capacity;
+} HeaderCapture;
+
+// CURL header callback
+static size_t header_callback(char *buffer, size_t size, size_t nitems, void *userdata) {
+    size_t realsize = size * nitems;
+    HeaderCapture *headers = (HeaderCapture *)userdata;
+    
+    // Only capture Set-Cookie headers
+    if (strncmp(buffer, "Set-Cookie:", 11) == 0) {
+        // Ensure we have capacity
+        if (headers->header_count >= headers->header_capacity) {
+            headers->header_capacity = headers->header_capacity ? headers->header_capacity * 2 : 10;
+            headers->headers = realloc(headers->headers, headers->header_capacity * sizeof(char*));
+        }
+        
+        // Copy the header (skip "Set-Cookie: " prefix)
+        char *cookie_value = buffer + 12; // Skip "Set-Cookie: "
+        size_t cookie_len = realsize - 12;
+        
+        // Remove trailing CRLF
+        while (cookie_len > 0 && (cookie_value[cookie_len-1] == '\r' || cookie_value[cookie_len-1] == '\n')) {
+            cookie_len--;
+        }
+        
+        headers->headers[headers->header_count] = malloc(cookie_len + 1);
+        strncpy(headers->headers[headers->header_count], cookie_value, cookie_len);
+        headers->headers[headers->header_count][cookie_len] = '\0';
+        headers->header_count++;
+    }
+    
+    return realsize;
+}
+
+// Helper function to make HTTP request and capture Set-Cookie headers
+static json_t *make_request_with_header_capture(const char *url, const char *method, const char *data, 
+                                                long *status_code_out, HeaderCapture *header_capture) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    ResponseBuffer response = {0};
+    response.data = malloc(1);
+    response.size = 0;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&response);
+    
+    // Set up header capture
+    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, (void *)header_capture);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    if (strcmp(method, "POST") == 0) {
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+    } else if (strcmp(method, "PUT") == 0) {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+    } else if (strcmp(method, "PATCH") == 0) {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+    } else if (strcmp(method, "DELETE") == 0) {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+    
+    if (status_code_out) {
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, status_code_out);
+    }
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        printf("CURL error: %s\n", curl_easy_strerror(res));
+        free(response.data);
+        return NULL;
+    }
+
+    // Parse JSON response
+    json_error_t error;
+    json_t *json = json_loads(response.data, 0, &error);
+    free(response.data);
+
+    return json;
+}
+
+// Test cookie setting via middleware
+static void test_e2e_cookie_setting(void) {
+    HeaderCapture header_capture = {0};
+    
+    // Make request to a route that should set cookies
+    long status_code;
+    json_t *response = make_request_with_header_capture(build_test_url("/cookies"), "GET", NULL, &status_code, &header_capture);
+    
+    TEST_ASSERT_EQUAL(200, status_code);
+    TEST_ASSERT_NOT_NULL(response);
+    
+    // Verify that the response body doesn't contain setCookies (should be removed)
+    json_t *set_cookies = json_object_get(response, "setCookies");
+    TEST_ASSERT_NULL(set_cookies);
+    
+    // Verify that we have the expected message in the response body
+    json_t *message = json_object_get(response, "message");
+    TEST_ASSERT_NOT_NULL(message);
+    TEST_ASSERT_STRING_EQUAL("Cookie test response", json_string_value(message));
+    
+    // Verify that we captured Set-Cookie headers
+    TEST_ASSERT_EQUAL(3, header_capture.header_count);
+    
+    // Check that the expected cookies are present
+    bool found_session = false, found_user = false, found_theme = false;
+    
+    for (size_t i = 0; i < header_capture.header_count; i++) {
+        if (strstr(header_capture.headers[i], "sessionId=abc123") != NULL) {
+            found_session = true;
+            TEST_ASSERT_TRUE(strstr(header_capture.headers[i], "HttpOnly") != NULL);
+            TEST_ASSERT_TRUE(strstr(header_capture.headers[i], "Secure") != NULL);
+            TEST_ASSERT_TRUE(strstr(header_capture.headers[i], "Max-Age=3600") != NULL);
+        }
+        if (strstr(header_capture.headers[i], "userId=john") != NULL) {
+            found_user = true;
+            TEST_ASSERT_TRUE(strstr(header_capture.headers[i], "Max-Age=86400") != NULL);
+        }
+        if (strstr(header_capture.headers[i], "theme=dark") != NULL) {
+            found_theme = true;
+            TEST_ASSERT_TRUE(strstr(header_capture.headers[i], "Path=/") != NULL);
+        }
+    }
+    
+    TEST_ASSERT_TRUE(found_session);
+    TEST_ASSERT_TRUE(found_user);
+    TEST_ASSERT_TRUE(found_theme);
+    
+    // Clean up response
+    json_decref(response);
+    
+    // Clean up header capture
+    for (size_t i = 0; i < header_capture.header_count; i++) {
+        free(header_capture.headers[i]);
+    }
+    free(header_capture.headers);
+}
+
 int main(void) {
     // Initialize curl
     curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -801,6 +953,7 @@ int main(void) {
     // Only run HTTP cookie tests if curl is available
     if (system("which curl > /dev/null 2>&1") == 0) {
         RUN_TEST(test_cookies_with_http_requests);
+        RUN_TEST(test_e2e_cookie_setting);
     } else {
         printf("Skipping HTTP cookie tests - curl not available\n");
     }

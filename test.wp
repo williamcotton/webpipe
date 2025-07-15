@@ -370,4 +370,12 @@ GET /test-sql-error-mustache
       |> mustache: `{{error}}`
 
 GET /cookies
-  |> jq: `.`
+  |> jq: `{
+    message: "Cookie test response",
+    cookies: .cookies,
+    setCookies: [
+      "sessionId=abc123; HttpOnly; Secure; Max-Age=3600",
+      "userId=john; Max-Age=86400",
+      "theme=dark; Path=/"
+    ]
+  }`

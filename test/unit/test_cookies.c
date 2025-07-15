@@ -194,6 +194,101 @@ static void test_create_request_json_with_cookies(void) {
     arena_free(arena);
 }
 
+static void test_create_request_json_with_set_cookies(void) {
+    MemoryArena *arena = arena_create(1024 * 1024);
+    set_current_arena(arena);
+    
+    json_t *request = create_request_json(NULL, "/test", "GET", NULL);
+    
+    TEST_ASSERT_NOT_NULL(request);
+    
+    // Check that setCookies array is initialized
+    json_t *set_cookies = json_object_get(request, "setCookies");
+    TEST_ASSERT_NOT_NULL(set_cookies);
+    TEST_ASSERT_TRUE(json_is_array(set_cookies));
+    TEST_ASSERT_EQUAL(0, json_array_size(set_cookies));
+    
+    json_decref(request);
+    set_current_arena(NULL);
+    arena_free(arena);
+}
+
+static void test_set_cookies_array_manipulation(void) {
+    MemoryArena *arena = arena_create(1024 * 1024);
+    set_current_arena(arena);
+    
+    json_t *request = create_request_json(NULL, "/test", "GET", NULL);
+    json_t *set_cookies = json_object_get(request, "setCookies");
+    
+    // Add some cookies
+    json_array_append_new(set_cookies, json_string("sessionId=abc123; HttpOnly; Secure"));
+    json_array_append_new(set_cookies, json_string("userId=john; Max-Age=3600"));
+    json_array_append_new(set_cookies, json_string("theme=dark; Path=/"));
+    
+    TEST_ASSERT_EQUAL(3, json_array_size(set_cookies));
+    
+    // Verify cookie strings
+    json_t *cookie1 = json_array_get(set_cookies, 0);
+    json_t *cookie2 = json_array_get(set_cookies, 1);
+    json_t *cookie3 = json_array_get(set_cookies, 2);
+    
+    TEST_ASSERT_STRING_EQUAL("sessionId=abc123; HttpOnly; Secure", json_string_value(cookie1));
+    TEST_ASSERT_STRING_EQUAL("userId=john; Max-Age=3600", json_string_value(cookie2));
+    TEST_ASSERT_STRING_EQUAL("theme=dark; Path=/", json_string_value(cookie3));
+    
+    json_decref(request);
+    set_current_arena(NULL);
+    arena_free(arena);
+}
+
+static void test_set_cookies_with_special_characters(void) {
+    MemoryArena *arena = arena_create(1024 * 1024);
+    set_current_arena(arena);
+    
+    json_t *request = create_request_json(NULL, "/test", "GET", NULL);
+    json_t *set_cookies = json_object_get(request, "setCookies");
+    
+    // Add cookies with special characters
+    json_array_append_new(set_cookies, json_string("token=abc%3D123; HttpOnly"));
+    json_array_append_new(set_cookies, json_string("email=user%40example.com; Secure"));
+    
+    TEST_ASSERT_EQUAL(2, json_array_size(set_cookies));
+    
+    json_t *cookie1 = json_array_get(set_cookies, 0);
+    json_t *cookie2 = json_array_get(set_cookies, 1);
+    
+    TEST_ASSERT_STRING_EQUAL("token=abc%3D123; HttpOnly", json_string_value(cookie1));
+    TEST_ASSERT_STRING_EQUAL("email=user%40example.com; Secure", json_string_value(cookie2));
+    
+    json_decref(request);
+    set_current_arena(NULL);
+    arena_free(arena);
+}
+
+static void test_set_cookies_empty_values(void) {
+    MemoryArena *arena = arena_create(1024 * 1024);
+    set_current_arena(arena);
+    
+    json_t *request = create_request_json(NULL, "/test", "GET", NULL);
+    json_t *set_cookies = json_object_get(request, "setCookies");
+    
+    // Test empty and null values
+    json_array_append_new(set_cookies, json_string(""));
+    json_array_append_new(set_cookies, json_string("validCookie=value"));
+    
+    TEST_ASSERT_EQUAL(2, json_array_size(set_cookies));
+    
+    json_t *cookie1 = json_array_get(set_cookies, 0);
+    json_t *cookie2 = json_array_get(set_cookies, 1);
+    
+    TEST_ASSERT_STRING_EQUAL("", json_string_value(cookie1));
+    TEST_ASSERT_STRING_EQUAL("validCookie=value", json_string_value(cookie2));
+    
+    json_decref(request);
+    set_current_arena(NULL);
+    arena_free(arena);
+}
+
 int main(void) {
     UNITY_BEGIN();
     
@@ -207,6 +302,10 @@ int main(void) {
     RUN_TEST(test_parse_cookies_empty_values);
     RUN_TEST(test_parse_cookies_complex_scenario);
     RUN_TEST(test_create_request_json_with_cookies);
+    RUN_TEST(test_create_request_json_with_set_cookies);
+    RUN_TEST(test_set_cookies_array_manipulation);
+    RUN_TEST(test_set_cookies_with_special_characters);
+    RUN_TEST(test_set_cookies_empty_values);
     
     return UNITY_END();
 }

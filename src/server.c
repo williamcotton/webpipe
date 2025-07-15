@@ -368,6 +368,10 @@ json_t *create_request_json(struct MHD_Connection *connection,
     json_t *cookies = parse_cookies(cookie_header);
     json_object_set_new(request, "cookies", cookies);
     
+    // Initialize setCookies array for middleware to add cookies
+    json_t *set_cookies = json_array();
+    json_object_set_new(request, "setCookies", set_cookies);
+    
     // Set body if present
     if (post_data) {
         if (post_data->is_form_data && post_data->form_data) {
@@ -428,6 +432,29 @@ static enum MHD_Result send_response(struct MHD_Connection *connection,
         fprintf(stderr, "Error: connection is NULL in send_response\n");
         return MHD_NO;
     }
+
+    printf("json_data: %s\n", json_dumps(json_data, JSON_COMPACT));
+
+    // we need to creaste a temp array for the cookies, process the cookies, delete the setCookies from the json_data, and then add the cookies to the mhd_response
+    json_t *temp_cookies = json_array();
+    json_t *set_cookies = json_object_get(json_data, "setCookies");
+    if (set_cookies && json_is_array(set_cookies)) {
+        size_t cookie_count = json_array_size(set_cookies);
+        for (size_t i = 0; i < cookie_count; i++) {
+            json_t *cookie = json_array_get(set_cookies, i); 
+            if (cookie && json_is_string(cookie)) {
+                const char *cookie_str = json_string_value(cookie);
+                if (cookie_str && strlen(cookie_str) > 0) {
+                    json_array_append_new(temp_cookies, json_string(cookie_str));
+                }
+            }
+        }
+    }
+
+    // delete the setCookies from the json_data
+    json_object_del(json_data, "setCookies");
+
+    // add the cookies to the mhd_response
     
     if (!json_data) {
         fprintf(stderr, "Error: json_data is NULL in send_response\n");
@@ -503,8 +530,16 @@ static enum MHD_Result send_response(struct MHD_Connection *connection,
         MHD_create_response_from_buffer(
             response_len, (void *)response_str,
             MHD_RESPMEM_PERSISTENT);
+
+    // add the cookies to the mhd_response
+    size_t cookie_count = json_array_size(temp_cookies);
+    for (size_t i = 0; i < cookie_count; i++) {
+        const char *cookie_str = json_string_value(json_array_get(temp_cookies, i));
+        MHD_add_response_header(mhd_response, "Set-Cookie", cookie_str);
+    }
     
     MHD_add_response_header(mhd_response, "Content-Type", content_type);
+    
     (void)MHD_queue_response(connection, (unsigned int)status_code, mhd_response);
     MHD_destroy_response(mhd_response);
     
@@ -591,10 +626,17 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
     PipelineStep *step = pipeline;
     while (step) {
         if (strcmp(step->middleware, "result") == 0) {
-            // Ensure current object has originalRequest field before result processing
+            // Ensure current object has originalRequest and setCookies field before result processing
             if (json_is_object(current) && original_request) {
                 // Always set the clean original request, not a nested one
                 json_object_set(current, "originalRequest", original_request);
+                
+                // Ensure setCookies is preserved in current object
+                json_t *set_cookies = json_object_get(current, "setCookies");
+                if (!set_cookies) {
+                    set_cookies = json_array();
+                    json_object_set_new(current, "setCookies", set_cookies);
+                }
             }
             
             // Handle result step
@@ -689,10 +731,19 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             return -1;
         }
         
-        // Ensure the result has originalRequest for the next middleware step
+        // Ensure the result has originalRequest and setCookies for the next middleware step
         if (json_is_object(result) && original_request) {
             // Always set the clean original request, not a nested one
             json_object_set(result, "originalRequest", original_request);
+            
+            // Preserve setCookies from current request to result (if result doesn't already have it)
+            json_t *result_set_cookies = json_object_get(result, "setCookies");
+            if (!result_set_cookies) {
+                json_t *current_set_cookies = json_object_get(current, "setCookies");
+                if (current_set_cookies) {
+                    json_object_set(result, "setCookies", current_set_cookies);
+                }
+            }
         }
         
         // Check for errors after each step and jump to result block if found
