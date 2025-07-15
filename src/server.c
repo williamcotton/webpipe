@@ -433,8 +433,6 @@ static enum MHD_Result send_response(struct MHD_Connection *connection,
         return MHD_NO;
     }
 
-    printf("json_data: %s\n", json_dumps(json_data, JSON_COMPACT));
-
     // we need to creaste a temp array for the cookies, process the cookies, delete the setCookies from the json_data, and then add the cookies to the mhd_response
     json_t *temp_cookies = json_array();
     json_t *set_cookies = json_object_get(json_data, "setCookies");
