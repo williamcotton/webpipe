@@ -368,3 +368,6 @@ GET /test-sql-error-mustache
     default(500):
       |> jq: `{error: "Internal server error"}`
       |> mustache: `{{error}}`
+
+GET /cookies
+  |> jq: `.`

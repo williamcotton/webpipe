@@ -451,6 +451,41 @@ static int is_html_response(const char *response_body) {
     return strstr(response_body, "<html>") != NULL && strstr(response_body, "</html>") != NULL;
 }
 
+// Helper function to make HTTP request with cookies
+static char *make_http_request_with_cookies(const char *url, const char *cookies) {
+    CURL *curl = curl_easy_init();
+    if (!curl) return NULL;
+
+    struct curl_slist *headers = NULL;
+    if (cookies && strlen(cookies) > 0) {
+        char cookie_header[1024];
+        snprintf(cookie_header, sizeof(cookie_header), "Cookie: %s", cookies);
+        headers = curl_slist_append(headers, cookie_header);
+    }
+
+    ResponseBuffer chunk = {0};
+    chunk.data = malloc(1);
+    chunk.size = 0;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        free(chunk.data);
+        return NULL;
+    }
+
+    return chunk.data; // caller must free
+}
+
 // Helper function to make HTTP request and get raw response
 static char *makeRawRequest(const char *url, const char *method, const char *data, long *status_code_out, char **content_type_out) {
     CURL *curl = curl_easy_init();
@@ -563,6 +598,180 @@ static void test_e2e_mustache_error_response(void) {
     free(content_type);
 }
 
+// Test fixture for cookie functionality
+static void test_cookies_in_request_json(void) {
+    MemoryArena *arena = arena_create(1024 * 1024);
+    set_current_arena(arena);
+    
+    // Test that cookies are included in request JSON
+    json_t *request = create_request_json(NULL, "/test", "GET", NULL);
+    
+    TEST_ASSERT_NOT_NULL(request);
+    
+    // Check that cookies field exists
+    json_t *cookies = json_object_get(request, "cookies");
+    TEST_ASSERT_NOT_NULL(cookies);
+    TEST_ASSERT_TRUE(json_is_object(cookies));
+    
+    // Should be empty since we passed NULL connection
+    TEST_ASSERT_EQUAL(0, json_object_size(cookies));
+    
+    json_decref(request);
+    set_current_arena(NULL);
+    arena_free(arena);
+}
+
+// Test cookie parsing with actual HTTP requests
+static void test_cookies_with_http_requests(void) {
+    // Test 1: Request without cookies
+    char url[256];
+    snprintf(url, sizeof(url), "http://localhost:%d/cookies", get_test_port());
+    char *response1 = make_http_request_with_cookies(url, NULL);
+    TEST_ASSERT_NOT_NULL(response1);
+    
+    // Parse response to check if cookies field exists and is empty
+    json_error_t error;
+    json_t *json_response1 = json_loads(response1, 0, &error);
+    if (json_response1) {
+        json_t *cookies = json_object_get(json_response1, "cookies");
+        TEST_ASSERT_NOT_NULL(cookies);
+        TEST_ASSERT_TRUE(json_is_object(cookies));
+        TEST_ASSERT_EQUAL(0, json_object_size(cookies));
+        json_decref(json_response1);
+    }
+    free(response1);
+    
+    // Test 2: Request with single cookie
+    char *response2 = make_http_request_with_cookies(url, "sessionId=abc123");
+    TEST_ASSERT_NOT_NULL(response2);
+    
+    json_t *json_response2 = json_loads(response2, 0, &error);
+    if (json_response2) {
+        json_t *cookies = json_object_get(json_response2, "cookies");
+        TEST_ASSERT_NOT_NULL(cookies);
+        TEST_ASSERT_TRUE(json_is_object(cookies));
+        TEST_ASSERT_EQUAL(1, json_object_size(cookies));
+        
+        json_t *session_id = json_object_get(cookies, "sessionId");
+        TEST_ASSERT_NOT_NULL(session_id);
+        TEST_ASSERT_STRING_EQUAL("abc123", json_string_value(session_id));
+        
+        json_decref(json_response2);
+    }
+    free(response2);
+    
+    // Test 3: Request with multiple cookies
+    char *response3 = make_http_request_with_cookies(url, "sessionId=abc123; user=john; theme=dark");
+    TEST_ASSERT_NOT_NULL(response3);
+    
+    json_t *json_response3 = json_loads(response3, 0, &error);
+    if (json_response3) {
+        json_t *cookies = json_object_get(json_response3, "cookies");
+        TEST_ASSERT_NOT_NULL(cookies);
+        TEST_ASSERT_TRUE(json_is_object(cookies));
+        TEST_ASSERT_EQUAL(3, json_object_size(cookies));
+        
+        json_t *session_id = json_object_get(cookies, "sessionId");
+        json_t *user = json_object_get(cookies, "user");
+        json_t *theme = json_object_get(cookies, "theme");
+        
+        TEST_ASSERT_NOT_NULL(session_id);
+        TEST_ASSERT_NOT_NULL(user);
+        TEST_ASSERT_NOT_NULL(theme);
+        
+        TEST_ASSERT_STRING_EQUAL("abc123", json_string_value(session_id));
+        TEST_ASSERT_STRING_EQUAL("john", json_string_value(user));
+        TEST_ASSERT_STRING_EQUAL("dark", json_string_value(theme));
+        
+        json_decref(json_response3);
+    }
+    free(response3);
+    
+    // Test 4: Request with cookies containing special characters
+    char *response4 = make_http_request_with_cookies(url, "token=abc%3D123; user=john%40example.com");
+    TEST_ASSERT_NOT_NULL(response4);
+    
+    json_t *json_response4 = json_loads(response4, 0, &error);
+    if (json_response4) {
+        json_t *cookies = json_object_get(json_response4, "cookies");
+        TEST_ASSERT_NOT_NULL(cookies);
+        TEST_ASSERT_TRUE(json_is_object(cookies));
+        TEST_ASSERT_EQUAL(2, json_object_size(cookies));
+        
+        json_t *token = json_object_get(cookies, "token");
+        json_t *user = json_object_get(cookies, "user");
+        
+        TEST_ASSERT_NOT_NULL(token);
+        TEST_ASSERT_NOT_NULL(user);
+        
+        TEST_ASSERT_STRING_EQUAL("abc%3D123", json_string_value(token));
+        TEST_ASSERT_STRING_EQUAL("john%40example.com", json_string_value(user));
+        
+        json_decref(json_response4);
+    }
+    free(response4);
+}
+
+// Test cookie parsing edge cases
+static void test_cookies_edge_cases(void) {
+    MemoryArena *arena = arena_create(1024 * 1024);
+    set_current_arena(arena);
+    
+    // Test malformed cookies
+    json_t *cookies1 = parse_cookies("sessionId=abc123; invalid; user=john; =value; name=");
+    TEST_ASSERT_NOT_NULL(cookies1);
+    TEST_ASSERT_EQUAL(2, json_object_size(cookies1)); // Only valid cookies should be parsed
+    
+    json_t *session_id = json_object_get(cookies1, "sessionId");
+    json_t *user = json_object_get(cookies1, "user");
+    
+    TEST_ASSERT_NOT_NULL(session_id);
+    TEST_ASSERT_NOT_NULL(user);
+    TEST_ASSERT_STRING_EQUAL("abc123", json_string_value(session_id));
+    TEST_ASSERT_STRING_EQUAL("john", json_string_value(user));
+    
+    json_decref(cookies1);
+    
+    // Test empty values
+    json_t *cookies2 = parse_cookies("sessionId=; user=john; empty=");
+    TEST_ASSERT_NOT_NULL(cookies2);
+    TEST_ASSERT_EQUAL(1, json_object_size(cookies2)); // Only cookies with non-empty values
+    
+    json_t *user2 = json_object_get(cookies2, "user");
+    TEST_ASSERT_NOT_NULL(user2);
+    TEST_ASSERT_STRING_EQUAL("john", json_string_value(user2));
+    
+    json_decref(cookies2);
+    
+    set_current_arena(NULL);
+    arena_free(arena);
+}
+
+// Test cookies with whitespace handling
+static void test_cookies_whitespace_handling(void) {
+    MemoryArena *arena = arena_create(1024 * 1024);
+    set_current_arena(arena);
+    
+    json_t *cookies = parse_cookies("  sessionId = abc123 ; user = john  ");
+    
+    TEST_ASSERT_NOT_NULL(cookies);
+    TEST_ASSERT_TRUE(json_is_object(cookies));
+    TEST_ASSERT_EQUAL(2, json_object_size(cookies));
+    
+    json_t *session_id = json_object_get(cookies, "sessionId");
+    json_t *user = json_object_get(cookies, "user");
+    
+    TEST_ASSERT_NOT_NULL(session_id);
+    TEST_ASSERT_NOT_NULL(user);
+    
+    TEST_ASSERT_STRING_EQUAL("abc123", json_string_value(session_id));
+    TEST_ASSERT_STRING_EQUAL("john", json_string_value(user));
+    
+    json_decref(cookies);
+    set_current_arena(NULL);
+    arena_free(arena);
+}
+
 int main(void) {
     // Initialize curl
     curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -585,6 +794,16 @@ int main(void) {
     RUN_TEST(test_e2e_body_handling);
     RUN_TEST(test_e2e_mustache_html_response);
     RUN_TEST(test_e2e_mustache_error_response);
+    RUN_TEST(test_cookies_in_request_json);
+    RUN_TEST(test_cookies_edge_cases);
+    RUN_TEST(test_cookies_whitespace_handling);
+    
+    // Only run HTTP cookie tests if curl is available
+    if (system("which curl > /dev/null 2>&1") == 0) {
+        RUN_TEST(test_cookies_with_http_requests);
+    } else {
+        printf("Skipping HTTP cookie tests - curl not available\n");
+    }
     
     // Cleanup curl
     curl_global_cleanup();
