@@ -584,12 +584,19 @@ static enum MHD_Result find_and_process_route(struct MHD_Connection *connection,
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
                                 json_t **final_response, int *response_code, char **content_type) {
     json_t *current = request;
+    json_t *original_request = json_deep_copy(request); // Store original request
     *response_code = 200; // Default
     *content_type = arena_strdup(arena, "application/json"); // Default content type
     
     PipelineStep *step = pipeline;
     while (step) {
         if (strcmp(step->middleware, "result") == 0) {
+            // Ensure current object has originalRequest field before result processing
+            if (json_is_object(current) && original_request) {
+                // Always set the clean original request, not a nested one
+                json_object_set(current, "originalRequest", original_request);
+            }
+            
             // Handle result step
             ASTNode *result_node = (ASTNode*)(uintptr_t)step->value;
             
@@ -682,6 +689,12 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             return -1;
         }
         
+        // Ensure the result has originalRequest for the next middleware step
+        if (json_is_object(result) && original_request) {
+            // Always set the clean original request, not a nested one
+            json_object_set(result, "originalRequest", original_request);
+        }
+        
         // Check for errors after each step and jump to result block if found
         if (has_errors(result)) {
             // Find the result step in the remaining pipeline
@@ -747,6 +760,9 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         current = result;
         step = step->next;
     }
+
+    // remove originalRequest from the final response
+    json_object_del(current, "originalRequest");
     
     *final_response = current;
     return 0;
