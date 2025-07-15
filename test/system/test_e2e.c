@@ -27,8 +27,46 @@ static char *build_test_url(const char *path) {
     return url;
 }
 
+// Header capture structure for CURL
+typedef struct {
+    char **headers;
+    size_t header_count;
+    size_t header_capacity;
+} HeaderCapture;
+
+// CURL header callback
+static size_t header_callback(char *buffer, size_t size, size_t nitems, void *userdata) {
+    size_t realsize = size * nitems;
+    HeaderCapture *headers = (HeaderCapture *)userdata;
+    
+    // Only capture Set-Cookie headers
+    if (strncmp(buffer, "Set-Cookie:", 11) == 0) {
+        // Ensure we have capacity
+        if (headers->header_count >= headers->header_capacity) {
+            headers->header_capacity = headers->header_capacity ? headers->header_capacity * 2 : 10;
+            headers->headers = realloc(headers->headers, headers->header_capacity * sizeof(char*));
+        }
+        
+        // Copy the header (skip "Set-Cookie: " prefix)
+        char *cookie_value = buffer + 12; // Skip "Set-Cookie: "
+        size_t cookie_len = realsize - 12;
+        
+        // Remove trailing CRLF
+        while (cookie_len > 0 && (cookie_value[cookie_len-1] == '\r' || cookie_value[cookie_len-1] == '\n')) {
+            cookie_len--;
+        }
+        
+        headers->headers[headers->header_count] = malloc(cookie_len + 1);
+        strncpy(headers->headers[headers->header_count], cookie_value, cookie_len);
+        headers->headers[headers->header_count][cookie_len] = '\0';
+        headers->header_count++;
+    }
+    
+    return realsize;
+}
+
 // CURL write callback
-static size_t writeCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+static size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
     ResponseBuffer *mem = (ResponseBuffer *)userp;
 
@@ -46,7 +84,8 @@ static size_t writeCallback(void *contents, size_t size, size_t nmemb, void *use
 // Helper to make HTTP requests and return JSON response
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdisabled-macro-expansion"
-static json_t *makeRequest(const char *url, const char *method, const char *data, long *status_code_out) {
+static json_t *make_request(const char *url, const char *method, const char *data, long *status_code_out, 
+                           char **content_type_out, HeaderCapture *header_capture) {
     CURL *curl = curl_easy_init();
     if (!curl) return NULL;
 
@@ -55,12 +94,20 @@ static json_t *makeRequest(const char *url, const char *method, const char *data
     response.size = 0;
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&response);
 
+    // Set up header capture if requested
+    if (header_capture) {
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, (void *)header_capture);
+    }
+
     struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    if (data) {
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    }
 
     if (strcmp(method, "POST") == 0) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
@@ -79,8 +126,15 @@ static json_t *makeRequest(const char *url, const char *method, const char *data
     if (status_code_out) {
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, status_code_out);
     }
+    
+    // Get content type if requested
+    if (content_type_out) {
+        char *ct = NULL;
+        curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &ct);
+        *content_type_out = ct ? strdup(ct) : NULL;
+    }
 
-    curl_slist_free_all(headers);
+    if (headers) curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
@@ -99,7 +153,7 @@ static json_t *makeRequest(const char *url, const char *method, const char *data
 #pragma clang diagnostic pop
 
 // Start the WP server in background
-static int startServer(void) {
+static int start_server(void) {
     // Set up test database before starting server
     setup_test_database();
     
@@ -142,7 +196,7 @@ static int startServer(void) {
 }
 
 // Stop the WP server
-static void stopServer(void) {
+static void stop_server(void) {
     if (server_pid > 0) {
         kill(server_pid, SIGTERM);
         int status;
@@ -156,23 +210,23 @@ static void stopServer(void) {
 void setUp(void) {
     // Set up function called before each test
     // Make sure server is stopped
-    stopServer();
+    stop_server();
     
     // Start server for each test
-    if (startServer() != 0) {
+    if (start_server() != 0) {
         TEST_FAIL_MESSAGE("Failed to start WP server");
     }
 }
 
 void tearDown(void) {
     // Tear down function called after each test
-    stopServer();
+    stop_server();
 }
 
 static void test_e2e_simple_route(void) {
     // Test the /test route
     long status_code;
-    json_t *response = makeRequest(build_test_url("/test"), "GET", NULL, &status_code);
+    json_t *response = make_request(build_test_url("/test"), "GET", NULL, &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -187,7 +241,7 @@ static void test_e2e_simple_route(void) {
 static void test_e2e_parameterized_route(void) {
     // Test the /page/:id route
     long status_code;
-    json_t *response = makeRequest(build_test_url("/page/123"), "GET", NULL, &status_code);
+    json_t *response = make_request(build_test_url("/page/123"), "GET", NULL, &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -201,7 +255,7 @@ static void test_e2e_parameterized_route(void) {
 static void test_e2e_result_step_success(void) {
     // Test the /test3 route with result step
     long status_code;
-    json_t *response = makeRequest(build_test_url("/test3"), "GET", NULL, &status_code);
+    json_t *response = make_request(build_test_url("/test3"), "GET", NULL, &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -216,7 +270,7 @@ static void test_e2e_result_step_success(void) {
 static void test_e2e_result_step_validation_error(void) {
     // Test the /test4 route with validation error
     long status_code;
-    json_t *response = makeRequest(build_test_url("/test4"), "GET", NULL, &status_code);
+    json_t *response = make_request(build_test_url("/test4"), "GET", NULL, &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(400, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -231,7 +285,7 @@ static void test_e2e_result_step_validation_error(void) {
 static void test_e2e_result_step_sql_error(void) {
     // Test the /test-sql-error route
     long status_code;
-    json_t *response = makeRequest(build_test_url("/test-sql-error"), "GET", NULL, &status_code);
+    json_t *response = make_request(build_test_url("/test-sql-error"), "GET", NULL, &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(500, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -246,7 +300,7 @@ static void test_e2e_result_step_sql_error(void) {
 static void test_e2e_variable_usage(void) {
     // Test the /teams route that uses teamsQuery variable
     long status_code;
-    json_t *response = makeRequest(build_test_url("/teams"), "GET", NULL, &status_code);
+    json_t *response = make_request(build_test_url("/teams"), "GET", NULL, &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -264,7 +318,7 @@ static void test_e2e_variable_usage(void) {
 static void test_e2e_pipeline_chain(void) {
     // Test a multi-step pipeline
     long status_code;
-    json_t *response = makeRequest(build_test_url("/page/123"), "GET", NULL, &status_code);
+    json_t *response = make_request(build_test_url("/page/123"), "GET", NULL, &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -279,7 +333,7 @@ static void test_e2e_pipeline_chain(void) {
 static void test_e2e_invalid_route(void) {
     // Test non-existent route
     long status_code;
-    json_t *response = makeRequest(build_test_url("/nonexistent"), "GET", NULL, &status_code);
+    json_t *response = make_request(build_test_url("/nonexistent"), "GET", NULL, &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(404, status_code);
     
@@ -291,7 +345,7 @@ static void test_e2e_invalid_route(void) {
 static void test_e2e_invalid_method(void) {
     // Test invalid HTTP method - but most servers accept any method, so just test that we get a response
     long status_code;
-    json_t *response = makeRequest(build_test_url("/test"), "INVALID", NULL, &status_code);
+    json_t *response = make_request(build_test_url("/test"), "INVALID", NULL, &status_code, NULL, NULL);
     
     // Accept any reasonable response for invalid method
     TEST_ASSERT_TRUE(status_code == 405 || status_code == 400 || status_code == 200);
@@ -305,7 +359,7 @@ static void test_e2e_concurrent_requests(void) {
     // Test concurrent request handling by making multiple requests
     for (int i = 0; i < 5; i++) {
         long status_code;
-        json_t *response = makeRequest(build_test_url("/test"), "GET", NULL, &status_code);
+        json_t *response = make_request(build_test_url("/test"), "GET", NULL, &status_code, NULL, NULL);
         TEST_ASSERT_EQUAL(200, status_code);
         TEST_ASSERT_NOT_NULL(response);
         json_decref(response);
@@ -317,7 +371,7 @@ static void test_e2e_concurrent_requests(void) {
 static void test_e2e_post_request(void) {
     // Test POST request with JSON body
     long status_code;
-    json_t *response = makeRequest(build_test_url("/users"), "POST", "{\"name\": \"John Doe\", \"email\": \"john@example.com\"}", &status_code);
+    json_t *response = make_request(build_test_url("/users"), "POST", "{\"name\": \"John Doe\", \"email\": \"john@example.com\"}", &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -338,7 +392,7 @@ static void test_e2e_post_request(void) {
 static void test_e2e_put_request(void) {
     // Test PUT request with JSON body
     long status_code;
-    json_t *response = makeRequest(build_test_url("/users/123"), "PUT", "{\"name\": \"Jane Doe\", \"email\": \"jane@example.com\"}", &status_code);
+    json_t *response = make_request(build_test_url("/users/123"), "PUT", "{\"name\": \"Jane Doe\", \"email\": \"jane@example.com\"}", &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -363,7 +417,7 @@ static void test_e2e_put_request(void) {
 static void test_e2e_patch_request(void) {
     // Test PATCH request with JSON body
     long status_code;
-    json_t *response = makeRequest(build_test_url("/users/456"), "PATCH", "{\"email\": \"newemail@example.com\"}", &status_code);
+    json_t *response = make_request(build_test_url("/users/456"), "PATCH", "{\"email\": \"newemail@example.com\"}", &status_code, NULL, NULL);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -392,7 +446,7 @@ static void test_e2e_body_handling(void) {
     long status_code;
     
     // Test POST with body
-    json_t *response = makeRequest(build_test_url("/test-body"), "POST", "{\"test\": \"post data\"}", &status_code);
+    json_t *response = make_request(build_test_url("/test-body"), "POST", "{\"test\": \"post data\"}", &status_code, NULL, NULL);
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
     
@@ -410,7 +464,7 @@ static void test_e2e_body_handling(void) {
     json_decref(response);
     
     // Test PUT with body
-    response = makeRequest(build_test_url("/test-body"), "PUT", "{\"test\": \"put data\"}", &status_code);
+    response = make_request(build_test_url("/test-body"), "PUT", "{\"test\": \"put data\"}", &status_code, NULL, NULL);
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
     
@@ -428,7 +482,7 @@ static void test_e2e_body_handling(void) {
     json_decref(response);
     
     // Test PATCH with body
-    response = makeRequest(build_test_url("/test-body"), "PATCH", "{\"test\": \"patch data\"}", &status_code);
+    response = make_request(build_test_url("/test-body"), "PATCH", "{\"test\": \"patch data\"}", &status_code, NULL, NULL);
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
     
@@ -468,7 +522,7 @@ static char *make_http_request_with_cookies(const char *url, const char *cookies
     chunk.size = 0;
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
@@ -496,7 +550,7 @@ static char *makeRawRequest(const char *url, const char *method, const char *dat
     response.size = 0;
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&response);
 
     // Headers list for extracting content-type
@@ -772,100 +826,6 @@ static void test_cookies_whitespace_handling(void) {
     arena_free(arena);
 }
 
-// Header capture structure for CURL
-typedef struct {
-    char **headers;
-    size_t header_count;
-    size_t header_capacity;
-} HeaderCapture;
-
-// CURL header callback
-static size_t header_callback(char *buffer, size_t size, size_t nitems, void *userdata) {
-    size_t realsize = size * nitems;
-    HeaderCapture *headers = (HeaderCapture *)userdata;
-    
-    // Only capture Set-Cookie headers
-    if (strncmp(buffer, "Set-Cookie:", 11) == 0) {
-        // Ensure we have capacity
-        if (headers->header_count >= headers->header_capacity) {
-            headers->header_capacity = headers->header_capacity ? headers->header_capacity * 2 : 10;
-            headers->headers = realloc(headers->headers, headers->header_capacity * sizeof(char*));
-        }
-        
-        // Copy the header (skip "Set-Cookie: " prefix)
-        char *cookie_value = buffer + 12; // Skip "Set-Cookie: "
-        size_t cookie_len = realsize - 12;
-        
-        // Remove trailing CRLF
-        while (cookie_len > 0 && (cookie_value[cookie_len-1] == '\r' || cookie_value[cookie_len-1] == '\n')) {
-            cookie_len--;
-        }
-        
-        headers->headers[headers->header_count] = malloc(cookie_len + 1);
-        strncpy(headers->headers[headers->header_count], cookie_value, cookie_len);
-        headers->headers[headers->header_count][cookie_len] = '\0';
-        headers->header_count++;
-    }
-    
-    return realsize;
-}
-
-// Helper function to make HTTP request and capture Set-Cookie headers
-static json_t *make_request_with_header_capture(const char *url, const char *method, const char *data, 
-                                                long *status_code_out, HeaderCapture *header_capture) {
-    CURL *curl = curl_easy_init();
-    if (!curl) return NULL;
-
-    ResponseBuffer response = {0};
-    response.data = malloc(1);
-    response.size = 0;
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&response);
-    
-    // Set up header capture
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, (void *)header_capture);
-
-    struct curl_slist *headers = NULL;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-    if (strcmp(method, "POST") == 0) {
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
-    } else if (strcmp(method, "PUT") == 0) {
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
-    } else if (strcmp(method, "PATCH") == 0) {
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PATCH");
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
-    } else if (strcmp(method, "DELETE") == 0) {
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
-    }
-
-    CURLcode res = curl_easy_perform(curl);
-    
-    if (status_code_out) {
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, status_code_out);
-    }
-
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK) {
-        printf("CURL error: %s\n", curl_easy_strerror(res));
-        free(response.data);
-        return NULL;
-    }
-
-    // Parse JSON response
-    json_error_t error;
-    json_t *json = json_loads(response.data, 0, &error);
-    free(response.data);
-
-    return json;
-}
 
 // Test cookie setting via middleware
 static void test_e2e_cookie_setting(void) {
@@ -873,7 +833,7 @@ static void test_e2e_cookie_setting(void) {
     
     // Make request to a route that should set cookies
     long status_code;
-    json_t *response = make_request_with_header_capture(build_test_url("/cookies"), "GET", NULL, &status_code, &header_capture);
+    json_t *response = make_request(build_test_url("/cookies"), "GET", NULL, &status_code, NULL, &header_capture);
     
     TEST_ASSERT_EQUAL(200, status_code);
     TEST_ASSERT_NOT_NULL(response);
@@ -949,14 +909,8 @@ int main(void) {
     RUN_TEST(test_cookies_in_request_json);
     RUN_TEST(test_cookies_edge_cases);
     RUN_TEST(test_cookies_whitespace_handling);
-    
-    // Only run HTTP cookie tests if curl is available
-    if (system("which curl > /dev/null 2>&1") == 0) {
-        RUN_TEST(test_cookies_with_http_requests);
-        RUN_TEST(test_e2e_cookie_setting);
-    } else {
-        printf("Skipping HTTP cookie tests - curl not available\n");
-    }
+    RUN_TEST(test_cookies_with_http_requests);
+    RUN_TEST(test_e2e_cookie_setting);
     
     // Cleanup curl
     curl_global_cleanup();
