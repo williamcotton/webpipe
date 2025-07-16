@@ -1,9 +1,9 @@
 config pg {
-  host: env("WP_PG_HOST", "localhost")
-  port: env("WP_PG_PORT", "5432")
-  database: env("WP_PG_DATABASE", "express-test")
-  user: env("WP_PG_USER", "postgres")
-  password: env("WP_PG_PASSWORD", "postgres")
+  host: $WP_PG_HOST || "localhost"
+  port: $WP_PG_PORT || "5432"
+  database: $WP_PG_DATABASE || "express-test"
+  user: $WP_PG_USER || "postgres"
+  password: $WP_PG_PASSWORD || "postgres"
   ssl: false
 }
 

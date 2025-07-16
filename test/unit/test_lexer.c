@@ -393,7 +393,7 @@ static void test_lexer_tokenize_config_keywords(void) {
     TEST_ASSERT_EQUAL(6, token_count);
     assert_token_type(&tokens[0], TOKEN_CONFIG);
     assert_token_value(&tokens[0], "config");
-    assert_token_type(&tokens[1], TOKEN_ENV);
+    assert_token_type(&tokens[1], TOKEN_IDENTIFIER);
     assert_token_value(&tokens[1], "env");
     assert_token_type(&tokens[2], TOKEN_TRUE);
     assert_token_value(&tokens[2], "true");
@@ -426,21 +426,20 @@ static void test_lexer_tokenize_config_punctuation(void) {
 }
 
 static void test_lexer_tokenize_env_function(void) {
-    const char *source = "env(\"DATABASE_URL\", \"postgres://localhost/db\")";
+    const char *source = "$DATABASE_URL || \"postgres://localhost/db\"";
     int token_count;
     Token *tokens = tokenize_test_string(source, &token_count);
     
-    TEST_ASSERT_EQUAL(7, token_count);
-    assert_token_type(&tokens[0], TOKEN_ENV);
-    assert_token_value(&tokens[0], "env");
-    assert_token_type(&tokens[1], TOKEN_LPAREN);
-    assert_token_type(&tokens[2], TOKEN_STRING);
-    assert_token_value(&tokens[2], "DATABASE_URL");
-    assert_token_type(&tokens[3], TOKEN_COMMA);
-    assert_token_type(&tokens[4], TOKEN_STRING);
-    assert_token_value(&tokens[4], "postgres://localhost/db");
-    assert_token_type(&tokens[5], TOKEN_RPAREN);
-    assert_token_type(&tokens[6], TOKEN_EOF);
+    TEST_ASSERT_EQUAL(5, token_count);
+    assert_token_type(&tokens[0], TOKEN_DOLLAR);
+    assert_token_value(&tokens[0], "$");
+    assert_token_type(&tokens[1], TOKEN_IDENTIFIER);
+    assert_token_value(&tokens[1], "DATABASE_URL");
+    assert_token_type(&tokens[2], TOKEN_OR);
+    assert_token_value(&tokens[2], "||");
+    assert_token_type(&tokens[3], TOKEN_STRING);
+    assert_token_value(&tokens[3], "postgres://localhost/db");
+    assert_token_type(&tokens[4], TOKEN_EOF);
     
     free_test_tokens(tokens, token_count);
 }

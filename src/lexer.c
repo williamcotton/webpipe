@@ -113,8 +113,6 @@ Token lexer_read_identifier(Lexer *lexer) {
     type = TOKEN_HTTP_METHOD;
   } else if (strcmp(value, "config") == 0) {
     type = TOKEN_CONFIG;
-  } else if (strcmp(value, "env") == 0) {
-    type = TOKEN_ENV;
   } else if (strcmp(value, "true") == 0) {
     type = TOKEN_TRUE;
   } else if (strcmp(value, "false") == 0) {
@@ -204,6 +202,17 @@ Token lexer_next_token(Lexer *lexer) {
     lexer_advance(lexer);
     lexer_advance(lexer);
     return lexer_make_token(lexer, TOKEN_PIPE, "|>");
+  }
+
+  if (c == '|' && lexer->source[lexer->current + 1] == '|') {
+    lexer_advance(lexer);
+    lexer_advance(lexer);
+    return lexer_make_token(lexer, TOKEN_OR, "||");
+  }
+
+  if (c == '$') {
+    lexer_advance(lexer);
+    return lexer_make_token(lexer, TOKEN_DOLLAR, "$");
   }
 
   if (c == ':') {

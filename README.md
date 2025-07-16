@@ -328,11 +328,11 @@ make test-lint
 ```wp
 # Configuration blocks
 config pg {
-  host: env("DB_HOST", "localhost")
-  port: env("DB_PORT", 5432)
-  database: env("DB_NAME", "myapp")
-  user: env("DB_USER", "postgres")
-  password: env("DB_PASSWORD", "secret")
+  host: $DB_HOST || "localhost"
+  port: $DB_PORT || 5432
+  database: $DB_NAME || "myapp"
+  user: $DB_USER || "postgres"
+  password: $DB_PASSWORD || "secret"
   ssl: true
 }
 
@@ -695,8 +695,8 @@ config pg {
   host: "localhost"
   port: 5432
   database: "myapp"
-  user: env("DB_USER", "postgres")
-  password: env("DB_PASSWORD", "secret")
+  user: $DB_USER || "postgres"
+  password: $DB_PASSWORD || "secret"
   ssl: true
 }
 
@@ -711,20 +711,20 @@ config auth {
 
 ### Environment Variable Integration
 
-The `env()` function allows you to use environment variables with optional default values:
+The `$VAR || "default"` syntax allows you to use environment variables with optional default values:
 
 ```wp
 config pg {
-  host: env("DB_HOST", "localhost")       # Uses DB_HOST or defaults to "localhost"
-  port: env("DB_PORT", 5432)             # Uses DB_PORT or defaults to 5432
-  password: env("DB_PASSWORD")           # Required environment variable
+  host: $DB_HOST || "localhost"       # Uses DB_HOST or defaults to "localhost"
+  port: $DB_PORT || 5432             # Uses DB_PORT or defaults to 5432
+  password: $DB_PASSWORD             # Required environment variable
 }
 ```
 
 Variables are resolved in this order:
 1. System environment variables (highest priority)
 2. Variables from `.env` file (loaded automatically)
-3. Default values provided in `env()` calls (lowest priority)
+3. Default values provided in `||` expressions (lowest priority)
 
 ### .env File Support
 
@@ -776,11 +776,11 @@ config example {
 #### Database Configuration
 ```wp
 config pg {
-  host: env("DB_HOST", "localhost")
-  port: env("DB_PORT", 5432)
-  database: env("DB_NAME", "myapp")
-  user: env("DB_USER", "postgres")
-  password: env("DB_PASSWORD", "secret")
+  host: $DB_HOST || "localhost"
+  port: $DB_PORT || 5432
+  database: $DB_NAME || "myapp"
+  user: $DB_USER || "postgres"
+  password: $DB_PASSWORD || "secret"
   ssl: true
   connectionTimeout: 30
   maxConnections: 10

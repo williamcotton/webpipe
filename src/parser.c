@@ -519,39 +519,28 @@ ASTNode *parser_parse_config_value(Parser *parser) {
     return node;
   }
   
-  if (parser_check(parser, TOKEN_ENV)) {
-    // Handle env("VAR", "default") calls
-    parser_advance(parser); // Skip 'env'
-    if (!parser_check(parser, TOKEN_LPAREN)) {
-      fprintf(stderr, "Expected '(' after 'env'\n");
-      return NULL;
-    }
-    parser_advance(parser); // Skip '('
+  if (parser_check(parser, TOKEN_DOLLAR)) {
+    // Handle $VAR || "default" syntax
+    parser_advance(parser); // Skip '$'
     
-    if (!parser_check(parser, TOKEN_STRING)) {
-      fprintf(stderr, "Expected string for env variable name\n");
+    if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+      fprintf(stderr, "Expected identifier after '$'\n");
       return NULL;
     }
     
     Token *env_var = parser_advance(parser);
     char *default_value = NULL;
     
-    // Check for default value
-    if (parser_check(parser, TOKEN_COMMA)) {
-      parser_advance(parser); // Skip ','
+    // Check for default value with || operator
+    if (parser_check(parser, TOKEN_OR)) {
+      parser_advance(parser); // Skip '||'
       if (!parser_check(parser, TOKEN_STRING)) {
-        fprintf(stderr, "Expected string for env default value\n");
+        fprintf(stderr, "Expected string for env default value after '||'\n");
         return NULL;
       }
       Token *default_val = parser_advance(parser);
       default_value = default_val->value;
     }
-    
-    if (!parser_check(parser, TOKEN_RPAREN)) {
-      fprintf(stderr, "Expected ')' after env arguments\n");
-      return NULL;
-    }
-    parser_advance(parser); // Skip ')'
     
     if (parser->ctx && parser->ctx->parse_arena) {
       node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
@@ -804,11 +793,10 @@ void stringify_node(FILE *out, ASTNode *node, int level) {
     break;
 
   case AST_CONFIG_VALUE_ENV_CALL:
-    fprintf(out, "env(\"%s\"", node->data.config_value_env_call.env_var);
+    fprintf(out, "$%s", node->data.config_value_env_call.env_var);
     if (node->data.config_value_env_call.default_value) {
-      fprintf(out, ", \"%s\"", node->data.config_value_env_call.default_value);
+      fprintf(out, " || \"%s\"", node->data.config_value_env_call.default_value);
     }
-    fprintf(out, ")");
     break;
 
   case AST_CONFIG_VALUE_OBJECT:

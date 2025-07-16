@@ -455,7 +455,7 @@ static void test_parser_parse_config_block_complex(void) {
 }
 
 static void test_parser_parse_config_with_env_vars(void) {
-    const char *source = "config database {\n  url: env(\"DATABASE_URL\", \"postgres://localhost/db\")\n  timeout: env(\"DB_TIMEOUT\")\n}";
+    const char *source = "config database {\n  url: $DATABASE_URL || \"postgres://localhost/db\"\n  timeout: $DB_TIMEOUT\n}";
     ASTNode *ast = parse_test_string(source);
     
     TEST_ASSERT_NOT_NULL(ast);
