@@ -246,6 +246,16 @@ Token *lexer_tokenize(const char *source, int *token_count) {
   Token token;
   do {
     token = lexer_next_token(lexer);
+    
+    // Check if we would exceed the token array bounds
+    if (count >= 1000) {
+      fprintf(stderr, "Error: Source file has more than 1000 tokens\n");
+      free(tokens);
+      lexer_free(lexer);
+      *token_count = 0;
+      return NULL;
+    }
+    
     tokens[count++] = token;
   } while (token.type != TOKEN_EOF);
 

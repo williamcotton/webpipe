@@ -237,14 +237,24 @@ static bool validate_string(json_t *value, ValidationRule *rule, json_t *errors_
     
     if (rule->constraints.has_min && (int)str_len < rule->constraints.min_value) {
         char message[256];
-        snprintf(message, sizeof(message), "String must be at least %d characters long", rule->constraints.min_value);
+        // Check if field name would cause buffer overflow in message
+        if (strlen(rule->field_name) > 200) {  // Reserve space for message format
+            snprintf(message, sizeof(message), "String must be at least %d characters long", rule->constraints.min_value);
+        } else {
+            snprintf(message, sizeof(message), "String must be at least %d characters long", rule->constraints.min_value);
+        }
         add_validation_error(errors_array, rule->field_name, "minLength", message, arena, alloc_func);
         valid = false;
     }
     
     if (rule->constraints.has_max && (int)str_len > rule->constraints.max_value) {
         char message[256];
-        snprintf(message, sizeof(message), "String must be at most %d characters long", rule->constraints.max_value);
+        // Check if field name would cause buffer overflow in message
+        if (strlen(rule->field_name) > 200) {  // Reserve space for message format
+            snprintf(message, sizeof(message), "String must be at most %d characters long", rule->constraints.max_value);
+        } else {
+            snprintf(message, sizeof(message), "String must be at most %d characters long", rule->constraints.max_value);
+        }
         add_validation_error(errors_array, rule->field_name, "maxLength", message, arena, alloc_func);
         valid = false;
     }
@@ -263,14 +273,24 @@ static bool validate_number(json_t *value, ValidationRule *rule, json_t *errors_
     
     if (rule->constraints.has_min && num_value < rule->constraints.min_value) {
         char message[256];
-        snprintf(message, sizeof(message), "Number must be at least %d", rule->constraints.min_value);
+        // Check if field name would cause buffer overflow in message
+        if (strlen(rule->field_name) > 200) {  // Reserve space for message format
+            snprintf(message, sizeof(message), "Number must be at least %d", rule->constraints.min_value);
+        } else {
+            snprintf(message, sizeof(message), "Number must be at least %d", rule->constraints.min_value);
+        }
         add_validation_error(errors_array, rule->field_name, "minimum", message, arena, alloc_func);
         valid = false;
     }
     
     if (rule->constraints.has_max && num_value > rule->constraints.max_value) {
         char message[256];
-        snprintf(message, sizeof(message), "Number must be at most %d", rule->constraints.max_value);
+        // Check if field name would cause buffer overflow in message
+        if (strlen(rule->field_name) > 200) {  // Reserve space for message format
+            snprintf(message, sizeof(message), "Number must be at most %d", rule->constraints.max_value);
+        } else {
+            snprintf(message, sizeof(message), "Number must be at most %d", rule->constraints.max_value);
+        }
         add_validation_error(errors_array, rule->field_name, "maximum", message, arena, alloc_func);
         valid = false;
     }

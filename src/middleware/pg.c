@@ -84,7 +84,7 @@ int pg_middleware_init() {
   if (required_size >= sizeof(conninfo)) {
     fprintf(stderr, "Error: PostgreSQL connection string too long (%zu bytes, max %zu)\n", 
             required_size, sizeof(conninfo));
-    return NULL;
+    return 0;
   }
   
   snprintf(conninfo, sizeof(conninfo),

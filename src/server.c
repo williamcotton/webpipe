@@ -860,10 +860,26 @@ bool match_route(const char *pattern, const char *url, json_t *params) {
         pattern_part = strtok_r(NULL, "/", &saveptr1);
     }
     
+    // Check if pattern has more than 64 parts
+    if (pattern_part) {
+        fprintf(stderr, "Error: Pattern has more than 64 path segments: %s\n", pattern);
+        free(pattern_copy);
+        free(url_copy);
+        return false;
+    }
+    
     char *url_part = strtok_r(url_copy, "/", &saveptr2);
     while (url_part && url_count < 64) {
         url_parts[url_count++] = url_part;
         url_part = strtok_r(NULL, "/", &saveptr2);
+    }
+    
+    // Check if URL has more than 64 parts
+    if (url_part) {
+        fprintf(stderr, "Error: URL has more than 64 path segments: %s\n", url);
+        free(pattern_copy);
+        free(url_copy);
+        return false;
     }
     
     // If different number of parts, no match
