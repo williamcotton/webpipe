@@ -65,7 +65,8 @@ Token lexer_make_token(Lexer *lexer, TokenType type, const char *value) {
 }
 
 Token lexer_read_string(Lexer *lexer) {
-  lexer_advance(lexer); // Skip opening backtick
+  char quote_char = lexer_peek(lexer); // Remember the quote character (` or ")
+  lexer_advance(lexer); // Skip opening quote
   int start = lexer->current;
 
   while (lexer_peek(lexer) != '\0') {
@@ -74,7 +75,7 @@ Token lexer_read_string(Lexer *lexer) {
       if (lexer_peek(lexer) != '\0') {
         lexer_advance(lexer); // Skip escaped character
       }
-    } else if (lexer_peek(lexer) == '`') {
+    } else if (lexer_peek(lexer) == quote_char) {
       break;
     } else {
       lexer_advance(lexer);
@@ -86,7 +87,7 @@ Token lexer_read_string(Lexer *lexer) {
   strncpy(value, lexer->source + start, (size_t)length);
   value[length] = '\0';
 
-  lexer_advance(lexer); // Skip closing backtick
+  lexer_advance(lexer); // Skip closing quote
 
   Token token = lexer_make_token(lexer, TOKEN_STRING, value);
   free(value);
@@ -110,6 +111,16 @@ Token lexer_read_identifier(Lexer *lexer) {
       strcmp(value, "PUT") == 0 || strcmp(value, "DELETE") == 0 ||
       strcmp(value, "PATCH") == 0) {
     type = TOKEN_HTTP_METHOD;
+  } else if (strcmp(value, "config") == 0) {
+    type = TOKEN_CONFIG;
+  } else if (strcmp(value, "env") == 0) {
+    type = TOKEN_ENV;
+  } else if (strcmp(value, "true") == 0) {
+    type = TOKEN_TRUE;
+  } else if (strcmp(value, "false") == 0) {
+    type = TOKEN_FALSE;
+  } else if (strcmp(value, "null") == 0) {
+    type = TOKEN_NULL;
   }
 
   Token token = lexer_make_token(lexer, type, value);
@@ -145,6 +156,14 @@ Token lexer_read_number(Lexer *lexer) {
 
   while (isdigit(lexer_peek(lexer))) {
     lexer_advance(lexer);
+  }
+
+  // Handle decimal numbers
+  if (lexer_peek(lexer) == '.') {
+    lexer_advance(lexer); // consume '.'
+    while (isdigit(lexer_peek(lexer))) {
+      lexer_advance(lexer);
+    }
   }
 
   int length = lexer->current - start;
@@ -217,7 +236,26 @@ Token lexer_next_token(Lexer *lexer) {
     return lexer_make_token(lexer, TOKEN_RPAREN, ")");
   }
 
+  if (c == '[') {
+    lexer_advance(lexer);
+    return lexer_make_token(lexer, TOKEN_LBRACKET, "[");
+  }
+
+  if (c == ']') {
+    lexer_advance(lexer);
+    return lexer_make_token(lexer, TOKEN_RBRACKET, "]");
+  }
+
+  if (c == ',') {
+    lexer_advance(lexer);
+    return lexer_make_token(lexer, TOKEN_COMMA, ",");
+  }
+
   if (c == '`') {
+    return lexer_read_string(lexer);
+  }
+
+  if (c == '"') {
     return lexer_read_string(lexer);
   }
 

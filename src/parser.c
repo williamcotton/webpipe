@@ -317,9 +317,354 @@ ASTNode *parser_parse_variable_assignment(Parser *parser) {
   return node;
 }
 
+// Forward declarations for config parsing
+ASTNode *parser_parse_config_value(Parser *parser);
+ConfigProperty *parser_parse_config_properties(Parser *parser);
+json_t *config_ast_to_json(ASTNode *node);
+json_t *config_block_to_json(ASTNode *config_block);
+
+// Parse a configuration block: config name { key: value, ... }
+ASTNode *parser_parse_config_block(Parser *parser) {
+  parser_advance(parser); // Skip 'config'
+  
+  if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+    fprintf(stderr, "Expected identifier after 'config'\n");
+    return NULL;
+  }
+  
+  Token *name = parser_advance(parser);
+  
+  if (!parser_check(parser, TOKEN_LBRACE)) {
+    fprintf(stderr, "Expected '{' after config name\n");
+    return NULL;
+  }
+  
+  parser_advance(parser); // Skip '{'
+  
+  // Parse configuration properties
+  ConfigProperty *properties = parser_parse_config_properties(parser);
+  
+  if (!parser_check(parser, TOKEN_RBRACE)) {
+    fprintf(stderr, "Expected '}' to close config block\n");
+    return NULL;
+  }
+  
+  parser_advance(parser); // Skip '}'
+  
+  ASTNode *node;
+  if (parser->ctx && parser->ctx->parse_arena) {
+    node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+    node->data.config_block.name = arena_strdup(parser->ctx->parse_arena, name->value);
+  } else {
+    node = malloc(sizeof(ASTNode));
+    node->data.config_block.name = strdup_safe(name->value);
+  }
+  node->type = AST_CONFIG_BLOCK;
+  node->data.config_block.properties = properties;
+  
+  return node;
+}
+
+// Parse configuration properties (key: value pairs)
+ConfigProperty *parser_parse_config_properties(Parser *parser) {
+  ConfigProperty *first = NULL;
+  ConfigProperty *current = NULL;
+  
+  while (!parser_check(parser, TOKEN_RBRACE) && !parser_is_at_end(parser)) {
+    // Skip newlines
+    while (parser_check(parser, TOKEN_NEWLINE)) {
+      parser_advance(parser);
+    }
+    
+    // Check for end of block
+    if (parser_check(parser, TOKEN_RBRACE)) {
+      break;
+    }
+    
+    // Parse key
+    if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+      fprintf(stderr, "Expected identifier for config key\n");
+      return first;
+    }
+    
+    Token *key = parser_advance(parser);
+    
+    if (!parser_check(parser, TOKEN_COLON)) {
+      fprintf(stderr, "Expected ':' after config key\n");
+      return first;
+    }
+    
+    parser_advance(parser); // Skip ':'
+    
+    // Parse value
+    ASTNode *value = parser_parse_config_value(parser);
+    if (!value) {
+      fprintf(stderr, "Expected value for config key\n");
+      return first;
+    }
+    
+    // Create property
+    ConfigProperty *prop;
+    if (parser->ctx && parser->ctx->parse_arena) {
+      prop = arena_alloc(parser->ctx->parse_arena, sizeof(ConfigProperty));
+      prop->key = arena_strdup(parser->ctx->parse_arena, key->value);
+    } else {
+      prop = malloc(sizeof(ConfigProperty));
+      prop->key = strdup_safe(key->value);
+    }
+    prop->value = value;
+    prop->next = NULL;
+    
+    // Link to list
+    if (!first) {
+      first = prop;
+      current = prop;
+    } else {
+      current->next = prop;
+      current = prop;
+    }
+    
+    // Skip optional comma
+    if (parser_check(parser, TOKEN_COMMA)) {
+      parser_advance(parser);
+    }
+    
+    // Skip newlines
+    while (parser_check(parser, TOKEN_NEWLINE)) {
+      parser_advance(parser);
+    }
+  }
+  
+  return first;
+}
+
+// Parse a configuration value
+ASTNode *parser_parse_config_value(Parser *parser) {
+  ASTNode *node;
+  
+  if (parser_check(parser, TOKEN_STRING)) {
+    Token *val = parser_advance(parser);
+    if (parser->ctx && parser->ctx->parse_arena) {
+      node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+      node->data.config_value_string.value = arena_strdup(parser->ctx->parse_arena, val->value);
+    } else {
+      node = malloc(sizeof(ASTNode));
+      node->data.config_value_string.value = strdup_safe(val->value);
+    }
+    node->type = AST_CONFIG_VALUE_STRING;
+    return node;
+  }
+  
+  if (parser_check(parser, TOKEN_NUMBER)) {
+    Token *val = parser_advance(parser);
+    if (parser->ctx && parser->ctx->parse_arena) {
+      node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+    } else {
+      node = malloc(sizeof(ASTNode));
+    }
+    node->type = AST_CONFIG_VALUE_NUMBER;
+    
+    // Try to parse as float first, then as integer
+    char *endptr;
+    double double_val = strtod(val->value, &endptr);
+    if (*endptr == '\0') {
+      // Check if it's actually an integer
+      long long_val = (long)double_val;
+      if (double_val - long_val > -0.0000001 && double_val - long_val < 0.0000001) {
+        node->data.config_value_number.value = (double)long_val;
+        node->data.config_value_number.is_integer = true;
+      } else {
+        node->data.config_value_number.value = double_val;
+        node->data.config_value_number.is_integer = false;
+      }
+    } else {
+      node->data.config_value_number.value = atof(val->value);
+      node->data.config_value_number.is_integer = true;
+    }
+    return node;
+  }
+  
+  if (parser_check(parser, TOKEN_TRUE)) {
+    parser_advance(parser);
+    if (parser->ctx && parser->ctx->parse_arena) {
+      node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+    } else {
+      node = malloc(sizeof(ASTNode));
+    }
+    node->type = AST_CONFIG_VALUE_BOOLEAN;
+    node->data.config_value_boolean.value = true;
+    return node;
+  }
+  
+  if (parser_check(parser, TOKEN_FALSE)) {
+    parser_advance(parser);
+    if (parser->ctx && parser->ctx->parse_arena) {
+      node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+    } else {
+      node = malloc(sizeof(ASTNode));
+    }
+    node->type = AST_CONFIG_VALUE_BOOLEAN;
+    node->data.config_value_boolean.value = false;
+    return node;
+  }
+  
+  if (parser_check(parser, TOKEN_NULL)) {
+    parser_advance(parser);
+    if (parser->ctx && parser->ctx->parse_arena) {
+      node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+    } else {
+      node = malloc(sizeof(ASTNode));
+    }
+    node->type = AST_CONFIG_VALUE_NULL;
+    return node;
+  }
+  
+  if (parser_check(parser, TOKEN_ENV)) {
+    // Handle env("VAR", "default") calls
+    parser_advance(parser); // Skip 'env'
+    if (!parser_check(parser, TOKEN_LPAREN)) {
+      fprintf(stderr, "Expected '(' after 'env'\n");
+      return NULL;
+    }
+    parser_advance(parser); // Skip '('
+    
+    if (!parser_check(parser, TOKEN_STRING)) {
+      fprintf(stderr, "Expected string for env variable name\n");
+      return NULL;
+    }
+    
+    Token *env_var = parser_advance(parser);
+    char *default_value = NULL;
+    
+    // Check for default value
+    if (parser_check(parser, TOKEN_COMMA)) {
+      parser_advance(parser); // Skip ','
+      if (!parser_check(parser, TOKEN_STRING)) {
+        fprintf(stderr, "Expected string for env default value\n");
+        return NULL;
+      }
+      Token *default_val = parser_advance(parser);
+      default_value = default_val->value;
+    }
+    
+    if (!parser_check(parser, TOKEN_RPAREN)) {
+      fprintf(stderr, "Expected ')' after env arguments\n");
+      return NULL;
+    }
+    parser_advance(parser); // Skip ')'
+    
+    if (parser->ctx && parser->ctx->parse_arena) {
+      node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+      node->data.config_value_env_call.env_var = arena_strdup(parser->ctx->parse_arena, env_var->value);
+      node->data.config_value_env_call.default_value = default_value ? arena_strdup(parser->ctx->parse_arena, default_value) : NULL;
+    } else {
+      node = malloc(sizeof(ASTNode));
+      node->data.config_value_env_call.env_var = strdup_safe(env_var->value);
+      node->data.config_value_env_call.default_value = default_value ? strdup_safe(default_value) : NULL;
+    }
+    node->type = AST_CONFIG_VALUE_ENV_CALL;
+    return node;
+  }
+  
+  return NULL;
+}
+
+// Convert configuration AST to JSON
+json_t *config_ast_to_json(ASTNode *node) {
+  if (!node) return NULL;
+  
+  switch (node->type) {
+    case AST_CONFIG_VALUE_STRING:
+      return json_string(node->data.config_value_string.value);
+    
+    case AST_CONFIG_VALUE_NUMBER:
+      if (node->data.config_value_number.is_integer) {
+        return json_integer((json_int_t)node->data.config_value_number.value);
+      } else {
+        return json_real(node->data.config_value_number.value);
+      }
+    
+    case AST_CONFIG_VALUE_BOOLEAN:
+      return node->data.config_value_boolean.value ? json_true() : json_false();
+    
+    case AST_CONFIG_VALUE_NULL:
+      return json_null();
+    
+    case AST_CONFIG_VALUE_ENV_CALL:
+      {
+        char *env_value = getenv(node->data.config_value_env_call.env_var);
+        if (env_value) {
+          return json_string(env_value);
+        } else if (node->data.config_value_env_call.default_value) {
+          return json_string(node->data.config_value_env_call.default_value);
+        } else {
+          return json_string("");
+        }
+      }
+    
+    case AST_CONFIG_VALUE_OBJECT:
+      {
+        json_t *obj = json_object();
+        ConfigProperty *prop = node->data.config_value_object.properties;
+        while (prop) {
+          json_t *value = config_ast_to_json(prop->value);
+          json_object_set_new(obj, prop->key, value);
+          prop = prop->next;
+        }
+        return obj;
+      }
+    
+    case AST_CONFIG_VALUE_ARRAY:
+      {
+        json_t *arr = json_array();
+        ConfigArrayItem *item = node->data.config_value_array.items;
+        while (item) {
+          json_t *value = config_ast_to_json(item->value);
+          json_array_append_new(arr, value);
+          item = item->next;
+        }
+        return arr;
+      }
+    
+    case AST_PROGRAM:
+    case AST_ROUTE_DEFINITION:
+    case AST_PIPELINE_STEP:
+    case AST_VARIABLE_ASSIGNMENT:
+    case AST_RESULT_STEP:
+    case AST_CONFIG_BLOCK:
+      // These node types are not configuration values
+      return NULL;
+  }
+  
+  return NULL;
+}
+
+// Convert configuration block to JSON
+json_t *config_block_to_json(ASTNode *config_block) {
+  if (!config_block || config_block->type != AST_CONFIG_BLOCK) {
+    return NULL;
+  }
+  
+  json_t *obj = json_object();
+  ConfigProperty *prop = config_block->data.config_block.properties;
+  
+  while (prop) {
+    json_t *value = config_ast_to_json(prop->value);
+    json_object_set_new(obj, prop->key, value);
+    prop = prop->next;
+  }
+  
+  return obj;
+}
+
 ASTNode *parser_parse_statement(Parser *parser) {
   if (parser_check(parser, TOKEN_HTTP_METHOD)) {
     return parser_parse_route_definition(parser);
+  }
+
+  // Check for configuration block
+  if (parser_check(parser, TOKEN_CONFIG)) {
+    return parser_parse_config_block(parser);
   }
 
   // Check for variable assignment
@@ -425,6 +770,72 @@ void stringify_node(FILE *out, ASTNode *node, int level) {
   case AST_RESULT_STEP:
     // This case is not used in the current implementation
     break;
+
+  case AST_CONFIG_BLOCK:
+    fprintf(out, "config %s {\n", node->data.config_block.name);
+    // TODO: Format configuration properties nicely
+    ConfigProperty *prop = node->data.config_block.properties;
+    while (prop) {
+      fprintf(out, "  %s: ", prop->key);
+      stringify_node(out, prop->value, level + 1);
+      prop = prop->next;
+    }
+    fprintf(out, "}\n");
+    break;
+
+  case AST_CONFIG_VALUE_STRING:
+    fprintf(out, "\"%s\"", node->data.config_value_string.value);
+    break;
+
+  case AST_CONFIG_VALUE_NUMBER:
+    if (node->data.config_value_number.is_integer) {
+      fprintf(out, "%.0f", node->data.config_value_number.value);
+    } else {
+      fprintf(out, "%g", node->data.config_value_number.value);
+    }
+    break;
+
+  case AST_CONFIG_VALUE_BOOLEAN:
+    fprintf(out, "%s", node->data.config_value_boolean.value ? "true" : "false");
+    break;
+
+  case AST_CONFIG_VALUE_NULL:
+    fprintf(out, "null");
+    break;
+
+  case AST_CONFIG_VALUE_ENV_CALL:
+    fprintf(out, "env(\"%s\"", node->data.config_value_env_call.env_var);
+    if (node->data.config_value_env_call.default_value) {
+      fprintf(out, ", \"%s\"", node->data.config_value_env_call.default_value);
+    }
+    fprintf(out, ")");
+    break;
+
+  case AST_CONFIG_VALUE_OBJECT:
+    fprintf(out, "{\n");
+    ConfigProperty *obj_prop = node->data.config_value_object.properties;
+    while (obj_prop) {
+      stringify_indent(out, level + 1);
+      fprintf(out, "%s: ", obj_prop->key);
+      stringify_node(out, obj_prop->value, level + 1);
+      obj_prop = obj_prop->next;
+      if (obj_prop) fprintf(out, ",");
+      fprintf(out, "\n");
+    }
+    stringify_indent(out, level);
+    fprintf(out, "}");
+    break;
+
+  case AST_CONFIG_VALUE_ARRAY:
+    fprintf(out, "[");
+    ConfigArrayItem *item = node->data.config_value_array.items;
+    while (item) {
+      stringify_node(out, item->value, level);
+      item = item->next;
+      if (item) fprintf(out, ", ");
+    }
+    fprintf(out, "]");
+    break;
   }
 }
 
@@ -487,6 +898,65 @@ void free_ast(ASTNode *node) {
 
   case AST_PIPELINE_STEP:
     // This case is not used in the current implementation
+    break;
+
+  case AST_CONFIG_BLOCK:
+    free(node->data.config_block.name);
+    // Free properties
+    ConfigProperty *prop = node->data.config_block.properties;
+    while (prop) {
+      ConfigProperty *next = prop->next;
+      free(prop->key);
+      free_ast(prop->value);
+      free(prop);
+      prop = next;
+    }
+    break;
+
+  case AST_CONFIG_VALUE_STRING:
+    free(node->data.config_value_string.value);
+    break;
+
+  case AST_CONFIG_VALUE_NUMBER:
+    // No dynamic memory to free
+    break;
+
+  case AST_CONFIG_VALUE_BOOLEAN:
+    // No dynamic memory to free
+    break;
+
+  case AST_CONFIG_VALUE_NULL:
+    // No dynamic memory to free
+    break;
+
+  case AST_CONFIG_VALUE_ENV_CALL:
+    free(node->data.config_value_env_call.env_var);
+    free(node->data.config_value_env_call.default_value);
+    break;
+
+  case AST_CONFIG_VALUE_OBJECT:
+    {
+      ConfigProperty *obj_prop = node->data.config_value_object.properties;
+      while (obj_prop) {
+        ConfigProperty *next = obj_prop->next;
+        free(obj_prop->key);
+        free_ast(obj_prop->value);
+        free(obj_prop);
+        obj_prop = next;
+      }
+    }
+    break;
+
+  case AST_CONFIG_VALUE_ARRAY:
+    {
+      ConfigArrayItem *item = node->data.config_value_array.items;
+      while (item) {
+        ConfigArrayItem *next = item->next;
+        free_ast(item->value);
+        free(item);
+        item = next;
+      }
+    }
     break;
   }
 

@@ -102,7 +102,7 @@ static void test_perf_middleware_execution(void) {
     for (int i = 0; i < iterations; i++) {
         json_t *input = create_test_request("GET", "/test");
         char *content_type = NULL;
-        json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", &content_type, NULL);
+        json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", NULL, &content_type, NULL);
         
         TEST_ASSERT_NOT_NULL(output);
         

@@ -31,7 +31,7 @@ static void test_middleware_execute_passthrough(void) {
     json_object_set_new(input, "test", json_string("value"));
     
     char *content_type = NULL;
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", &content_type, NULL);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", NULL, &content_type, NULL);
     
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_JSON_EQUAL(input, output);
@@ -51,7 +51,7 @@ static void test_middleware_execute_with_arena(void) {
     
     // Test that arena is passed correctly
     char *content_type = NULL;
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type, NULL);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, NULL, &content_type, NULL);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -69,7 +69,7 @@ static void test_middleware_execute_error_handling(void) {
     json_object_set_new(input, "test", json_string("value"));
     
     char *content_type = NULL;
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", &content_type, NULL);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", NULL, &content_type, NULL);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -100,7 +100,7 @@ static void test_middleware_execute_with_config(void) {
     const char *config = "test configuration string";
     
     char *content_type = NULL;
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, config, &content_type, NULL);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, config, NULL, &content_type, NULL);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -115,7 +115,7 @@ static void test_middleware_execute_null_input(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     char *content_type = NULL;
-    json_t *output = middleware->execute(NULL, arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type, NULL);
+    json_t *output = middleware->execute(NULL, arena, get_arena_alloc_wrapper(), NULL, NULL, NULL, &content_type, NULL);
     
     // Should handle null input gracefully
     TEST_ASSERT_NULL(output);
@@ -131,7 +131,7 @@ static void test_middleware_execute_null_arena(void) {
     json_object_set_new(input, "test", json_string("value"));
     
     char *content_type = NULL;
-    json_t *output = middleware->execute(input, NULL, get_arena_alloc_wrapper(), NULL, NULL, &content_type, NULL);
+    json_t *output = middleware->execute(input, NULL, get_arena_alloc_wrapper(), NULL, NULL, NULL, &content_type, NULL);
     
     // Should handle null arena gracefully
     TEST_ASSERT_NOT_NULL(output);
@@ -177,7 +177,7 @@ static void test_middleware_memory_management(void) {
         json_object_set_new(input, "iteration", json_integer(i));
         
         char *content_type = NULL;
-        json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type, NULL);
+        json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, NULL, &content_type, NULL);
         
         TEST_ASSERT_NOT_NULL(output);
         
@@ -203,8 +203,8 @@ static void test_middleware_concurrent_execution(void) {
     // Simulate concurrent execution
     char *content_type1 = NULL;
     char *content_type2 = NULL;
-    json_t *output1 = middleware->execute(input1, arena1, get_arena_alloc_wrapper(), NULL, "config1", &content_type1, NULL);
-    json_t *output2 = middleware->execute(input2, arena2, get_arena_alloc_wrapper(), NULL, "config2", &content_type2, NULL);
+    json_t *output1 = middleware->execute(input1, arena1, get_arena_alloc_wrapper(), NULL, "config1", NULL, &content_type1, NULL);
+    json_t *output2 = middleware->execute(input2, arena2, get_arena_alloc_wrapper(), NULL, "config2", NULL, &content_type2, NULL);
     
     TEST_ASSERT_NOT_NULL(output1);
     TEST_ASSERT_NOT_NULL(output2);
@@ -237,7 +237,7 @@ static void test_middleware_json_preservation(void) {
     
     for (int i = 0; i < num_inputs; i++) {
         char *content_type = NULL;
-        json_t *output = middleware->execute(inputs[i], arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type, NULL);
+        json_t *output = middleware->execute(inputs[i], arena, get_arena_alloc_wrapper(), NULL, NULL, NULL, &content_type, NULL);
         
         TEST_ASSERT_NOT_NULL(output);
         TEST_ASSERT_JSON_EQUAL(inputs[i], output);
@@ -279,7 +279,7 @@ static void test_middleware_complex_json_handling(void) {
     json_object_set_new(input, "request", request);
     
     char *content_type = NULL;
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type, NULL);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, NULL, &content_type, NULL);
     
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_JSON_EQUAL(input, output);
@@ -298,7 +298,7 @@ static void test_middleware_error_propagation(void) {
     json_object_set_new(input, "test", json_string("value"));
     
     char *content_type = NULL;
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, &content_type, NULL);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, NULL, &content_type, NULL);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -360,7 +360,7 @@ static void test_middleware_content_type_handling(void) {
     json_object_set_new(input, "test", json_string("value"));
     
     char *content_type = NULL;
-    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", &content_type, NULL);
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", NULL, &content_type, NULL);
     
     TEST_ASSERT_NOT_NULL(output);
     // Mock middleware doesn't set content type, so it should remain NULL

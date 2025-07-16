@@ -354,6 +354,131 @@ static void test_lexer_tokenize_escaped_backticks(void) {
     free_test_tokens(tokens, token_count);
 }
 
+static void test_lexer_tokenize_config_block(void) {
+    const char *source = "config database {\n  host: \"localhost\"\n  port: 5432\n}";
+    int token_count;
+    Token *tokens = tokenize_test_string(source, &token_count);
+    
+    // Let's count all tokens: config, database, {, \n, host, :, "localhost", \n, port, :, 5432, \n, }, EOF = 14
+    TEST_ASSERT_EQUAL(14, token_count);
+    assert_token_type(&tokens[0], TOKEN_CONFIG);
+    assert_token_value(&tokens[0], "config");
+    assert_token_type(&tokens[1], TOKEN_IDENTIFIER);
+    assert_token_value(&tokens[1], "database");
+    assert_token_type(&tokens[2], TOKEN_LBRACE);
+    assert_token_type(&tokens[3], TOKEN_NEWLINE);
+    assert_token_type(&tokens[4], TOKEN_IDENTIFIER);
+    assert_token_value(&tokens[4], "host");
+    assert_token_type(&tokens[5], TOKEN_COLON);
+    assert_token_type(&tokens[6], TOKEN_STRING);
+    assert_token_value(&tokens[6], "localhost");
+    assert_token_type(&tokens[7], TOKEN_NEWLINE);
+    assert_token_type(&tokens[8], TOKEN_IDENTIFIER);
+    assert_token_value(&tokens[8], "port");
+    assert_token_type(&tokens[9], TOKEN_COLON);
+    assert_token_type(&tokens[10], TOKEN_NUMBER);
+    assert_token_value(&tokens[10], "5432");
+    assert_token_type(&tokens[11], TOKEN_NEWLINE);
+    assert_token_type(&tokens[12], TOKEN_RBRACE);
+    assert_token_type(&tokens[13], TOKEN_EOF);
+    
+    free_test_tokens(tokens, token_count);
+}
+
+static void test_lexer_tokenize_config_keywords(void) {
+    const char *source = "config env true false null";
+    int token_count;
+    Token *tokens = tokenize_test_string(source, &token_count);
+    
+    TEST_ASSERT_EQUAL(6, token_count);
+    assert_token_type(&tokens[0], TOKEN_CONFIG);
+    assert_token_value(&tokens[0], "config");
+    assert_token_type(&tokens[1], TOKEN_ENV);
+    assert_token_value(&tokens[1], "env");
+    assert_token_type(&tokens[2], TOKEN_TRUE);
+    assert_token_value(&tokens[2], "true");
+    assert_token_type(&tokens[3], TOKEN_FALSE);
+    assert_token_value(&tokens[3], "false");
+    assert_token_type(&tokens[4], TOKEN_NULL);
+    assert_token_value(&tokens[4], "null");
+    assert_token_type(&tokens[5], TOKEN_EOF);
+    
+    free_test_tokens(tokens, token_count);
+}
+
+static void test_lexer_tokenize_config_punctuation(void) {
+    const char *source = "{ } [ ] , : ( )";
+    int token_count;
+    Token *tokens = tokenize_test_string(source, &token_count);
+    
+    TEST_ASSERT_EQUAL(9, token_count);
+    assert_token_type(&tokens[0], TOKEN_LBRACE);
+    assert_token_type(&tokens[1], TOKEN_RBRACE);
+    assert_token_type(&tokens[2], TOKEN_LBRACKET);
+    assert_token_type(&tokens[3], TOKEN_RBRACKET);
+    assert_token_type(&tokens[4], TOKEN_COMMA);
+    assert_token_type(&tokens[5], TOKEN_COLON);
+    assert_token_type(&tokens[6], TOKEN_LPAREN);
+    assert_token_type(&tokens[7], TOKEN_RPAREN);
+    assert_token_type(&tokens[8], TOKEN_EOF);
+    
+    free_test_tokens(tokens, token_count);
+}
+
+static void test_lexer_tokenize_env_function(void) {
+    const char *source = "env(\"DATABASE_URL\", \"postgres://localhost/db\")";
+    int token_count;
+    Token *tokens = tokenize_test_string(source, &token_count);
+    
+    TEST_ASSERT_EQUAL(7, token_count);
+    assert_token_type(&tokens[0], TOKEN_ENV);
+    assert_token_value(&tokens[0], "env");
+    assert_token_type(&tokens[1], TOKEN_LPAREN);
+    assert_token_type(&tokens[2], TOKEN_STRING);
+    assert_token_value(&tokens[2], "DATABASE_URL");
+    assert_token_type(&tokens[3], TOKEN_COMMA);
+    assert_token_type(&tokens[4], TOKEN_STRING);
+    assert_token_value(&tokens[4], "postgres://localhost/db");
+    assert_token_type(&tokens[5], TOKEN_RPAREN);
+    assert_token_type(&tokens[6], TOKEN_EOF);
+    
+    free_test_tokens(tokens, token_count);
+}
+
+static void test_lexer_tokenize_double_quoted_strings(void) {
+    const char *source = "\"hello world\" \"with spaces\"";
+    int token_count;
+    Token *tokens = tokenize_test_string(source, &token_count);
+    
+    TEST_ASSERT_EQUAL(3, token_count);
+    assert_token_type(&tokens[0], TOKEN_STRING);
+    assert_token_value(&tokens[0], "hello world");
+    assert_token_type(&tokens[1], TOKEN_STRING);
+    assert_token_value(&tokens[1], "with spaces");
+    assert_token_type(&tokens[2], TOKEN_EOF);
+    
+    free_test_tokens(tokens, token_count);
+}
+
+static void test_lexer_tokenize_float_numbers(void) {
+    const char *source = "3.14 42.0 0.5 123.456";
+    int token_count;
+    Token *tokens = tokenize_test_string(source, &token_count);
+    
+    TEST_ASSERT_EQUAL(5, token_count);
+    assert_token_type(&tokens[0], TOKEN_NUMBER);
+    assert_token_value(&tokens[0], "3.14");
+    assert_token_type(&tokens[1], TOKEN_NUMBER);
+    assert_token_value(&tokens[1], "42.0");
+    assert_token_type(&tokens[2], TOKEN_NUMBER);
+    assert_token_value(&tokens[2], "0.5");
+    assert_token_type(&tokens[3], TOKEN_NUMBER);
+    assert_token_value(&tokens[3], "123.456");
+    assert_token_type(&tokens[4], TOKEN_EOF);
+    
+    free_test_tokens(tokens, token_count);
+}
+
 int main(void) {
     UNITY_BEGIN();
     
@@ -377,6 +502,12 @@ int main(void) {
     RUN_TEST(test_lexer_tokenize_line_column_tracking);
     RUN_TEST(test_lexer_tokenize_unclosed_string);
     RUN_TEST(test_lexer_tokenize_escaped_backticks);
+    RUN_TEST(test_lexer_tokenize_config_block);
+    RUN_TEST(test_lexer_tokenize_config_keywords);
+    RUN_TEST(test_lexer_tokenize_config_punctuation);
+    RUN_TEST(test_lexer_tokenize_env_function);
+    RUN_TEST(test_lexer_tokenize_double_quoted_strings);
+    RUN_TEST(test_lexer_tokenize_float_numbers);
     
     return UNITY_END();
 }

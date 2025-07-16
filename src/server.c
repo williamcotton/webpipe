@@ -9,6 +9,12 @@
 #include <pthread.h>
 #include "wp.h"
 
+// Configuration block for runtime
+typedef struct {
+    char *name;
+    json_t *config_json;
+} ConfigBlock;
+
 // Runtime state
 typedef struct {
     struct MHD_Daemon *daemon;
@@ -17,10 +23,59 @@ typedef struct {
     int middleware_count;
     json_t *variables;
     ParseContext *parse_ctx;
+    ConfigBlock *config_blocks;
+    int config_count;
 } WPRuntime;
 
 // Global runtime instance
 static WPRuntime *runtime = NULL;
+
+// Function to process configuration blocks from AST
+static void process_config_blocks(ASTNode *program) {
+    if (!program || program->type != AST_PROGRAM) {
+        return;
+    }
+    
+    // Count configuration blocks
+    int config_count = 0;
+    for (int i = 0; i < program->data.program.statement_count; i++) {
+        if (program->data.program.statements[i]->type == AST_CONFIG_BLOCK) {
+            config_count++;
+        }
+    }
+    
+    if (config_count == 0) {
+        return;
+    }
+    
+    // Allocate config blocks
+    runtime->config_blocks = malloc(sizeof(ConfigBlock) * (size_t)config_count);
+    runtime->config_count = 0;
+    
+    // Extract configuration blocks
+    for (int i = 0; i < program->data.program.statement_count; i++) {
+        ASTNode *stmt = program->data.program.statements[i];
+        if (stmt->type == AST_CONFIG_BLOCK) {
+            runtime->config_blocks[runtime->config_count].name = strdup(stmt->data.config_block.name);
+            runtime->config_blocks[runtime->config_count].config_json = config_block_to_json(stmt);
+            runtime->config_count++;
+        }
+    }
+}
+
+// Function to get middleware configuration
+static json_t *get_middleware_config(const char *middleware_name) {
+    if (!runtime || !runtime->config_blocks) {
+        return NULL;
+    }
+    
+    for (int i = 0; i < runtime->config_count; i++) {
+        if (strcmp(runtime->config_blocks[i].name, middleware_name) == 0) {
+            return runtime->config_blocks[i].config_json;
+        }
+    }
+    return NULL;
+}
 
 // Memory arena functions
 MemoryArena *arena_create(size_t size) {
@@ -198,8 +253,8 @@ int load_middleware(const char *name) {
     }
     
     // Get middleware execute function
-    json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **, json_t *) = 
-        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **, json_t *))dlsym(handle, "middleware_execute");
+    json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, json_t *, char **, json_t *) = 
+        (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, json_t *, char **, json_t *))dlsym(handle, "middleware_execute");
     if (!execute) {
         fprintf(stderr, "Error getting middleware_execute for %s: %s\n", name, dlerror());
         dlclose(handle);
@@ -728,7 +783,8 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         
         // Ensure arena context is set before middleware execution
         set_current_arena(arena);
-        json_t *result = middleware->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config, content_type, runtime->variables);
+        json_t *middleware_config = get_middleware_config(middleware->name);
+        json_t *result = middleware->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config, middleware_config, content_type, runtime->variables);
         // Ensure arena context is still set after middleware execution
         set_current_arena(arena);
         if (!result) {
@@ -1100,6 +1156,20 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
         case AST_PIPELINE_STEP:
             // This case is not used in the current implementation
             break;
+            
+        case AST_CONFIG_BLOCK:
+            // Configuration blocks don't contain pipeline steps
+            break;
+            
+        case AST_CONFIG_VALUE_STRING:
+        case AST_CONFIG_VALUE_NUMBER:
+        case AST_CONFIG_VALUE_BOOLEAN:
+        case AST_CONFIG_VALUE_NULL:
+        case AST_CONFIG_VALUE_ENV_CALL:
+        case AST_CONFIG_VALUE_OBJECT:
+        case AST_CONFIG_VALUE_ARRAY:
+            // Configuration values don't contain pipeline steps
+            break;
     }
 }
 
@@ -1113,6 +1183,8 @@ int wp_runtime_init(const char *wp_file, int port) {
     runtime = malloc(sizeof(WPRuntime));
     runtime->middleware = NULL;
     runtime->middleware_count = 0;
+    runtime->config_blocks = NULL;
+    runtime->config_count = 0;
     runtime->parse_ctx = parse_context_create();
     if (!runtime->parse_ctx) {
         fprintf(stderr, "Error: Could not create parse context\n");
@@ -1159,6 +1231,9 @@ int wp_runtime_init(const char *wp_file, int port) {
     runtime->program = parser_parse(parser);
 
     printf("Parsed program\n");
+    
+    // Process configuration blocks
+    process_config_blocks(runtime->program);
     
     // Process variable assignments
     for (int i = 0; i < runtime->program->data.program.statement_count; i++) {

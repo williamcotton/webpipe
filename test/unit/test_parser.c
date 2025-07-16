@@ -380,6 +380,272 @@ static void test_parser_parse_multiline_string_in_pipeline(void) {
 //     }
 // }
 
+static void test_parser_parse_config_block_simple(void) {
+    const char *source = "config database {\n  host: \"localhost\"\n  port: 5432\n}";
+    ASTNode *ast = parse_test_string(source);
+    
+    TEST_ASSERT_NOT_NULL(ast);
+    assert_ast_type(ast, AST_PROGRAM);
+    TEST_ASSERT_EQUAL(1, ast->data.program.statement_count);
+    
+    ASTNode *config = ast->data.program.statements[0];
+    assert_ast_type(config, AST_CONFIG_BLOCK);
+    TEST_ASSERT_STRING_EQUAL("database", config->data.config_block.name);
+    
+    // Check properties
+    ConfigProperty *prop = config->data.config_block.properties;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("host", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_STRING);
+    TEST_ASSERT_STRING_EQUAL("localhost", prop->value->data.config_value_string.value);
+    
+    prop = prop->next;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("port", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_NUMBER);
+    TEST_ASSERT_EQUAL(5432, (int)prop->value->data.config_value_number.value);
+    TEST_ASSERT_TRUE(prop->value->data.config_value_number.is_integer);
+    
+    TEST_ASSERT_NULL(prop->next);
+    
+    free_test_ast(ast);
+}
+
+static void test_parser_parse_config_block_complex(void) {
+    const char *source = "config app {\n  name: \"WebPipe\"\n  version: \"1.0\"\n  debug: true\n  max_connections: 100\n}";
+    ASTNode *ast = parse_test_string(source);
+    
+    TEST_ASSERT_NOT_NULL(ast);
+    assert_ast_type(ast, AST_PROGRAM);
+    TEST_ASSERT_EQUAL(1, ast->data.program.statement_count);
+    
+    ASTNode *config = ast->data.program.statements[0];
+    assert_ast_type(config, AST_CONFIG_BLOCK);
+    TEST_ASSERT_STRING_EQUAL("app", config->data.config_block.name);
+    
+    // Check all properties
+    ConfigProperty *prop = config->data.config_block.properties;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("name", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_STRING);
+    TEST_ASSERT_STRING_EQUAL("WebPipe", prop->value->data.config_value_string.value);
+    
+    prop = prop->next;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("version", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_STRING);
+    TEST_ASSERT_STRING_EQUAL("1.0", prop->value->data.config_value_string.value);
+    
+    prop = prop->next;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("debug", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_BOOLEAN);
+    TEST_ASSERT_TRUE(prop->value->data.config_value_boolean.value);
+    
+    prop = prop->next;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("max_connections", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_NUMBER);
+    TEST_ASSERT_EQUAL(100, (int)prop->value->data.config_value_number.value);
+    TEST_ASSERT_TRUE(prop->value->data.config_value_number.is_integer);
+    
+    TEST_ASSERT_NULL(prop->next);
+    
+    free_test_ast(ast);
+}
+
+static void test_parser_parse_config_with_env_vars(void) {
+    const char *source = "config database {\n  url: env(\"DATABASE_URL\", \"postgres://localhost/db\")\n  timeout: env(\"DB_TIMEOUT\")\n}";
+    ASTNode *ast = parse_test_string(source);
+    
+    TEST_ASSERT_NOT_NULL(ast);
+    assert_ast_type(ast, AST_PROGRAM);
+    TEST_ASSERT_EQUAL(1, ast->data.program.statement_count);
+    
+    ASTNode *config = ast->data.program.statements[0];
+    assert_ast_type(config, AST_CONFIG_BLOCK);
+    TEST_ASSERT_STRING_EQUAL("database", config->data.config_block.name);
+    
+    // Check url property with default value
+    ConfigProperty *prop = config->data.config_block.properties;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("url", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_ENV_CALL);
+    TEST_ASSERT_STRING_EQUAL("DATABASE_URL", prop->value->data.config_value_env_call.env_var);
+    TEST_ASSERT_STRING_EQUAL("postgres://localhost/db", prop->value->data.config_value_env_call.default_value);
+    
+    // Check timeout property without default value
+    prop = prop->next;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("timeout", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_ENV_CALL);
+    TEST_ASSERT_STRING_EQUAL("DB_TIMEOUT", prop->value->data.config_value_env_call.env_var);
+    TEST_ASSERT_NULL(prop->value->data.config_value_env_call.default_value);
+    
+    TEST_ASSERT_NULL(prop->next);
+    
+    free_test_ast(ast);
+}
+
+static void test_parser_parse_config_with_boolean_values(void) {
+    const char *source = "config flags {\n  enabled: true\n  disabled: false\n  nullable: null\n}";
+    ASTNode *ast = parse_test_string(source);
+    
+    TEST_ASSERT_NOT_NULL(ast);
+    assert_ast_type(ast, AST_PROGRAM);
+    TEST_ASSERT_EQUAL(1, ast->data.program.statement_count);
+    
+    ASTNode *config = ast->data.program.statements[0];
+    assert_ast_type(config, AST_CONFIG_BLOCK);
+    TEST_ASSERT_STRING_EQUAL("flags", config->data.config_block.name);
+    
+    // Check enabled property
+    ConfigProperty *prop = config->data.config_block.properties;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("enabled", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_BOOLEAN);
+    TEST_ASSERT_TRUE(prop->value->data.config_value_boolean.value);
+    
+    // Check disabled property
+    prop = prop->next;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("disabled", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_BOOLEAN);
+    TEST_ASSERT_FALSE(prop->value->data.config_value_boolean.value);
+    
+    // Check nullable property
+    prop = prop->next;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("nullable", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_NULL);
+    
+    TEST_ASSERT_NULL(prop->next);
+    
+    free_test_ast(ast);
+}
+
+static void test_parser_parse_config_with_numbers(void) {
+    const char *source = "config numbers {\n  integer: 42\n  float: 3.14\n  zero: 0\n}";
+    ASTNode *ast = parse_test_string(source);
+    
+    TEST_ASSERT_NOT_NULL(ast);
+    assert_ast_type(ast, AST_PROGRAM);
+    TEST_ASSERT_EQUAL(1, ast->data.program.statement_count);
+    
+    ASTNode *config = ast->data.program.statements[0];
+    assert_ast_type(config, AST_CONFIG_BLOCK);
+    TEST_ASSERT_STRING_EQUAL("numbers", config->data.config_block.name);
+    
+    // Check integer property
+    ConfigProperty *prop = config->data.config_block.properties;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("integer", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_NUMBER);
+    TEST_ASSERT_EQUAL(42, (int)prop->value->data.config_value_number.value);
+    TEST_ASSERT_TRUE(prop->value->data.config_value_number.is_integer);
+    
+    // Check float property
+    prop = prop->next;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("float", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_NUMBER);
+    TEST_ASSERT_FLOAT_WITHIN(0.001, 3.14, prop->value->data.config_value_number.value);
+    TEST_ASSERT_FALSE(prop->value->data.config_value_number.is_integer);
+    
+    // Check zero property
+    prop = prop->next;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("zero", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_NUMBER);
+    TEST_ASSERT_EQUAL(0, (int)prop->value->data.config_value_number.value);
+    TEST_ASSERT_TRUE(prop->value->data.config_value_number.is_integer);
+    
+    TEST_ASSERT_NULL(prop->next);
+    
+    free_test_ast(ast);
+}
+
+static void test_parser_parse_config_ast_to_json(void) {
+    const char *source = "config test {\n  name: \"test\"\n  count: 42\n  price: 3.14\n  enabled: true\n  value: null\n}";
+    ASTNode *ast = parse_test_string(source);
+    
+    TEST_ASSERT_NOT_NULL(ast);
+    assert_ast_type(ast, AST_PROGRAM);
+    TEST_ASSERT_EQUAL(1, ast->data.program.statement_count);
+    
+    ASTNode *config = ast->data.program.statements[0];
+    assert_ast_type(config, AST_CONFIG_BLOCK);
+    
+    // Test AST to JSON conversion
+    json_t *json = config_block_to_json(config);
+    TEST_ASSERT_NOT_NULL(json);
+    TEST_ASSERT_TRUE(json_is_object(json));
+    
+    // Check string value
+    json_t *name_val = json_object_get(json, "name");
+    TEST_ASSERT_NOT_NULL(name_val);
+    TEST_ASSERT_TRUE(json_is_string(name_val));
+    TEST_ASSERT_STRING_EQUAL("test", json_string_value(name_val));
+    
+    // Check integer value
+    json_t *count_val = json_object_get(json, "count");
+    TEST_ASSERT_NOT_NULL(count_val);
+    TEST_ASSERT_TRUE(json_is_integer(count_val));
+    TEST_ASSERT_EQUAL(42, json_integer_value(count_val));
+    
+    // Check float value
+    json_t *price_val = json_object_get(json, "price");
+    TEST_ASSERT_NOT_NULL(price_val);
+    TEST_ASSERT_TRUE(json_is_real(price_val));
+    TEST_ASSERT_FLOAT_WITHIN(0.001, 3.14, json_real_value(price_val));
+    
+    // Check boolean value
+    json_t *enabled_val = json_object_get(json, "enabled");
+    TEST_ASSERT_NOT_NULL(enabled_val);
+    TEST_ASSERT_TRUE(json_is_true(enabled_val));
+    
+    // Check null value
+    json_t *value_val = json_object_get(json, "value");
+    TEST_ASSERT_NOT_NULL(value_val);
+    TEST_ASSERT_TRUE(json_is_null(value_val));
+    
+    json_decref(json);
+    free_test_ast(ast);
+}
+
+static void test_parser_parse_mixed_config_and_routes(void) {
+    const char *source = "config app {\n  name: \"WebPipe\"\n}\n\nGET /test\n  |> jq: `{ message: \"hello\" }`";
+    ASTNode *ast = parse_test_string(source);
+    
+    TEST_ASSERT_NOT_NULL(ast);
+    assert_ast_type(ast, AST_PROGRAM);
+    TEST_ASSERT_EQUAL(2, ast->data.program.statement_count);
+    
+    // Check config block
+    ASTNode *config = ast->data.program.statements[0];
+    assert_ast_type(config, AST_CONFIG_BLOCK);
+    TEST_ASSERT_STRING_EQUAL("app", config->data.config_block.name);
+    
+    ConfigProperty *prop = config->data.config_block.properties;
+    TEST_ASSERT_NOT_NULL(prop);
+    TEST_ASSERT_STRING_EQUAL("name", prop->key);
+    assert_ast_type(prop->value, AST_CONFIG_VALUE_STRING);
+    TEST_ASSERT_STRING_EQUAL("WebPipe", prop->value->data.config_value_string.value);
+    
+    // Check route definition
+    ASTNode *route = ast->data.program.statements[1];
+    assert_ast_type(route, AST_ROUTE_DEFINITION);
+    TEST_ASSERT_STRING_EQUAL("GET", route->data.route_def.method);
+    TEST_ASSERT_STRING_EQUAL("/test", route->data.route_def.route);
+    
+    PipelineStep *step = route->data.route_def.pipeline;
+    TEST_ASSERT_NOT_NULL(step);
+    TEST_ASSERT_STRING_EQUAL("jq", step->middleware);
+    TEST_ASSERT_STRING_EQUAL("{ message: \"hello\" }", step->value);
+    
+    free_test_ast(ast);
+}
+
 int main(void) {
     UNITY_BEGIN();
     
@@ -399,6 +665,13 @@ int main(void) {
     RUN_TEST(test_parser_parse_complex_route_patterns);
     RUN_TEST(test_parser_parse_pipeline_with_various_middlewares);
     RUN_TEST(test_parser_parse_multiline_string_in_pipeline);
+    RUN_TEST(test_parser_parse_config_block_simple);
+    RUN_TEST(test_parser_parse_config_block_complex);
+    RUN_TEST(test_parser_parse_config_with_env_vars);
+    RUN_TEST(test_parser_parse_config_with_boolean_values);
+    RUN_TEST(test_parser_parse_config_with_numbers);
+    RUN_TEST(test_parser_parse_config_ast_to_json);
+    RUN_TEST(test_parser_parse_mixed_config_and_routes);
     // RUN_TEST(test_parser_parse_with_context);
     // RUN_TEST(test_parser_error_handling_invalid_syntax);
     

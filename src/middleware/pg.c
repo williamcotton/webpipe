@@ -49,7 +49,7 @@ static int pg_middleware_init(void);
 static void pg_middleware_cleanup(void);
 static json_t *pg_result_to_json(PGresult *result);
 static json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func);
-json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *sql, char **contentType, json_t *variables);
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *sql, json_t *middleware_config, char **contentType, json_t *variables);
 static void middleware_destructor(void);
 
 // Initialize PostgreSQL connection (thread-safe)
@@ -288,10 +288,11 @@ json_t *execute_sql(const char *sql, json_t *params, void *arena,
 
 // Middleware execute function
 json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func,
-                       arena_free_func free_func, const char *sql_query, char **contentType, json_t *variables) {
+                       arena_free_func free_func, const char *sql_query, json_t *middleware_config, char **contentType, json_t *variables) {
   (void)free_func; // Not used - we don't free the arena
   (void)contentType; // PostgreSQL middleware produces JSON output, so we don't change content type
   (void)variables; // Unused parameter
+  (void)middleware_config; // Unused parameter for now
 
   // Look for sqlParams in input
   json_t *sql_params = json_object_get(input, "sqlParams");

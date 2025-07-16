@@ -151,7 +151,7 @@ void assert_ast_type(ASTNode *node, ASTNodeType expected_type) {
     TEST_ASSERT_EQUAL(expected_type, node->type);
 }
 
-Middleware *create_mock_middleware(const char *name, json_t *(*execute_func)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, char **, json_t *)) {
+Middleware *create_mock_middleware(const char *name, json_t *(*execute_func)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, json_t *, char **, json_t *)) {
     Middleware *middleware = malloc(sizeof(Middleware));
     middleware->name = strdup(name);
     middleware->handle = NULL;
@@ -166,22 +166,24 @@ void destroy_mock_middleware(Middleware *middleware) {
     }
 }
 
-json_t *mock_middleware_passthrough(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType, json_t *variables) {
+json_t *mock_middleware_passthrough(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, json_t *middleware_config, char **contentType, json_t *variables) {
     (void)arena;
     (void)alloc_func;
     (void)free_func;
     (void)config;
+    (void)middleware_config;  // Mock middleware doesn't use config
     (void)contentType;  // Mock middleware doesn't change content type
     (void)variables;    // Mock middleware doesn't use variables
     return json_incref(input);
 }
 
-json_t *mock_middleware_error(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType, json_t *variables) {
+json_t *mock_middleware_error(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, json_t *middleware_config, char **contentType, json_t *variables) {
     (void)input;
     (void)arena;
     (void)alloc_func;
     (void)free_func;
     (void)config;
+    (void)middleware_config;  // Mock middleware doesn't use config
     (void)variables;
     (void)contentType;  // Mock middleware doesn't change content type
     json_t *error_obj = json_object();

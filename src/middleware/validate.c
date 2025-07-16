@@ -48,7 +48,7 @@ static bool validate_boolean(json_t *value, ValidationRule *rule, json_t *errors
 static void add_validation_error(json_t *errors_array, const char *field, const char *rule, const char *message, void *arena, arena_alloc_func alloc_func);
 static char *arena_strdup_safe(void *arena, arena_alloc_func alloc_func, const char *str);
 static bool is_valid_email(const char *email);
-json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType, json_t *variables);
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, json_t *middleware_config, char **contentType, json_t *variables);
 
 // DSL Parser Implementation
 static ValidationRule *parse_validation_dsl(const char *dsl, void *arena, arena_alloc_func alloc_func) {
@@ -369,10 +369,11 @@ static char *arena_strdup_safe(void *arena, arena_alloc_func alloc_func, const c
 }
 
 // Main middleware function
-json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType, json_t *variables) {
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, json_t *middleware_config, char **contentType, json_t *variables) {
     (void)free_func; // Suppress unused parameter warning
     (void)contentType; // Validate middleware produces JSON output
     (void)variables; // Unused parameter
+    (void)middleware_config; // Unused parameter for now
     
     // Handle null or empty config
     if (!config || strlen(config) == 0) {

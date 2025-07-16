@@ -18,7 +18,7 @@ typedef struct MemoryArena MemoryArena;
 static void jansson_to_lua(lua_State *L, json_t *json);
 static json_t *lua_to_jansson(lua_State *L, int index);
 static json_t *lua_to_jansson_with_depth(lua_State *L, int index, int depth);
-json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code, char **contentType, json_t *variables);
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code, json_t *middleware_config, char **contentType, json_t *variables);
 
 // Conversion functions
 void jansson_to_lua(lua_State *L, json_t *json) {
@@ -163,10 +163,11 @@ static int lua_panic_handler(lua_State *L) {
 }
 
 // Middleware execute function
-json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code, char **contentType, json_t *variables) {
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code, json_t *middleware_config, char **contentType, json_t *variables) {
   (void)free_func; // Suppress unused parameter warning
   (void)contentType; // Lua middleware produces JSON output, so we don't change content type
   (void)variables; // Unused parameter
+  (void)middleware_config; // Unused parameter for now
     
     // Handle null or empty lua_code
     if (!lua_code || strlen(lua_code) == 0) {

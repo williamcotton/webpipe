@@ -37,7 +37,15 @@ typedef enum {
   TOKEN_RBRACE,
   TOKEN_LPAREN,
   TOKEN_RPAREN,
-  TOKEN_NUMBER
+  TOKEN_NUMBER,
+  TOKEN_CONFIG,
+  TOKEN_ENV,
+  TOKEN_COMMA,
+  TOKEN_LBRACKET,
+  TOKEN_RBRACKET,
+  TOKEN_TRUE,
+  TOKEN_FALSE,
+  TOKEN_NULL
 } TokenType;
 
 // Token structure
@@ -54,7 +62,15 @@ typedef enum {
   AST_ROUTE_DEFINITION,
   AST_PIPELINE_STEP,
   AST_VARIABLE_ASSIGNMENT,
-  AST_RESULT_STEP
+  AST_RESULT_STEP,
+  AST_CONFIG_BLOCK,
+  AST_CONFIG_VALUE_STRING,
+  AST_CONFIG_VALUE_NUMBER,
+  AST_CONFIG_VALUE_BOOLEAN,
+  AST_CONFIG_VALUE_NULL,
+  AST_CONFIG_VALUE_ENV_CALL,
+  AST_CONFIG_VALUE_OBJECT,
+  AST_CONFIG_VALUE_ARRAY
 } ASTNodeType;
 
 // Pipeline step
@@ -72,6 +88,18 @@ typedef struct ResultCondition {
   PipelineStep *pipeline;
   struct ResultCondition *next;
 } ResultCondition;
+
+// Configuration value structures
+typedef struct ConfigProperty {
+  char *key;
+  ASTNode *value;
+  struct ConfigProperty *next;
+} ConfigProperty;
+
+typedef struct ConfigArrayItem {
+  ASTNode *value;
+  struct ConfigArrayItem *next;
+} ConfigArrayItem;
 
 // AST Node
 struct ASTNode {
@@ -94,6 +122,30 @@ struct ASTNode {
     struct {
       ResultCondition *conditions;
     } result_step;
+    struct {
+      char *name;
+      ConfigProperty *properties;
+    } config_block;
+    struct {
+      char *value;
+    } config_value_string;
+    struct {
+      double value;
+      bool is_integer;
+    } config_value_number;
+    struct {
+      bool value;
+    } config_value_boolean;
+    struct {
+      char *env_var;
+      char *default_value;
+    } config_value_env_call;
+    struct {
+      ConfigProperty *properties;
+    } config_value_object;
+    struct {
+      ConfigArrayItem *items;
+    } config_value_array;
   } data;
 };
 
@@ -121,7 +173,7 @@ typedef void (*arena_free_func)(void* arena);
 typedef struct {
     char *name;
     void *handle;
-    json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType, json_t *variables);
+    json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, json_t *middleware_config, char **contentType, json_t *variables);
 } Middleware;
 
 // Function declarations
@@ -170,6 +222,11 @@ void parser_consume_newlines(Parser *parser);
 PipelineStep *parser_parse_pipeline(Parser *parser);
 ASTNode *parser_parse_route_definition(Parser *parser);
 ASTNode *parser_parse_variable_assignment(Parser *parser);
+ASTNode *parser_parse_config_block(Parser *parser);
+ASTNode *parser_parse_config_value(Parser *parser);
+ConfigProperty *parser_parse_config_properties(Parser *parser);
+json_t *config_ast_to_json(ASTNode *node);
+json_t *config_block_to_json(ASTNode *config_block);
 ASTNode *parser_parse_statement(Parser *parser);
 void stringify_indent(FILE *out, int level);
 void stringify_pipeline(FILE *out, PipelineStep *pipeline, int level);

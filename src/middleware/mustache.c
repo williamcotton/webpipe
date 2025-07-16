@@ -66,6 +66,7 @@ json_t *middleware_execute(json_t *input, void *arena,
                           arena_alloc_func alloc_func, 
                           arena_free_func free_func, 
                           const char *template,
+                          json_t *middleware_config,
                           char **contentType,
                           json_t *variables);
 
@@ -74,10 +75,12 @@ json_t *middleware_execute(json_t *input, void *arena,
                           arena_alloc_func alloc_func, 
                           arena_free_func free_func, 
                           const char *template,
+                          json_t *middleware_config,
                           char **contentType,
                           json_t *variables) {
     // Suppress unused parameter warnings
     (void)free_func;
+    (void)middleware_config;  // Unused parameter for now
     
     // Set up partials for this request
     current_variables = variables;
