@@ -51,6 +51,7 @@ static void pg_middleware_cleanup(void);
 static json_t *pg_result_to_json(PGresult *result);
 static json_t *execute_sql_internal(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func, json_t *config);
 json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *sql, json_t *middleware_config, char **contentType, json_t *variables);
+int middleware_init(json_t *config);
 static void middleware_destructor(void);
 
 // Global variable to store current middleware config for database registry
@@ -310,6 +311,17 @@ static json_t *execute_sql_internal(const char *sql, json_t *params, void *arena
 // Public execute_sql function for database registry
 json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func) {
   return execute_sql_internal(sql, params, arena, alloc_func, current_middleware_config);
+}
+
+// Public middleware initialization function called by server at startup
+int middleware_init(json_t *config) {
+  // Store the configuration for later use by execute_sql
+  current_middleware_config = config;
+  
+  // Initialize the PostgreSQL connection
+  // pg_middleware_init returns 1 for success, 0 for failure
+  // middleware_init should return 0 for success, non-zero for failure
+  return pg_middleware_init(config) ? 0 : 1;
 }
 
 // Middleware execute function

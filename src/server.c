@@ -302,6 +302,21 @@ int load_middleware(const char *name) {
         printf("Injected database API into middleware: %s\n", name);
     }
     
+    // Check if middleware has an initialization function and call it with config
+    int (*init_func)(json_t *config) = (int (*)(json_t *))dlsym(handle, "middleware_init");
+    
+    if (init_func) {
+        json_t *middleware_config = get_middleware_config(name);
+        int init_result = init_func(middleware_config);
+        
+        if (init_result != 0) {
+            printf("Warning: Middleware '%s' initialization failed (returned %d)\n", name, init_result);
+            // Continue loading despite initialization failure - middleware may still be usable
+        } else {
+            printf("Initialized middleware '%s' successfully\n", name);
+        }
+    }
+    
     return 0;
 }
 
