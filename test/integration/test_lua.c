@@ -70,7 +70,7 @@ static void test_lua_middleware_object_construction(void) {
     MemoryArena *arena = create_test_arena(1024);
     
     json_t *input = create_test_request("GET", "/test");
-    const char *config = "return { message = \"Hello from Lua!\", status = \"success\" }";
+    const char *config = "return { message = \"Hello from Lua!\", status = \"success\", nested = { key = \"value\" } }";
     
     json_t *output = lua_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
     
@@ -78,11 +78,17 @@ static void test_lua_middleware_object_construction(void) {
     
     json_t *message = json_object_get(output, "message");
     json_t *status = json_object_get(output, "status");
+    json_t *nested = json_object_get(output, "nested");
     
     TEST_ASSERT_NOT_NULL(message);
     TEST_ASSERT_NOT_NULL(status);
     TEST_ASSERT_STRING_EQUAL("Hello from Lua!", json_string_value(message));
     TEST_ASSERT_STRING_EQUAL("success", json_string_value(status));
+    TEST_ASSERT_NOT_NULL(nested);
+    TEST_ASSERT_TRUE(json_is_object(nested));
+    json_t *nested_key = json_object_get(nested, "key");
+    TEST_ASSERT_NOT_NULL(nested_key);
+    TEST_ASSERT_STRING_EQUAL("value", json_string_value(nested_key));
     
     json_decref(input);
     json_decref(output);

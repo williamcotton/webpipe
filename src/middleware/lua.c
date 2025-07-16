@@ -90,65 +90,61 @@ json_t *lua_to_jansson_with_depth(lua_State *L, int index, int depth) {
     } else if (lua_type(L, index) == LUA_TSTRING) {
         return json_string(lua_tostring(L, index));
     } else if (lua_type(L, index) == LUA_TTABLE) {
-        // Check if it's an array or object
+        int abs_index = lua_absindex(L, index);
+        
+        // First pass: determine if it's an array and collect all keys
         bool is_array = true;
         int max_index = 0;
         int count = 0;
-        int abs_index = lua_absindex(L, index);
+        json_t *object = json_object();
+        json_t *array = NULL;
         
+        // Collect all entries in a single pass
         lua_pushnil(L);
         while (lua_next(L, abs_index) != 0) {
-            if (lua_type(L, -2) == LUA_TNUMBER) {
-                // Use lua_isinteger if available (Lua 5.3+), otherwise check if it's a whole number
-                if (lua_isinteger(L, -2)) {
-                    int idx = (int)lua_tointeger(L, -2);
-                    if (idx > 0 && idx > max_index) max_index = idx;
+            // Check if key is numeric and positive
+            if (lua_type(L, -2) == LUA_TNUMBER && lua_isinteger(L, -2)) {
+                int idx = (int)lua_tointeger(L, -2);
+                if (idx > 0) {
+                    if (idx > max_index) max_index = idx;
                     count++;
                 } else {
-                    // Non-integer numeric key, treat as object
+                    // Non-positive integer key, treat as object
                     is_array = false;
-                    lua_pop(L, 1);
-                    break;
                 }
             } else {
+                // Non-numeric key, treat as object
                 is_array = false;
-                lua_pop(L, 1);
-                break;
             }
-            lua_pop(L, 1);
+            
+            // Store the key-value pair for later processing
+            if (lua_type(L, -2) == LUA_TSTRING) {
+                const char *key = lua_tostring(L, -2);
+                json_t *value = lua_to_jansson_with_depth(L, -1, depth + 1);
+                if (key && value) {
+                    json_object_set_new(object, key, value);
+                } else if (value) {
+                    json_decref(value);
+                }
+            }
+            
+            lua_pop(L, 1); // Remove value, keep key for next iteration
         }
         
+        // If it's an array and we have consecutive indices, create array
         if (is_array && count > 0 && count == max_index) {
-            // It's an array (but not empty)
-            json_t *array = json_array();
+            // Create array and populate it
+            array = json_array();
             for (int i = 1; i <= max_index; i++) {
-                lua_pushnumber(L, i);
+                lua_pushinteger(L, i);
                 lua_gettable(L, abs_index);
                 json_array_append_new(array, lua_to_jansson_with_depth(L, -1, depth + 1));
                 lua_pop(L, 1);
             }
+            json_decref(object); // Clean up the object we created
             return array;
         } else {
-            // It's an object (or empty table)
-            json_t *object = json_object();
-            lua_pushnil(L);
-            while (lua_next(L, abs_index) != 0) {
-                // Only process string keys, and do it safely
-                if (lua_type(L, -2) == LUA_TSTRING) {
-                    // Copy the key to avoid modifying the original during iteration
-                    lua_pushvalue(L, -2);
-                    const char *key = lua_tostring(L, -1);
-                    json_t *value = lua_to_jansson_with_depth(L, -2, depth + 1);
-                    if (key && value) {
-                        json_object_set_new(object, key, value);
-                    } else if (value) {
-                        json_decref(value);
-                    }
-                    lua_pop(L, 1); // Remove the copied key
-                }
-                // Skip numeric keys to avoid lua_next corruption
-                lua_pop(L, 1); // Remove the value
-            }
+            // Return the object we built during iteration
             return object;
         }
     }
