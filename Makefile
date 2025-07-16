@@ -27,8 +27,13 @@ else ifeq ($(PLATFORM),DARWIN)
 	TIDY = $(shell brew --prefix llvm)/bin/clang-tidy
 endif
 
+# Dotenv-c integration
+DOTENV_SRC = $(DEPS_DIR)/dotenv-c/dotenv.c
+DOTENV_OBJ = $(BUILD_DIR)/dotenv.o
+DOTENV_INCLUDE = -I$(DEPS_DIR)/dotenv-c
+
 # Common flags
-CFLAGS = -Wall -Wextra -std=c99 -g -O0 -fno-omit-frame-pointer $(BASE_CFLAGS) $(LUA_INCLUDE) $(PG_INCLUDE)
+CFLAGS = -Wall -Wextra -std=c99 -g -O0 -fno-omit-frame-pointer $(BASE_CFLAGS) $(LUA_INCLUDE) $(PG_INCLUDE) $(DOTENV_INCLUDE)
 LDFLAGS = -lmicrohttpd -ljansson $(LUA_LIB) -L$(PG_LIBDIR) -lpq $(PLATFORM_LIBS)
 
 # Directories
@@ -36,6 +41,7 @@ SRC_DIR = src
 MIDDLEWARE_DIR = $(SRC_DIR)/middleware
 BUILD_DIR = build
 TEST_DIR = test
+DEPS_DIR = deps
 
 # Main target - single wp executable in build directory
 all: $(BUILD_DIR)/wp middleware
@@ -44,16 +50,20 @@ all: $(BUILD_DIR)/wp middleware
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
+# Dotenv-c object file
+$(DOTENV_OBJ): $(BUILD_DIR) $(DOTENV_SRC)
+	$(CC) $(CFLAGS) -c -o $@ $(DOTENV_SRC)
+
 # Main wp executable
-$(BUILD_DIR)/wp: $(BUILD_DIR) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/wp.h
-	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(LDFLAGS) $(SANITIZE_FLAGS)
+$(BUILD_DIR)/wp: $(BUILD_DIR) $(DOTENV_OBJ) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/wp.h
+	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(DOTENV_OBJ) $(LDFLAGS) $(SANITIZE_FLAGS)
 
 # Debug target - single wp executable in build directory
 debug: $(BUILD_DIR)/wp-debug middleware
 
 # Debug executable
-$(BUILD_DIR)/wp-debug: $(BUILD_DIR) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/wp.h
-	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(LDFLAGS)
+$(BUILD_DIR)/wp-debug: $(BUILD_DIR) $(DOTENV_OBJ) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/wp.h
+	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(DOTENV_OBJ) $(LDFLAGS)
 ifneq ($(CODESIGN_CMD),)
 	$(CODESIGN_CMD) ./build/wp-debug
 endif
@@ -93,56 +103,56 @@ TEST_CFLAGS = $(CFLAGS) -I$(TEST_DIR) -I$(SRC_DIR) -DUNITY_INCLUDE_DOUBLE
 TEST_LDFLAGS = $(LDFLAGS) -ljq $(LUA_LIB) -lpq
 # Unity framework with suppressed warnings
 UNITY_CFLAGS = $(CFLAGS) -I$(TEST_DIR) -I$(SRC_DIR) -DUNITY_INCLUDE_DOUBLE -Wno-double-promotion
-TEST_COMMON_SOURCES = $(TEST_DIR)/helpers/test_utils.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c
+TEST_COMMON_SOURCES = $(TEST_DIR)/helpers/test_utils.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(DOTENV_OBJ)
 
 # Unity object file with suppressed warnings
 $(BUILD_DIR)/unity.o: $(BUILD_DIR) $(TEST_DIR)/unity/unity.c
 	$(CC) $(UNITY_CFLAGS) -c -o $@ $(TEST_DIR)/unity/unity.c
 
 # Individual test executables
-$(BUILD_DIR)/test_arena: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_arena.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_arena: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/test_arena.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_arena.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_lexer: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_lexer.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_lexer: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/test_lexer.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_lexer.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_parser: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_parser.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_parser: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/test_parser.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_parser.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_middleware: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_middleware.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_middleware: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/test_middleware.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_middleware.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_cookies: $(BUILD_DIR)/unity.o $(TEST_DIR)/unit/test_cookies.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_cookies: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/test_cookies.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_cookies.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_jq: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_jq: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_lua: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_lua.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_lua: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_lua.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_lua.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_mustache: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_mustache.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_mustache: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_mustache.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_mustache.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_mustache_partials: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_mustache_partials.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_mustache_partials: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_mustache_partials.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_mustache_partials.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_pg: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_pg.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_pg: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_pg.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_pg.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_pipeline: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_pipeline.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_pipeline: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_pipeline.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_pipeline.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_validate: $(BUILD_DIR)/unity.o $(TEST_DIR)/integration/test_validate.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_validate: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_validate.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_validate.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_server: $(BUILD_DIR)/unity.o $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_server: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
-$(BUILD_DIR)/test_e2e: $(BUILD_DIR)/unity.o $(TEST_DIR)/system/test_e2e.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_e2e: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/system/test_e2e.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_e2e.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS) -lcurl
 
-$(BUILD_DIR)/test_perf: $(BUILD_DIR)/unity.o $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES)
+$(BUILD_DIR)/test_perf: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
 # Test group targets
@@ -200,11 +210,7 @@ run: $(BUILD_DIR)/wp install-middleware
 
 # Run server with debug binary (AddressSanitizer enabled)
 run-debug: $(BUILD_DIR)/wp-debug install-middleware
-	$(BUILD_DIR)/wp-debug test.wp
-
-# Run with existing express-test database
-run-express-test: $(BUILD_DIR)/wp-debug install-middleware
-	WP_PG_DATABASE=express-test WP_PG_USER=postgres $(BUILD_DIR)/wp-debug test.wp --port 8085
+	$(BUILD_DIR)/wp-debug test.wp --port 8085
 
 # Clean
 clean:

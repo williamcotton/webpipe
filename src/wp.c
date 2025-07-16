@@ -3,7 +3,9 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <libgen.h>
 #include "wp.h"
+#include "dotenv.h"
 
 // Execution modes
 typedef enum {
@@ -28,6 +30,19 @@ static void timeout_handler(int signum) {
     (void)signum; // Suppress unused parameter warning
     printf("Timeout reached, shutting down...\n");
     shutdown_requested = 1;
+}
+
+// Initialize environment variables from .env file
+static int initialize_environment(const char *wp_file_path) {
+    // Get directory containing the WP file
+    char *path_copy = strdup(wp_file_path);
+    char *dir = dirname(path_copy);
+    
+    // Load .env file from same directory, don't overwrite system env vars
+    int result = env_load(dir, false);
+    
+    free(path_copy);
+    return result; // 0 on success, -1 if .env file not found (not an error)
 }
 
 // Print usage information
@@ -158,6 +173,10 @@ int main(int argc, char *argv[]) {
     // Check if this is a parse-only run (legacy support)
     if (argc == 3 && strcmp(argv[1], "-f") == 0) {
         // Parse-only mode
+        
+        // Initialize environment variables from .env file
+        initialize_environment(argv[2]);
+        
         FILE *file = fopen(argv[2], "r");
         if (!file) {
             fprintf(stderr, "Error: Could not open file '%s'\n", argv[2]);
@@ -206,6 +225,9 @@ int main(int argc, char *argv[]) {
     
     // Set up signal handlers
     setup_signal_handlers(mode);
+    
+    // Initialize environment variables from .env file
+    initialize_environment(wp_file);
     
     // Server mode - run the runtime
     if (wp_runtime_init(wp_file, port) != 0) {
