@@ -326,6 +326,24 @@ make test-lint
 ### Example .wp File
 
 ```wp
+# Configuration blocks
+config pg {
+  host: env("DB_HOST", "localhost")
+  port: env("DB_PORT", 5432)
+  database: env("DB_NAME", "myapp")
+  user: env("DB_USER", "postgres")
+  password: env("DB_PASSWORD", "secret")
+  ssl: true
+}
+
+config validate {
+  strictMode: true
+  customMessages: {
+    required: "This field is required"
+    email: "Please enter a valid email address"
+  }
+}
+
 # Variable assignment
 pg getUserQuery = `SELECT * FROM users WHERE id = $1`
 
@@ -341,16 +359,11 @@ GET /users/:id
 
 # POST with validation and error handling
 POST /users
-  |> jq: `{ 
-    name: .body.name,
-    email: .body.email
+  |> validate: `{
+    name: string(3..50, required),
+    email: email(required)
   }`
-  |> lua: `
-    if not request.name or not request.email then
-      return { errors = {{ type = "validationError", message = "Missing required fields" }} }
-    end
-    return { sqlParams = { request.name, request.email } }
-  `
+  |> jq: `{ sqlParams: [.body.name, .body.email] }`
   |> pg: `INSERT INTO users (name, email) VALUES ($1, $2) RETURNING *`
   |> result
     ok(201):
@@ -360,7 +373,8 @@ POST /users
       }`
     validationError(400):
       |> jq: `{
-        error: "Invalid input",
+        error: "Validation failed",
+        field: .errors[0].field,
         message: .errors[0].message
       }`
     default(500):
@@ -466,7 +480,9 @@ typedef struct {
                       arena_alloc_func alloc_func, 
                       arena_free_func free_func, 
                       const char *config,
-                      char **contentType);
+                      json_t *middleware_config,
+                      char **contentType, 
+                      json_t *variables);
 } Middleware;
 ```
 
@@ -474,8 +490,10 @@ Each middleware receives:
 - `input`: JSON data from previous pipeline step
 - `arena`: Memory arena for allocations
 - `alloc_func`/`free_func`: Arena allocation functions
-- `config`: Middleware configuration string
+- `config`: Step-specific configuration string
+- `middleware_config`: Middleware-wide configuration from config blocks
 - `contentType`: Pointer to content type string (can be modified)
+- `variables`: User-defined variables from the WP file
 
 ### Automatic Memory Management with Jansson
 
@@ -507,10 +525,11 @@ typedef void (*arena_free_func)(void* arena);
 typedef struct MemoryArena MemoryArena;
 
 // Middleware interface function
-json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, char **contentType) {
+json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, json_t *middleware_config, char **contentType, json_t *variables) {
     // Suppress unused parameter warnings
     (void)free_func;
     (void)contentType;  // This middleware doesn't change content type
+    (void)variables;    // This middleware doesn't use variables
     
     // Handle null input - create empty object
     if (!input) {
@@ -521,6 +540,14 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
     const char *value = "world";
     if (config && strlen(config) > 0) {
         value = config;
+    }
+    
+    // Check middleware configuration for default value
+    if (middleware_config) {
+        json_t *default_value = json_object_get(middleware_config, "defaultValue");
+        if (default_value && json_is_string(default_value)) {
+            value = json_string_value(default_value);
+        }
     }
     
     // Demonstrate arena usage by copying the config value
@@ -567,6 +594,10 @@ This middleware demonstrates:
 
 Usage in a `.wp` file:
 ```wp
+config hello {
+  defaultValue: "world"
+}
+
 GET /hello
   |> hello: `world`
 ```
@@ -649,6 +680,160 @@ json_array_append_new(errors_array, error_detail);
 json_object_set_new(error_obj, "errors", errors_array);
 
 return error_obj;
+```
+
+## Configuration System
+
+WebPipe provides a powerful configuration system that allows you to configure middleware through configuration blocks and environment variables. This system supports automatic `.env` file loading for seamless environment variable management.
+
+### Configuration Blocks
+
+Configuration blocks use native WP language syntax to define structured configuration for middleware:
+
+```wp
+config pg {
+  host: "localhost"
+  port: 5432
+  database: "myapp"
+  user: env("DB_USER", "postgres")
+  password: env("DB_PASSWORD", "secret")
+  ssl: true
+}
+
+config auth {
+  sessionTtl: 3600
+  cookieName: "wp_session"
+  cookieSecure: true
+  cookieHttpOnly: true
+  cookieSameSite: "strict"
+}
+```
+
+### Environment Variable Integration
+
+The `env()` function allows you to use environment variables with optional default values:
+
+```wp
+config pg {
+  host: env("DB_HOST", "localhost")       # Uses DB_HOST or defaults to "localhost"
+  port: env("DB_PORT", 5432)             # Uses DB_PORT or defaults to 5432
+  password: env("DB_PASSWORD")           # Required environment variable
+}
+```
+
+Variables are resolved in this order:
+1. System environment variables (highest priority)
+2. Variables from `.env` file (loaded automatically)
+3. Default values provided in `env()` calls (lowest priority)
+
+### .env File Support
+
+WebPipe automatically loads `.env` files from the same directory as your `.wp` file:
+
+```bash
+# .env file
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=myuser
+DB_PASSWORD=mypassword
+DB_NAME=myapp
+SESSION_SECRET=supersecret
+
+# Variable expansion is supported
+DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}
+```
+
+### Configuration Types
+
+Configuration blocks support various data types:
+
+```wp
+config example {
+  # Basic types
+  stringValue: "hello world"
+  intValue: 42
+  floatValue: 3.14
+  boolValue: true
+  nullValue: null
+  
+  # Nested objects
+  database: {
+    host: "localhost"
+    port: 5432
+    ssl: true
+  }
+  
+  # Arrays
+  allowedDomains: ["example.com", "subdomain.example.com"]
+  
+  # Comments are supported
+  sessionTtl: 3600  # 1 hour
+}
+```
+
+### Middleware Configuration Examples
+
+#### Database Configuration
+```wp
+config pg {
+  host: env("DB_HOST", "localhost")
+  port: env("DB_PORT", 5432)
+  database: env("DB_NAME", "myapp")
+  user: env("DB_USER", "postgres")
+  password: env("DB_PASSWORD", "secret")
+  ssl: true
+  connectionTimeout: 30
+  maxConnections: 10
+}
+
+GET /users
+  |> pg: `SELECT * FROM users`
+```
+
+#### Authentication Configuration
+```wp
+config auth {
+  sessionTtl: 7200  # 2 hours
+  cookieName: "wp_session"
+  cookieSecure: true
+  cookieHttpOnly: true
+  cookieSameSite: "strict"
+  cookieDomain: ".example.com"
+  passwordPolicy: {
+    minLength: 8
+    requireSpecialChars: true
+    requireNumbers: true
+  }
+}
+
+POST /login
+  |> auth: "login"
+  |> result
+    ok(200):
+      |> jq: `{success: true, user: .user}`
+    authError(401):
+      |> jq: `{error: "Invalid credentials"}`
+```
+
+#### Validation Configuration
+```wp
+config validate {
+  strictMode: true
+  customMessages: {
+    required: "This field is required"
+    email: "Please enter a valid email address"
+    minLength: "Must be at least {min} characters"
+  }
+  maxFileSize: 10485760  # 10MB
+}
+
+POST /users
+  |> validate: `{
+    name: string(3..50, required),
+    email: email(required),
+    age: number(18..120)
+  }`
+  |> pg: `INSERT INTO users (name, email, age) VALUES ($1, $2, $3)`
 ```
 
 ## Continuous Integration

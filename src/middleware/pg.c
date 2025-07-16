@@ -18,42 +18,40 @@ static PGconn *pg_connection = NULL;
 static pthread_mutex_t pg_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int connection_failed = 0;
 
-// Connection parameters with environment variable support
-static const char *get_pg_config(const char *env_var, const char *default_value) {
-  const char *value = getenv(env_var);
-  return value ? value : default_value;
+// Connection parameters from configuration block
+static const char *get_pg_string_config(json_t *config, const char *key) {
+  if (!config) return NULL;
+  
+  json_t *value = json_object_get(config, key);
+  if (value && json_is_string(value)) {
+    return json_string_value(value);
+  }
+  
+  return NULL;
 }
 
-static const char *get_pg_host(void) {
-  return get_pg_config("WP_PG_HOST", "localhost");
-}
 
-static const char *get_pg_port(void) {
-  return get_pg_config("WP_PG_PORT", "5432");
-}
-
-static const char *get_pg_dbname(void) {
-  return get_pg_config("WP_PG_DATABASE", "wp-test");
-}
-
-static const char *get_pg_user(void) {
-  return get_pg_config("WP_PG_USER", "postgres");
-}
-
-static const char *get_pg_password(void) {
-  return get_pg_config("WP_PG_PASSWORD", "postgres");
+static bool get_pg_bool_config(json_t *config, const char *key, bool default_value) {
+  if (!config) return default_value;
+  
+  json_t *value = json_object_get(config, key);
+  if (value && json_is_boolean(value)) {
+    return json_boolean_value(value);
+  }
+  
+  return default_value;
 }
 
 // Function prototypes
-static int pg_middleware_init(void);
+static int pg_middleware_init(json_t *config);
 static void pg_middleware_cleanup(void);
 static json_t *pg_result_to_json(PGresult *result);
-static json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func);
+static json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func, json_t *config);
 json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *sql, json_t *middleware_config, char **contentType, json_t *variables);
 static void middleware_destructor(void);
 
 // Initialize PostgreSQL connection (thread-safe)
-int pg_middleware_init() {
+int pg_middleware_init(json_t *config) {
   pthread_mutex_lock(&pg_mutex);
 
   // If we already have a connection or already failed, return early
@@ -70,16 +68,27 @@ int pg_middleware_init() {
   // Try to connect
   char conninfo[512];
   
-  // Check if any environment variable would cause buffer overflow
-  const char *host = get_pg_host();
-  const char *port = get_pg_port();
-  const char *dbname = get_pg_dbname();
-  const char *user = get_pg_user();
-  const char *password = get_pg_password();
+  // Get configuration values from config block
+  const char *host = get_pg_string_config(config, "host");
+  const char *port = get_pg_string_config(config, "port");
+  const char *dbname = get_pg_string_config(config, "database");
+  const char *user = get_pg_string_config(config, "user");
+  const char *password = get_pg_string_config(config, "password");
+  
+  // Validate required configuration
+  if (!host || !port || !dbname || !user || !password) {
+    fprintf(stderr, "pg: Missing required configuration. Need host, port, database, user, and password\n");
+    connection_failed = 1;
+    pthread_mutex_unlock(&pg_mutex);
+    return 0;
+  }
+  
+  // Get optional SSL configuration
+  bool ssl = get_pg_bool_config(config, "ssl", false);
   
   // Estimate required buffer size (with some margin for format string)
   size_t required_size = strlen(host) + strlen(port) + strlen(dbname) + 
-                        strlen(user) + strlen(password) + 100;  // 100 for format string
+                        strlen(user) + strlen(password) + 150;  // 150 for format string + SSL
   
   if (required_size >= sizeof(conninfo)) {
     fprintf(stderr, "Error: PostgreSQL connection string too long (%zu bytes, max %zu)\n", 
@@ -87,9 +96,15 @@ int pg_middleware_init() {
     return 0;
   }
   
-  snprintf(conninfo, sizeof(conninfo),
-           "host=%s port=%s dbname=%s user=%s password=%s gssencmode=disable", 
-           host, port, dbname, user, password);
+  if (ssl) {
+    snprintf(conninfo, sizeof(conninfo),
+             "host=%s port=%s dbname=%s user=%s password=%s sslmode=require gssencmode=disable", 
+             host, port, dbname, user, password);
+  } else {
+    snprintf(conninfo, sizeof(conninfo),
+             "host=%s port=%s dbname=%s user=%s password=%s sslmode=disable gssencmode=disable", 
+             host, port, dbname, user, password);
+  }
 
   PGconn *new_conn = PQconnectdb(conninfo);
 
@@ -219,9 +234,9 @@ json_t *pg_result_to_json(PGresult *result) {
 
 // Execute SQL query with parameters
 json_t *execute_sql(const char *sql, json_t *params, void *arena,
-                    arena_alloc_func alloc_func) {
+                    arena_alloc_func alloc_func, json_t *config) {
   // Try to initialize connection if needed
-  if (!pg_middleware_init()) {
+  if (!pg_middleware_init(config)) {
     json_t *error = json_object();
     json_t *errors_array = json_array();
     json_t *error_detail = json_object();
@@ -292,13 +307,12 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
   (void)free_func; // Not used - we don't free the arena
   (void)contentType; // PostgreSQL middleware produces JSON output, so we don't change content type
   (void)variables; // Unused parameter
-  (void)middleware_config; // Unused parameter for now
 
   // Look for sqlParams in input
   json_t *sql_params = json_object_get(input, "sqlParams");
 
-  // Execute query
-  json_t *result = execute_sql(sql_query, sql_params, arena, alloc_func);
+  // Execute query using middleware configuration
+  json_t *result = execute_sql(sql_query, sql_params, arena, alloc_func, middleware_config);
 
   // Check if there was an error (using standardized format)
   json_t *errors = json_object_get(result, "errors");

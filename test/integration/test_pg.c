@@ -6,7 +6,7 @@
 // Load the actual pg middleware
 #include <dlfcn.h>
 static void *pg_middleware_handle = NULL;
-static json_t *(*pg_middleware_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *) = NULL;
+static json_t *(*pg_middleware_execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, json_t *, char **, json_t *) = NULL;
 
 static int load_pg_middleware(void) {
     if (pg_middleware_handle) return 0; // Already loaded
@@ -18,7 +18,7 @@ static int load_pg_middleware(void) {
     }
     
     void *middleware_func = dlsym(pg_middleware_handle, "middleware_execute");
-    pg_middleware_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *))
+    pg_middleware_execute = (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, json_t *, char **, json_t *))
                         (uintptr_t)middleware_func;
     if (!middleware_func) {
         fprintf(stderr, "Failed to find middleware_execute in pg middleware: %s\n", dlerror());
@@ -65,7 +65,19 @@ static void test_pg_middleware_simple_select(void) {
     
     const char *config = "SELECT 1 as test_value";
     
-    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    // Create a simple middleware config for testing
+    json_t *middleware_config = json_object();
+    json_object_set_new(middleware_config, "host", json_string("localhost"));
+    json_object_set_new(middleware_config, "port", json_string("5432"));
+    json_object_set_new(middleware_config, "database", json_string("express-test"));
+    json_object_set_new(middleware_config, "user", json_string("postgres"));
+    json_object_set_new(middleware_config, "password", json_string("postgres"));
+    json_object_set_new(middleware_config, "ssl", json_boolean(false));
+    
+    char *contentType = NULL;
+    json_t *variables = json_object();
+    
+    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config, middleware_config, &contentType, variables);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -102,7 +114,19 @@ static void test_pg_middleware_parameterized_query(void) {
     
     const char *config = "SELECT * FROM teams WHERE id = $1";
     
-    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    // Create a simple middleware config for testing
+    json_t *middleware_config = json_object();
+    json_object_set_new(middleware_config, "host", json_string("localhost"));
+    json_object_set_new(middleware_config, "port", json_string("5432"));
+    json_object_set_new(middleware_config, "database", json_string("express-test"));
+    json_object_set_new(middleware_config, "user", json_string("postgres"));
+    json_object_set_new(middleware_config, "password", json_string("postgres"));
+    json_object_set_new(middleware_config, "ssl", json_boolean(false));
+    
+    char *contentType = NULL;
+    json_t *variables = json_object();
+    
+    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config, middleware_config, &contentType, variables);
     
     TEST_ASSERT_NOT_NULL(output);
     
@@ -131,7 +155,19 @@ static void test_pg_middleware_sql_error_handling(void) {
     
     const char *config = "SELECT * FROM nonexistent_table";
     
-    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config);
+    // Create a simple middleware config for testing
+    json_t *middleware_config = json_object();
+    json_object_set_new(middleware_config, "host", json_string("localhost"));
+    json_object_set_new(middleware_config, "port", json_string("5432"));
+    json_object_set_new(middleware_config, "database", json_string("express-test"));
+    json_object_set_new(middleware_config, "user", json_string("postgres"));
+    json_object_set_new(middleware_config, "password", json_string("postgres"));
+    json_object_set_new(middleware_config, "ssl", json_boolean(false));
+    
+    char *contentType = NULL;
+    json_t *variables = json_object();
+    
+    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config, middleware_config, &contentType, variables);
     
     TEST_ASSERT_NOT_NULL(output);
     
