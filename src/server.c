@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include "wp.h"
+#include "database_registry.h"
 
 // Configuration block for runtime
 typedef struct {
@@ -267,6 +268,39 @@ int load_middleware(const char *name) {
     runtime->middleware[runtime->middleware_count].handle = handle;
     runtime->middleware[runtime->middleware_count].execute = execute;
     runtime->middleware_count++;
+    
+    // Check if this middleware is a database provider
+    json_t *(*execute_sql_func)(const char *, json_t *, void *, arena_alloc_func) = 
+        (json_t *(*)(const char *, json_t *, void *, arena_alloc_func))dlsym(handle, "execute_sql");
+    
+    if (execute_sql_func) {
+        // Register as database provider
+        if (register_database_provider(name, handle, execute_sql_func) == 0) {
+            printf("Registered database provider: %s\n", name);
+        } else {
+            printf("Warning: Failed to register database provider: %s\n", name);
+        }
+    }
+    
+    // Check if this middleware uses the database API
+    typedef struct {
+        json_t* (*execute_sql)(const char* sql, json_t* params, void* arena, arena_alloc_func alloc_func);
+        DatabaseProvider* (*get_database_provider)(const char* name);
+        bool (*has_database_provider)(void);
+        const char* (*get_default_database_provider_name)(void);
+    } WebpipeDatabaseAPI;
+    
+    WebpipeDatabaseAPI *db_api_ptr = (WebpipeDatabaseAPI*)dlsym(handle, "webpipe_db_api");
+    
+    if (db_api_ptr) {
+        // Inject database functions into middleware
+        db_api_ptr->execute_sql = execute_sql;
+        db_api_ptr->get_database_provider = get_database_provider;
+        db_api_ptr->has_database_provider = has_database_provider;
+        db_api_ptr->get_default_database_provider_name = get_default_database_provider_name;
+        
+        printf("Injected database API into middleware: %s\n", name);
+    }
     
     return 0;
 }
@@ -1198,6 +1232,14 @@ int wp_runtime_init(const char *wp_file, int port) {
     // Set up jansson to use arena allocators once at startup
     json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
 
+    // Initialize database registry
+    if (database_registry_init() != 0) {
+        fprintf(stderr, "Error: Could not initialize database registry\n");
+        parse_context_destroy(runtime->parse_ctx);
+        free(runtime);
+        return -1;
+    }
+
     runtime->variables = json_object();
 
     // Parse wp file
@@ -1303,6 +1345,9 @@ void wp_runtime_cleanup() {
             free(runtime->middleware[i].name);
         }
         free(runtime->middleware);
+        
+        // Cleanup database registry
+        database_registry_cleanup();
         
         // Free parse context (this frees ALL parser memory automatically)
         parse_context_destroy(runtime->parse_ctx);

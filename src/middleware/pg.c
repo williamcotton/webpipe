@@ -13,6 +13,9 @@ typedef void (*arena_free_func)(void *arena);
 // Memory arena type (forward declaration)
 typedef struct MemoryArena MemoryArena;
 
+// Function prototype for database registry
+json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func);
+
 // Global PostgreSQL connection with mutex protection
 static PGconn *pg_connection = NULL;
 static pthread_mutex_t pg_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -46,9 +49,12 @@ static bool get_pg_bool_config(json_t *config, const char *key, bool default_val
 static int pg_middleware_init(json_t *config);
 static void pg_middleware_cleanup(void);
 static json_t *pg_result_to_json(PGresult *result);
-static json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func, json_t *config);
+static json_t *execute_sql_internal(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func, json_t *config);
 json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *sql, json_t *middleware_config, char **contentType, json_t *variables);
 static void middleware_destructor(void);
+
+// Global variable to store current middleware config for database registry
+static json_t *current_middleware_config = NULL;
 
 // Initialize PostgreSQL connection (thread-safe)
 int pg_middleware_init(json_t *config) {
@@ -232,9 +238,9 @@ json_t *pg_result_to_json(PGresult *result) {
   return response;
 }
 
-// Execute SQL query with parameters
-json_t *execute_sql(const char *sql, json_t *params, void *arena,
-                    arena_alloc_func alloc_func, json_t *config) {
+// Execute SQL query with parameters (internal)
+static json_t *execute_sql_internal(const char *sql, json_t *params, void *arena,
+                                   arena_alloc_func alloc_func, json_t *config) {
   // Try to initialize connection if needed
   if (!pg_middleware_init(config)) {
     json_t *error = json_object();
@@ -301,6 +307,11 @@ json_t *execute_sql(const char *sql, json_t *params, void *arena,
   return response;
 }
 
+// Public execute_sql function for database registry
+json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func) {
+  return execute_sql_internal(sql, params, arena, alloc_func, current_middleware_config);
+}
+
 // Middleware execute function
 json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func,
                        arena_free_func free_func, const char *sql_query, json_t *middleware_config, char **contentType, json_t *variables) {
@@ -311,8 +322,11 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
   // Look for sqlParams in input
   json_t *sql_params = json_object_get(input, "sqlParams");
 
+  // Store current middleware config for database registry
+  current_middleware_config = middleware_config;
+  
   // Execute query using middleware configuration
-  json_t *result = execute_sql(sql_query, sql_params, arena, alloc_func, middleware_config);
+  json_t *result = execute_sql_internal(sql_query, sql_params, arena, alloc_func, middleware_config);
 
   // Check if there was an error (using standardized format)
   json_t *errors = json_object_get(result, "errors");
