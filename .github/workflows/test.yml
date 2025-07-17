@@ -40,6 +40,7 @@ jobs:
           liblua5.4-dev \
           libcurl4-openssl-dev \
           postgresql-client \
+          libbsd-dev \
           valgrind
 
     - name: Build application
