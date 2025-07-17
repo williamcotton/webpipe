@@ -62,6 +62,7 @@ static char *local_arena_strdup(void *arena, arena_alloc_func alloc_func, const 
 // Forward declarations
 static char *render_mustache_template(const char *template, json_t *data, void *arena, arena_alloc_func alloc_func);
 static json_t *create_template_error(const char *message, const char *template);
+static char *transform_inheritance(const char *template, void *arena, arena_alloc_func alloc_func);
 
 // Middleware interface function declaration
 json_t *middleware_execute(json_t *input, void *arena, 
@@ -90,8 +91,15 @@ json_t *middleware_execute(json_t *input, void *arena,
     current_variables = variables;
     mustach_wrap_get_partial = partial_handler;
     
+    // Transform inheritance syntax first
+    char *transformed_template = transform_inheritance(template, arena, alloc_func);
+    if (!transformed_template) {
+        current_variables = NULL;
+        return create_template_error("Template transformation failed", template);
+    }
+    
     // Render mustache template with input JSON data
-    char *html = render_mustache_template(template, input, arena, alloc_func);
+    char *html = render_mustache_template(transformed_template, input, arena, alloc_func);
     if (!html) {
         // Clean up and DON'T set content type for errors - return JSON error object
         current_variables = NULL;
@@ -123,12 +131,31 @@ static char *render_mustache_template(const char *template, json_t *data, void *
     
     // Use mustach_jansson_mem to render template - this will use standard malloc
     int rc = mustach_jansson_mem(template, strlen(template), data,
-                                Mustach_With_AllExtensions, &result, &result_size);
+                                Mustach_With_AllExtensions | Mustach_With_Inheritance, &result, &result_size);
     
     // Restore arena allocators for jansson
     json_set_alloc_funcs(current_malloc, current_free);
     
     if (rc != MUSTACH_OK) {
+        // Log the specific error for debugging
+        const char *error_msg = "Unknown error";
+        switch (rc) {
+            case MUSTACH_ERROR_SYSTEM: error_msg = "System error"; break;
+            case MUSTACH_ERROR_UNEXPECTED_END: error_msg = "Unexpected end"; break;
+            case MUSTACH_ERROR_EMPTY_TAG: error_msg = "Empty tag"; break;
+            case MUSTACH_ERROR_TAG_TOO_LONG: error_msg = "Tag too long"; break;
+            case MUSTACH_ERROR_BAD_SEPARATORS: error_msg = "Bad separators"; break;
+            case MUSTACH_ERROR_TOO_DEEP: error_msg = "Too deep"; break;
+            case MUSTACH_ERROR_CLOSING: error_msg = "Closing error"; break;
+            case MUSTACH_ERROR_BAD_UNESCAPE_TAG: error_msg = "Bad unescape tag"; break;
+            case MUSTACH_ERROR_INVALID_ITF: error_msg = "Invalid interface"; break;
+            case MUSTACH_ERROR_ITEM_NOT_FOUND: error_msg = "Item not found"; break;
+            case MUSTACH_ERROR_PARTIAL_NOT_FOUND: error_msg = "Partial not found"; break;
+            case MUSTACH_ERROR_PARENT_NOT_FOUND: error_msg = "Parent not found"; break;
+            case MUSTACH_ERROR_BLOCK_NESTING: error_msg = "Block nesting error"; break;
+            case MUSTACH_ERROR_CIRCULAR_INHERITANCE: error_msg = "Circular inheritance"; break;
+        }
+        fprintf(stderr, "Mustache rendering error: %s (code %d)\n", error_msg, rc);
         return NULL; // Return NULL for error, let caller handle
     }
     
@@ -139,6 +166,15 @@ static char *render_mustache_template(const char *template, json_t *data, void *
     free(result);
     
     return arena_result;
+}
+
+// Template transformation function to handle inheritance
+static char *transform_inheritance(const char *template, void *arena, arena_alloc_func alloc_func) {
+    if (!template) return NULL;
+    
+    // For now, just return the template as-is
+    // TODO: Implement proper inheritance transformation
+    return local_arena_strdup(arena, alloc_func, template);
 }
 
 // Error handling function

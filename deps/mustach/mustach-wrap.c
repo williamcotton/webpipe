@@ -50,6 +50,9 @@ struct wrap {
 
   /* write callback */
   mustach_write_cb_t *writecb;
+
+  /* inheritance context */
+  struct block_override *block_overrides;
 };
 
 /* length given by masking with 3 */
@@ -398,6 +401,29 @@ static int partial(void *closure, const char *name, struct mustach_sbuf *sbuf) {
   return MUSTACH_OK;
 }
 
+static int parent_template(void *closure, const char *name, struct mustach_sbuf *sbuf) {
+  struct wrap *w = closure;
+  
+  if (w->itf->get_parent) {
+    return w->itf->get_parent(w->closure, name, sbuf);
+  }
+  
+  /* Use the same partial mechanism as regular partials */
+  if (mustach_wrap_get_partial) {
+    return mustach_wrap_get_partial(name, sbuf);
+  }
+  
+  return get_partial_from_file(name, sbuf);
+}
+
+static int block_override(void *closure, const char *name, struct mustach_sbuf *sbuf) {
+  struct wrap *w = closure;
+  if (w->itf->has_block_override && w->itf->has_block_override(w->closure, name)) {
+    return getoptional(w, name, sbuf);
+  }
+  return 0;
+}
+
 const struct mustach_itf mustach_wrap_itf = {.start = start,
                                              .put = NULL,
                                              .enter = enter,
@@ -406,6 +432,8 @@ const struct mustach_itf mustach_wrap_itf = {.start = start,
                                              .partial = partial,
                                              .get = get,
                                              .emit = emit,
+                                             .parent = parent_template,
+                                             .block_override = block_override,
                                              .stop = stop};
 
 static void wrap_init(struct wrap *wrap, const struct mustach_wrap_itf *itf,
@@ -413,11 +441,14 @@ static void wrap_init(struct wrap *wrap, const struct mustach_wrap_itf *itf,
                       mustach_write_cb_t *writecb) {
   if (flags & Mustach_With_Compare)
     flags |= Mustach_With_Equal;
+  if (flags & Mustach_With_ParentTemplates)
+    flags |= Mustach_With_Inheritance;
   wrap->closure = closure;
   wrap->itf = itf;
   wrap->flags = flags;
   wrap->emitcb = emitcb;
   wrap->writecb = writecb;
+  wrap->block_overrides = NULL;
 }
 
 int mustach_wrap_file(const char *template, size_t length,

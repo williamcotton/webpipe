@@ -63,7 +63,7 @@ debug: $(BUILD_DIR)/wp-debug middleware
 
 # Debug executable
 $(BUILD_DIR)/wp-debug: $(BUILD_DIR) $(DOTENV_OBJ) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(SRC_DIR)/wp.h $(SRC_DIR)/database_registry.h
-	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(DOTENV_OBJ) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(DOTENV_OBJ) $(LDFLAGS) $(SANITIZE_FLAGS)
 ifneq ($(CODESIGN_CMD),)
 	$(CODESIGN_CMD) ./build/wp-debug
 endif

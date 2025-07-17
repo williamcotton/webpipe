@@ -46,7 +46,10 @@ struct mustach_sbuf; /* see below */
 #define Mustach_With_NoExtensions 0
 #define Mustach_With_Colon 1
 #define Mustach_With_EmptyTag 2
-#define Mustach_With_AllExtensions 3
+#define Mustach_With_Inheritance 4
+#define Mustach_With_DynamicParents 8
+#define Mustach_With_NestedBlocks 16
+#define Mustach_With_AllExtensions 31
 
 /*
  * Definition of error codes returned by mustach
@@ -63,6 +66,9 @@ struct mustach_sbuf; /* see below */
 #define MUSTACH_ERROR_INVALID_ITF -9
 #define MUSTACH_ERROR_ITEM_NOT_FOUND -10
 #define MUSTACH_ERROR_PARTIAL_NOT_FOUND -11
+#define MUSTACH_ERROR_PARENT_NOT_FOUND -12
+#define MUSTACH_ERROR_BLOCK_NESTING -13
+#define MUSTACH_ERROR_CIRCULAR_INHERITANCE -14
 
 /*
  * You can use definition below for user specific error
@@ -135,6 +141,14 @@ struct mustach_sbuf; /* see below */
  *       If 'get' is NULL and 'put' NULL the error MUSTACH_ERROR_INVALID_ITF
  *       is returned.
  *
+ * @parent: If defined (can be NULL), returns in 'sbuf' the content of the
+ *          parent template of 'name'. Used for inheritance support.
+ *          If NULL, parent templates are loaded from files.
+ *
+ * @block_override: If defined (can be NULL), returns in 'sbuf' the content
+ *                  of the block override of 'name'. Used for inheritance
+ *                  support. If NULL, no block overrides are available.
+ *
  * @stop: If defined (can be NULL), stops the mustach processing
  *        of the closure, called at the very end after all mustach
  *        processing occurered. The status returned by the processing
@@ -178,6 +192,8 @@ struct mustach_itf {
   int (*emit)(void *closure, const char *buffer, size_t size, int escape,
               FILE *file);
   int (*get)(void *closure, const char *name, struct mustach_sbuf *sbuf);
+  int (*parent)(void *closure, const char *name, struct mustach_sbuf *sbuf);
+  int (*block_override)(void *closure, const char *name, struct mustach_sbuf *sbuf);
   void (*stop)(void *closure, int status);
 };
 

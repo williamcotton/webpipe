@@ -64,9 +64,11 @@ typedef int mustach_emit_cb_t(void *closure, const char *buffer, size_t size,
 #define Mustach_With_IncPartial 128 /* obsolete, always set */
 #define Mustach_With_EscFirstCmp 256
 #define Mustach_With_PartialDataFirst 512
+#define Mustach_With_ParentTemplates 1024
+#define Mustach_With_BlockOverrides 2048
 
 #undef Mustach_With_AllExtensions
-#define Mustach_With_AllExtensions 1023
+#define Mustach_With_AllExtensions 4095
 
 /**
  * mustach_wrap_itf - high level wrap of mustach - interface for callbacks
@@ -124,6 +126,14 @@ typedef int mustach_emit_cb_t(void *closure, const char *buffer, size_t size,
  *       the name of key of the current selection, or if no such key
  *       exists, the empty string. Must return 1 if possible or
  *       0 when not possible or an error code.
+ *
+ * @get_parent: If defined (can be NULL), returns in 'sbuf' the content
+ *              of the parent template of 'name'. Used for inheritance
+ *              support. Must return 1 if possible or 0 when not possible.
+ *
+ * @has_block_override: If defined (can be NULL), returns 1 if there is
+ *                      a block override for 'name', 0 otherwise. Used
+ *                      for inheritance support.
  */
 struct mustach_wrap_itf {
   int (*start)(void *closure);
@@ -135,6 +145,8 @@ struct mustach_wrap_itf {
   int (*next)(void *closure);
   int (*leave)(void *closure);
   int (*get)(void *closure, struct mustach_sbuf *sbuf, int key);
+  int (*get_parent)(void *closure, const char *name, struct mustach_sbuf *sbuf);
+  int (*has_block_override)(void *closure, const char *name);
 };
 
 /**

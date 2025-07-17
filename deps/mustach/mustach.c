@@ -27,6 +27,30 @@
 
 #include "mustach.h"
 
+/* Helper function for systems without strndup */
+static char *my_strndup(const char *s, size_t n) {
+  size_t len = strlen(s);
+  if (len > n) len = n;
+  char *result = malloc(len + 1);
+  if (result) {
+    memcpy(result, s, len);
+    result[len] = '\0';
+  }
+  return result;
+}
+
+struct block_override {
+  char *name;
+  struct mustach_sbuf content;
+  struct block_override *next;
+};
+
+struct parent_context {
+  const char *name;
+  struct block_override *overrides;
+  struct parent_context *parent;
+};
+
 struct iwrap {
   int (*emit)(void *closure, const char *buffer, size_t size, int escape,
               FILE *file);
@@ -39,6 +63,9 @@ struct iwrap {
   int (*get)(void *closure, const char *name, struct mustach_sbuf *sbuf);
   int (*partial)(void *closure, const char *name, struct mustach_sbuf *sbuf);
   void *closure_partial; /* closure for partial */
+  int (*parent)(void *closure, const char *name, struct mustach_sbuf *sbuf);
+  int (*block_override)(void *closure, const char *name, struct mustach_sbuf *sbuf);
+  struct parent_context *parent_ctx;
   int flags;
 };
 
@@ -136,6 +163,170 @@ static inline size_t sbuf_length(struct mustach_sbuf *sbuf) {
   if (length == 0 && sbuf->value != NULL)
     length = strlen(sbuf->value);
   return length;
+}
+
+static void free_block_overrides(struct block_override *overrides) {
+  struct block_override *next;
+  while (overrides) {
+    next = overrides->next;
+    free(overrides->name);
+    sbuf_release(&overrides->content);
+    free(overrides);
+    overrides = next;
+  }
+}
+
+static struct mustach_sbuf* find_block_override(const char *block_name, struct block_override *overrides) {
+  while (overrides) {
+    if (strcmp(overrides->name, block_name) == 0)
+      return &overrides->content;
+    overrides = overrides->next;
+  }
+  return NULL;
+}
+
+static struct block_override* add_block_override(struct block_override **overrides, const char *name, const char *content, size_t length) {
+  struct block_override *override = malloc(sizeof(struct block_override));
+  if (!override)
+    return NULL;
+  
+  override->name = strdup(name);
+  if (!override->name) {
+    free(override);
+    return NULL;
+  }
+  
+  override->content.value = my_strndup(content, length);
+  if (!override->content.value) {
+    free(override->name);
+    free(override);
+    return NULL;
+  }
+  
+  override->content.length = length;
+  override->content.freecb = free;
+  override->content.closure = NULL;
+  override->next = *overrides;
+  *overrides = override;
+  return override;
+}
+
+static int collect_block_overrides(const char *template, size_t length, struct block_override **overrides) {
+  const char *end = template + length;
+  const char *current = template;
+  
+  while (current < end) {
+    /* Find next {{ */
+    while (current < end && *current != '{')
+      current++;
+    if (current >= end - 1) break;
+    if (current[1] != '{') {
+      current++;
+      continue;
+    }
+    current += 2; /* skip {{ */
+    
+    /* Skip whitespace */
+    while (current < end && isspace(*current))
+      current++;
+    
+    /* Check if this is a block definition */
+    if (current < end && *current == '$') {
+      current++; /* skip $ */
+      
+      /* Get block name */
+      const char *name_start = current;
+      while (current < end && *current != '}' && !isspace(*current))
+        current++;
+      
+      size_t name_len = (size_t)(current - name_start);
+      if (name_len == 0) continue;
+      
+      /* Skip to end of opening tag */
+      while (current < end && !(*current == '}' && current[1] == '}'))
+        current++;
+      if (current >= end - 1) break;
+      current += 2; /* skip }} */
+      
+      /* Find matching closing tag by counting ALL sections, not just blocks */
+      const char *content_start = current;
+      int section_depth = 1; /* We're inside one section (our block) */
+      
+      while (section_depth > 0 && current < end) {
+        /* Find next {{ */
+        while (current < end && *current != '{')
+          current++;
+        if (current >= end - 1) break;
+        if (current[1] != '{') {
+          current++;
+          continue;
+        }
+        current += 2; /* skip {{ */
+        
+        /* Skip whitespace */
+        while (current < end && isspace(*current))
+          current++;
+        
+        if (current < end && *current == '/') {
+          /* This is a closing tag */
+          current++; /* skip / */
+          const char *close_name_start = current;
+          while (current < end && *current != '}' && !isspace(*current))
+            current++;
+          
+          size_t close_name_len = (size_t)(current - close_name_start);
+          
+          /* Always decrement for any closing tag */
+          section_depth--;
+          
+          if (close_name_len == name_len && memcmp(close_name_start, name_start, name_len) == 0) {
+            if (section_depth == 0) {
+              /* Found our closing tag - go back to find where this closing tag started */
+              /* We need to find the {{ that starts this closing tag */
+              const char *search_back = current; /* Start from after the tag name */
+              
+              /* Go back to find the opening {{ of the closing tag */
+              while (search_back >= content_start + 2) {
+                if (search_back[-2] == '{' && search_back[-1] == '{') {
+                  break;
+                }
+                search_back--;
+              }
+              search_back -= 2; /* Point to the first { */
+              
+              size_t content_len = (size_t)(search_back - content_start);
+              
+              char block_name[MUSTACH_MAX_LENGTH + 1];
+              memcpy(block_name, name_start, name_len);
+              block_name[name_len] = '\0';
+              
+              if (!add_block_override(overrides, block_name, content_start, content_len)) {
+                return MUSTACH_ERROR_SYSTEM;
+              }
+              break; /* Exit the inner while loop since we found our closing tag */
+            }
+          }
+        } else if (current < end && (*current == '$' || *current == '#' || *current == '^' || *current == '<')) {
+          /* This is any opening tag (block, section, inverted section, parent) */
+          section_depth++;
+        }
+        
+        /* Skip to end of tag */
+        while (current < end && !(*current == '}' && current[1] == '}'))
+          current++;
+        if (current >= end - 1) break;
+        current += 2; /* skip }} */
+      }
+    } else {
+      /* Skip to end of tag */
+      while (current < end && !(*current == '}' && current[1] == '}'))
+        current++;
+      if (current >= end - 1) break;
+      current += 2; /* skip }} */
+    }
+  }
+  
+  return MUSTACH_OK;
 }
 
 static int iwrap_emit(void *closure, const char *buffer, size_t size,
@@ -244,19 +435,32 @@ static int process(const char *template, size_t length, struct iwrap *iwrap,
   struct {
     const char *name, *again;
     size_t length;
-    unsigned enabled : 1, entered : 1;
+    unsigned enabled : 1, entered : 1, is_block : 1, is_parent : 1;
+    struct mustach_sbuf block_content;
+    struct block_override *overrides;
   } stack[MUSTACH_MAX_DEPTH];
   size_t oplen, cllen, len, l;
   int depth, rc, enabled, stdalone;
   struct prefix pref;
 
   pref.prefix = prefix;
+  if (!template)
+    return MUSTACH_ERROR_INVALID_ITF;
   end = template + (length ? length : strlen(template));
   opstr[0] = opstr[1] = '{';
   clstr[0] = clstr[1] = '}';
   oplen = cllen = 2;
   stdalone = enabled = 1;
   depth = pref.len = 0;
+  
+  /* Initialize stack entries */
+  for (int i = 0; i < MUSTACH_MAX_DEPTH; i++) {
+    stack[i].is_block = 0;
+    stack[i].is_parent = 0;
+    stack[i].overrides = NULL;
+    sbuf_reset(&stack[i].block_content);
+  }
+  
   for (;;) {
     /* search next openning delimiter */
     for (beg = template;; beg++) {
@@ -344,6 +548,8 @@ static int process(const char *template, size_t length, struct iwrap *iwrap,
     case '#':
     case '/':
     case '>':
+    case '<':
+    case '$':
     exclude_first:
       beg++;
       len--;
@@ -424,17 +630,26 @@ static int process(const char *template, size_t length, struct iwrap *iwrap,
     case '/':
       /* end section */
       if (depth-- == 0 || len != stack[depth].length ||
-          memcmp(stack[depth].name, name, len))
+          memcmp(stack[depth].name, name, len)) {
         return MUSTACH_ERROR_CLOSING;
-      rc = enabled && stack[depth].entered ? iwrap->next(iwrap->closure) : 0;
-      if (rc < 0)
-        return rc;
-      if (rc) {
-        template = stack[depth++].again;
-      } else {
+      }
+      
+      /* Check if this is a block section */
+      if (stack[depth].is_block) {
+        /* Block sections don't loop - just restore enabled state and continue */
         enabled = stack[depth].enabled;
-        if (enabled && stack[depth].entered)
-          iwrap->leave(iwrap->closure);
+      } else {
+        /* Normal section handling */
+        rc = enabled && stack[depth].entered ? iwrap->next(iwrap->closure) : 0;
+        if (rc < 0)
+          return rc;
+        if (rc) {
+          template = stack[depth++].again;
+        } else {
+          enabled = stack[depth].enabled;
+          if (enabled && stack[depth].entered)
+            iwrap->leave(iwrap->closure);
+        }
       }
       break;
     case '>':
@@ -448,6 +663,204 @@ static int process(const char *template, size_t length, struct iwrap *iwrap,
         }
         if (rc < 0)
           return rc;
+      }
+      break;
+    case '<':
+      /* parent template with inheritance */
+      if (enabled) {
+        if (depth == MUSTACH_MAX_DEPTH)
+          return MUSTACH_ERROR_TOO_DEEP;
+        
+        /* First, collect block overrides from the child template content */
+        struct block_override *child_overrides = NULL;
+        const char *child_start = template;
+        const char *child_end = template;
+        
+        /* Find the end of the parent section to get child content */
+        int skip_depth = 1;
+        while (skip_depth > 0 && child_end < end) {
+          /* Find next {{ */
+          while (child_end < end && *child_end != '{')
+            child_end++;
+          if (child_end >= end - 1) break;
+          if (child_end[1] != '{') {
+            child_end++;
+            continue;
+          }
+          child_end += 2; /* skip {{ */
+          
+          /* Find closing }} */
+          const char *tag_start = child_end;
+          while (child_end < end && !(*child_end == '}' && child_end[1] == '}'))
+            child_end++;
+          if (child_end >= end - 1) break;
+          
+          size_t tag_len = (size_t)(child_end - tag_start);
+          child_end += 2; /* skip }} */
+          
+          /* Check if this is our closing tag */
+          if (tag_len > 0 && tag_start[0] == '/') {
+            if (tag_len - 1 == strlen(name) && memcmp(tag_start + 1, name, strlen(name)) == 0) {
+              skip_depth--;
+            }
+          } else if (tag_len > 0 && (tag_start[0] == '<' || tag_start[0] == '#' || tag_start[0] == '^')) {
+            skip_depth++;
+          }
+        }
+        
+        /* Now collect block overrides from child content */
+        size_t child_content_length = (size_t)(child_end - child_start - 2);
+        
+        rc = collect_block_overrides(child_start, child_content_length, &child_overrides);
+        if (rc < 0) {
+          free_block_overrides(child_overrides);
+          return rc;
+        }
+        
+        /* Get and process parent template with overrides */
+        sbuf_reset(&sbuf);
+        if (iwrap->parent)
+          rc = iwrap->parent(iwrap->closure, name, &sbuf);
+        else
+          rc = iwrap->partial(iwrap->closure_partial, name, &sbuf);
+        
+        if (rc >= 0 && sbuf.value) {
+          /* Process parent template with block overrides */
+          struct block_override *old_overrides = iwrap->parent_ctx ? iwrap->parent_ctx->overrides : NULL;
+          
+          if (old_overrides) {
+            struct block_override *list = old_overrides;
+            while (list) {
+              list = list->next;
+            }
+          }
+          if (child_overrides) {
+            struct block_override *list = child_overrides;
+            while (list) {
+              list = list->next;
+            }
+          }
+          
+          /* Merge child overrides with any existing overrides */
+          struct block_override *merged_overrides = NULL;
+          if (iwrap->parent_ctx) {
+            if (old_overrides) {
+              /* Start with existing overrides */
+              merged_overrides = old_overrides;
+              
+              /* Append child_overrides to the end of the existing chain */
+              struct block_override *last = old_overrides;
+              while (last->next) last = last->next;
+              last->next = child_overrides;
+              
+            } else {
+              /* No existing overrides, just use child overrides */
+              merged_overrides = child_overrides;
+            }
+            
+            /* Set the merged overrides for processing */
+            iwrap->parent_ctx->overrides = merged_overrides;
+          }
+          
+          rc = process(sbuf.value, sbuf_length(&sbuf), iwrap, file, &pref);
+          
+          /* Restore old overrides */
+          if (iwrap->parent_ctx) {
+            if (old_overrides && child_overrides) {
+              /* Remove the child_overrides from the chain */
+              struct block_override *last = old_overrides;
+              while (last->next && last->next != child_overrides) last = last->next;
+              if (last->next == child_overrides) last->next = NULL;
+            }
+            iwrap->parent_ctx->overrides = old_overrides;
+          }
+          
+          sbuf_release(&sbuf);
+          if (rc < 0) {
+            free_block_overrides(child_overrides);
+            return rc;
+          }
+        } else {
+          sbuf_release(&sbuf);
+          free_block_overrides(child_overrides);
+          if (rc >= 0)
+            rc = MUSTACH_ERROR_PARENT_NOT_FOUND;
+          if (rc < 0)
+            return rc;
+        }
+        
+        free_block_overrides(child_overrides);
+        
+        /* Skip to end of parent section */
+        template = child_end;
+      }
+      break;
+    case '$':
+      /* block definition */
+      if (depth == MUSTACH_MAX_DEPTH)
+        return MUSTACH_ERROR_TOO_DEEP;
+      
+      /* Check if we have an override for this block */
+      struct mustach_sbuf *override_content = NULL;
+      if (iwrap->parent_ctx && iwrap->parent_ctx->overrides) {
+        override_content = find_block_override(name, iwrap->parent_ctx->overrides);
+        
+        /* Debug: list all available overrides */
+        if (!override_content) {
+          struct block_override *list = iwrap->parent_ctx->overrides;
+          while (list) {
+            list = list->next;
+          }
+        }
+      }
+      
+      if (override_content && enabled) {
+        /* Use override content instead of default */
+        /* When processing override content, keep the current override context */
+        rc = process(override_content->value, sbuf_length(override_content), iwrap, file, &pref);
+        if (rc < 0)
+          return rc;
+        
+        /* Skip to the end of the block section */
+        int skip_depth = 1;
+        while (skip_depth > 0 && template < end) {
+          /* Find next {{ */
+          while (template < end && *template != '{')
+            template++;
+          if (template >= end - 1) break;
+          if (template[1] != '{') {
+            template++;
+            continue;
+          }
+          template += 2; /* skip {{ */
+          
+          /* Find closing }} */
+          const char *tag_start = template;
+          while (template < end && !(*template == '}' && template[1] == '}'))
+            template++;
+          if (template >= end - 1) break;
+          
+          size_t tag_len = (size_t)(template - tag_start);
+          template += 2; /* skip }} */
+          
+          /* Check if this is our closing tag */
+          if (tag_len > 0 && tag_start[0] == '/') {
+            if (tag_len - 1 == len && memcmp(tag_start + 1, name, len) == 0) {
+              skip_depth--;
+            }
+          } else if (tag_len > 0 && tag_start[0] == '$') {
+            skip_depth++;
+          }
+        }
+      } else {
+        /* Use default content - push onto stack like normal section */
+        stack[depth].name = beg;
+        stack[depth].again = template;
+        stack[depth].length = len;
+        stack[depth].enabled = enabled != 0;
+        stack[depth].entered = enabled != 0; /* Always "entered" for blocks */
+        stack[depth].is_block = 1; /* Mark as block section */
+        depth++;
       }
       break;
     default:
@@ -496,6 +909,12 @@ int mustach_file(const char *template, size_t length,
   iwrap.next = itf->next;
   iwrap.leave = itf->leave;
   iwrap.get = itf->get;
+  iwrap.parent = itf->parent;
+  iwrap.block_override = itf->block_override;
+  
+  /* Initialize parent context */
+  struct parent_context parent_ctx = {0};
+  iwrap.parent_ctx = &parent_ctx;
   iwrap.flags = flags;
 
   /* process */

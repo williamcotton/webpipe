@@ -202,6 +202,22 @@ static int get(void *closure, struct mustach_sbuf *sbuf, int key) {
   return 1;
 }
 
+static int get_parent(void *closure, const char *name, struct mustach_sbuf *sbuf) {
+  (void)closure;
+  /* Use the same partial mechanism as regular partials */
+  if (mustach_wrap_get_partial) {
+    return mustach_wrap_get_partial(name, sbuf);
+  }
+  return 0;
+}
+
+static int has_block_override(void *closure, const char *name) {
+  (void)closure;
+  (void)name;
+  /* Default implementation - no block overrides */
+  return 0;
+}
+
 const struct mustach_wrap_itf mustach_jansson_wrap_itf = {.start = start,
                                                           .stop = NULL,
                                                           .compare = compare,
@@ -210,7 +226,9 @@ const struct mustach_wrap_itf mustach_jansson_wrap_itf = {.start = start,
                                                           .enter = enter,
                                                           .next = next,
                                                           .leave = leave,
-                                                          .get = get};
+                                                          .get = get,
+                                                          .get_parent = get_parent,
+                                                          .has_block_override = has_block_override};
 
 int mustach_jansson_file(const char *template, size_t length, json_t *root,
                          int flags, FILE *file) {
