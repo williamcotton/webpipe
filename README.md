@@ -92,7 +92,7 @@ GET /transform
 ```
 
 ### Lua Middleware
-Executes Lua scripts with full access to the request object.
+Executes Lua scripts with full access to the request object and database functions.
 
 ```wp
 GET /process
@@ -103,6 +103,36 @@ GET /process
   `
 ```
 
+#### Database Access in Lua
+The Lua middleware provides access to the database through the `executeSql` function, **but only when a database middleware that has registered with the database registry is loaded**:
+
+```wp
+GET /lua-db-test
+  |> lua: `
+    local result, err = executeSql("SELECT * FROM users LIMIT 5")
+    
+    if err then
+      return {
+        error = "Database error: " .. err,
+        sql = "SELECT * FROM users LIMIT 5"
+      }
+    end
+    
+    return {
+      message = "Database query successful",
+      data = result,
+      luaVersion = _VERSION
+    }
+  `
+```
+
+**Prerequisites for Database Access:**
+- A database middleware that implements the `execute_sql` function must be loaded in your application
+- The database middleware must register itself with the database registry system
+- The database middleware must be properly configured with its respective config block
+
+If no database middleware is registered, calls to `executeSql` will return an error.
+
 ### PostgreSQL Middleware
 Executes SQL queries with parameter binding from `sqlParams`.
 
@@ -111,6 +141,13 @@ GET /users/:id
   |> jq: `{ sqlParams: [.params.id] }`
   |> pg: `SELECT * FROM users WHERE id = $1`
 ```
+
+**Features:**
+- Implements `middleware_init` for database connection initialization using config blocks
+- Registers with the database registry system to provide `execute_sql` function
+- Thread-safe database operations with connection pooling
+- Automatic parameter binding with type conversion
+- Comprehensive error reporting with PostgreSQL-specific diagnostics
 
 ### Validate Middleware
 Validates request body fields using a simple DSL with built-in validation rules.
@@ -240,6 +277,68 @@ GET /test-partials
 - **Context Sharing**: Partials have access to the same JSON data context as the main template
 - **Error Handling**: Missing partials are handled gracefully (rendered as empty strings)
 - **Variable Scope**: All mustache variables defined in your `.wp` file are available as partials
+
+## HTTP Methods Support
+
+WebPipe supports all standard HTTP methods with proper request body handling:
+
+### GET Requests
+Standard GET requests with query parameters and URL parameters:
+
+```wp
+GET /users/:id
+  |> jq: `{ userId: .params.id, filters: .query }`
+```
+
+### POST Requests
+POST requests with JSON or form data bodies:
+
+```wp
+POST /users
+  |> jq: `{
+    method: .method,
+    name: .body.name,
+    email: .body.email,
+    action: "create"
+  }`
+```
+
+### PUT Requests
+PUT requests for full resource updates:
+
+```wp
+PUT /users/:id
+  |> jq: `{
+    method: .method,
+    id: (.params.id | tonumber),
+    name: .body.name,
+    email: .body.email,
+    action: "update"
+  }`
+```
+
+### PATCH Requests
+PATCH requests for partial resource updates:
+
+```wp
+PATCH /users/:id
+  |> jq: `{
+    method: .method,
+    id: (.params.id | tonumber),
+    body: .body,
+    action: "partial_update"
+  }`
+```
+
+### DELETE Requests
+DELETE requests for resource removal:
+
+```wp
+DELETE /users/:id
+  |> jq: `{ sqlParams: [.params.id] }`
+  |> pg: `DELETE FROM users WHERE id = $1`
+  |> jq: `{ success: true, message: "User deleted" }`
+```
 
 ## Building and Installation
 
@@ -377,8 +476,121 @@ POST /users
         field: .errors[0].field,
         message: .errors[0].message
       }`
+    sqlError(500):
+      |> jq: `{
+        error: "Database error",
+        sqlstate: .errors[0].sqlstate,
+        message: .errors[0].message,
+        query: .errors[0].query
+      }`
     default(500):
       |> jq: `{ error: "Internal server error" }`
+
+# Cookie handling example
+GET /login
+  |> jq: `{
+    message: "Login successful",
+    userId: .cookies.sessionId // "guest",
+    setCookies: [
+      "sessionId=abc123; HttpOnly; Secure; Max-Age=3600",
+      "userId=" + (.cookies.sessionId // "guest") + "; Max-Age=86400"
+    ]
+  }`
+
+# Form data handling
+POST /contact
+  |> jq: `{
+    name: .body.name,
+    email: .body.email,
+    message: .body.message,
+    timestamp: now
+  }`
+  |> pg: `INSERT INTO contacts (name, email, message) VALUES ($1, $2, $3) RETURNING *`
+  |> result
+    ok(201):
+      |> jq: `{
+        success: true,
+        message: "Contact form submitted successfully"
+      }`
+    default(500):
+      |> jq: `{ error: "Failed to submit contact form" }`
+
+# Lua with database access (requires database middleware to be registered)
+GET /lua-stats
+  |> lua: `
+    local userCount, err = executeSql("SELECT COUNT(*) as count FROM users")
+    if err then
+      return { error = "Database error: " .. err }
+    end
+    
+    local activeUsers, err = executeSql("SELECT COUNT(*) as count FROM users WHERE active = true")
+    if err then
+      return { error = "Database error: " .. err }
+    end
+    
+    return {
+      totalUsers = userCount.rows[1].count,
+      activeUsers = activeUsers.rows[1].count,
+      luaVersion = _VERSION
+    }
+  `
+```
+
+## Cookie Support
+
+WebPipe provides comprehensive cookie support for both reading incoming cookies and setting outgoing cookies.
+
+### Reading Cookies
+
+Incoming cookies are automatically parsed and made available in the request object:
+
+```wp
+GET /cookie-test
+  |> jq: `{
+    message: "Cookie values received",
+    sessionId: .cookies.sessionId,
+    userId: .cookies.userId,
+    theme: .cookies.theme
+  }`
+```
+
+### Setting Cookies
+
+Cookies can be set by adding them to the `setCookies` array in the response:
+
+```wp
+GET /login
+  |> jq: `{
+    message: "Login successful",
+    setCookies: [
+      "sessionId=abc123; HttpOnly; Secure; Max-Age=3600",
+      "userId=john; Max-Age=86400; Path=/",
+      "theme=dark; Path=/; SameSite=Strict"
+    ]
+  }`
+```
+
+**Cookie Attributes Supported:**
+- `HttpOnly`: Prevents JavaScript access to the cookie
+- `Secure`: Cookie only sent over HTTPS
+- `Max-Age`: Cookie expiration time in seconds
+- `Path`: URL path where cookie is valid
+- `Domain`: Domain where cookie is valid
+- `SameSite`: CSRF protection (Strict, Lax, None)
+
+### Cookie Example
+
+```wp
+GET /cookies
+  |> jq: `{
+    message: "Cookie test response",
+    cookies: .cookies,
+    setCookies: [
+      "sessionId=abc123; HttpOnly; Secure; Max-Age=3600",
+      "userId=john; Max-Age=86400",
+      "theme=dark; Path=/"
+    ]
+  }`
 ```
 
 ## Content-Type Support
@@ -467,6 +679,131 @@ The server automatically handles different content types:
 
 This enables seamless support for web pages, APIs, and other content types in the same pipeline framework.
 
+## Form Data Support
+
+WebPipe supports both JSON and form-encoded request bodies for POST, PUT, and PATCH requests.
+
+### JSON Request Bodies
+
+JSON request bodies are automatically parsed and made available in the `body` field:
+
+```wp
+POST /users
+  |> jq: `{
+    name: .body.name,
+    email: .body.email,
+    action: "create"
+  }`
+```
+
+### Form-Encoded Request Bodies
+
+Form-encoded data (`application/x-www-form-urlencoded`) is automatically parsed and converted to JSON:
+
+```wp
+# HTML form submitting to this endpoint
+POST /form-submit
+  |> jq: `{
+    username: .body.username,
+    password: .body.password,
+    remember: (.body.remember // false)
+  }`
+```
+
+**Example HTML Form:**
+```html
+<form action="/form-submit" method="post">
+  <input type="text" name="username" required>
+  <input type="password" name="password" required>
+  <input type="checkbox" name="remember" value="true">
+  <button type="submit">Submit</button>
+</form>
+```
+
+### Request Body Handling
+
+The middleware automatically detects the content type and processes the request body accordingly:
+
+- **`application/json`**: Parsed as JSON object
+- **`application/x-www-form-urlencoded`**: Parsed as form data and converted to JSON
+- **Other content types**: Stored as string in the `body` field
+
+### Testing Request Bodies
+
+```wp
+POST /test-body
+  |> jq: `{
+    method: .method,
+    body: .body,
+    hasBody: (.body != null),
+    bodyType: (.body | type)
+  }`
+```
+
+
+## Database Registry System
+
+WebPipe includes a database registry system that allows middleware to register as database providers and share database functionality with other middleware.
+
+### Database Providers
+
+Middleware can register as database providers by implementing the `execute_sql` function:
+
+```c
+// Public execute_sql function for database registry
+json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func) {
+    // Implementation depends on database type (PostgreSQL, MySQL, SQLite, etc.)
+    return execute_sql_internal(sql, params, arena, alloc_func, middleware_config);
+}
+```
+
+Any middleware can become a database provider by implementing this function and registering with the database registry system.
+
+### Using Database Functions in Middleware
+
+Middleware can access database functions through the WebPipe Database API:
+
+```c
+typedef struct {
+    json_t* (*execute_sql)(const char* sql, json_t* params, void* arena, arena_alloc_func alloc_func);
+    DatabaseProvider* (*get_database_provider)(const char* name);
+    bool (*has_database_provider)(void);
+    const char* (*get_default_database_provider_name)(void);
+} WebpipeDatabaseAPI;
+
+// In middleware, access the API through the global symbol
+extern WebpipeDatabaseAPI webpipe_db_api;
+```
+
+### Example: Using Database in Lua Middleware
+
+The Lua middleware uses the database registry to provide the `executeSql` function, **but only when a database provider middleware is registered**:
+
+```wp
+# This requires a database middleware to be loaded and registered
+GET /lua-db-example
+  |> lua: `
+    local result, err = executeSql("SELECT * FROM users WHERE active = true")
+    if err then
+      return { error = "Database error: " .. err }
+    end
+    return { users = result.rows }
+  `
+```
+
+**Note:** The `executeSql` function is only available in Lua when a database middleware that implements the `execute_sql` function is registered with the database registry.
+
+### Database Provider Registration
+
+The runtime automatically:
+1. Loads middleware and checks for `execute_sql` function
+2. Registers middleware as database provider if function exists
+3. Injects database API into middleware that request it
+4. Provides database functions to middleware through the API
+
+**Examples of Database Middleware:**
+- **PostgreSQL (`pg`)**: Implements `middleware_init` and `execute_sql` for PostgreSQL databases
+- **Custom Database Middleware**: Any middleware can become a database provider by implementing the `execute_sql` function
 
 ## Middleware Development
 
@@ -485,6 +822,13 @@ typedef struct {
                       json_t *variables);
 } Middleware;
 ```
+
+**Required Functions:**
+- `middleware_execute`: Main processing function (required)
+
+**Optional Functions:**
+- `middleware_init`: Initialization function called at startup
+- `execute_sql`: Database provider function (for database middleware)
 
 Each middleware receives:
 - `input`: JSON data from previous pipeline step
@@ -506,6 +850,52 @@ When creating, manipulating, or returning `json_t` objects in middleware:
 - The arena ensures no memory leaks even if middleware don't explicitly decref objects
 
 This seamless integration allows middleware to focus on business logic rather than memory management details.
+
+### Middleware Initialization
+
+Middleware can optionally implement a `middleware_init` function that is called at startup with the middleware's configuration:
+
+```c
+// Optional middleware initialization function
+int middleware_init(json_t *config) {
+    // Perform initialization tasks using the middleware's config block
+    // Return 0 for success, non-zero for failure
+    
+    // Example: Initialize database connection
+    if (config) {
+        json_t *host = json_object_get(config, "host");
+        if (host && json_is_string(host)) {
+            // Initialize connection with host
+            printf("Initializing middleware with host: %s\n", json_string_value(host));
+        }
+    }
+    
+    return 0; // Success
+}
+```
+
+**Middleware Initialization Details:**
+- **Function Signature**: `int middleware_init(json_t *config)`
+- **Called**: Once at server startup, after middleware is loaded
+- **Parameters**: `config` - The middleware's configuration block from the `.wp` file
+- **Return Value**: `0` for success, non-zero for failure
+- **Optional**: If not implemented, middleware loads without initialization
+- **Error Handling**: If initialization fails, a warning is logged but the middleware remains loaded
+
+**Example Configuration Usage:**
+```wp
+# Configuration block for custom middleware
+config my_middleware {
+  host: "localhost"
+  port: 8080
+  timeout: 30
+}
+
+GET /test
+  |> my_middleware: `some config`
+```
+
+The `middleware_init` function receives the `my_middleware` configuration block as its `config` parameter.
 
 ### Hello World Middleware Example
 
@@ -653,6 +1043,29 @@ Common error types include:
 - `sqlError`: Database operation errors
 - `internalError`: System/middleware internal errors
 - `authError`: Authentication/authorization failures
+
+#### SQL Error Details
+
+PostgreSQL errors include additional diagnostic information:
+
+```json
+{
+  "errors": [
+    {
+      "type": "sqlError",
+      "message": "relation \"nonexistent_table\" does not exist",
+      "sqlstate": "42P01",
+      "severity": "ERROR",
+      "query": "SELECT * FROM nonexistent_table"
+    }
+  ]
+}
+```
+
+**Additional SQL Error Fields:**
+- `sqlstate`: PostgreSQL error code (e.g., "42P01" for undefined table)
+- `severity`: Error severity level (ERROR, WARNING, etc.)
+- `query`: The SQL query that caused the error (added by middleware)
 
 ### Result Step Processing
 
