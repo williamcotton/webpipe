@@ -180,6 +180,21 @@ ASTNode *parser_parse_result_step(Parser *parser) {
   ResultCondition *tail = NULL;
 
   while (!parser_is_at_end(parser)) {
+    // Skip any leading newlines between result conditions or before next statement
+    parser_consume_newlines(parser);
+
+    // Detect the start of a variable assignment (e.g. "mustache myPartial = `...`")
+    // A variable assignment starts with IDENT IDENT =
+    if (parser_check(parser, TOKEN_IDENTIFIER)) {
+      int saved_index = parser->current;
+      if (saved_index + 2 < parser->token_count &&
+          parser->tokens[saved_index + 1].type == TOKEN_IDENTIFIER &&
+          parser->tokens[saved_index + 2].type == TOKEN_EQUALS) {
+        // We reached the beginning of the next statement, so exit the result block loop
+        break;
+      }
+    }
+
     // Parse condition: name(status_code): pipeline
     if (!parser_check(parser, TOKEN_IDENTIFIER)) {
       // Check if we're at the end of the result block (next statement)
@@ -287,13 +302,14 @@ ASTNode *parser_parse_variable_assignment(Parser *parser) {
   Token *name = parser_advance(parser);
 
   if (!parser_match(parser, TOKEN_EQUALS)) {
-    fprintf(stderr, "Expected = in variable assignment\n");
+    fprintf(stderr, "Expected = in variable assignment\\n");
     parser_advance(parser); // Skip the invalid token
     return NULL;
   }
 
   if (!parser_check(parser, TOKEN_STRING)) {
-    fprintf(stderr, "Expected string value in variable assignment\n");
+    fprintf(stderr, "Expected string value in variable assignment, got token type %u\\n", 
+            (unsigned int)parser_peek(parser)->type);
     parser_advance(parser); // Skip the invalid token
     return NULL;
   }

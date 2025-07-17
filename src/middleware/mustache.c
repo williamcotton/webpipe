@@ -22,9 +22,11 @@ static const char *find_partial(json_t *variables, const char *name) {
     }
     
     json_t *var_value = json_object_get(variables, name);
+    
     if (var_value && json_is_string(var_value)) {
         return json_string_value(var_value);
     }
+    
     return NULL;
 }
 
@@ -81,6 +83,8 @@ json_t *middleware_execute(json_t *input, void *arena,
     // Suppress unused parameter warnings
     (void)free_func;
     (void)middleware_config;  // Unused parameter for now
+    
+
     
     // Set up partials for this request
     current_variables = variables;

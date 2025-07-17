@@ -155,4 +155,4 @@ static inline const char *webpipe_get_error_message(json_t *response) {
         } \
     } while(0)
 
-#endif // WEBPIPE_MIDDLEWARE_API_H 
+#endif // WEBPIPE_MIDDLEWARE_API_H

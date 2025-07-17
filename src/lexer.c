@@ -287,7 +287,7 @@ Token lexer_next_token(Lexer *lexer) {
 
 Token *lexer_tokenize(const char *source, int *token_count) {
   Lexer *lexer = lexer_new(source);
-  Token *tokens = malloc(sizeof(Token) * 1000); // Max 1000 tokens
+  Token *tokens = malloc(sizeof(Token) * 10000); // Max 1000 tokens
   int count = 0;
 
   Token token;
@@ -295,8 +295,8 @@ Token *lexer_tokenize(const char *source, int *token_count) {
     token = lexer_next_token(lexer);
     
     // Check if we would exceed the token array bounds
-    if (count >= 1000) {
-      fprintf(stderr, "Error: Source file has more than 1000 tokens\n");
+    if (count >= 10000) {
+      fprintf(stderr, "Error: Source file has more than 10000 tokens\n");
       free(tokens);
       lexer_free(lexer);
       *token_count = 0;

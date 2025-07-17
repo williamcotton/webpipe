@@ -186,7 +186,6 @@ static void test_jq_middleware_string_manipulation(void) {
     TEST_ASSERT_NOT_NULL(idNumber);
     TEST_ASSERT_STRING_EQUAL("123", json_string_value(id));
     
-    // Debug: Check what we actually got
     if (json_integer_value(idNumber) != 123) {
         char *debug_str = json_dumps(output, JSON_INDENT(2));
         printf("Debug output: %s\n", debug_str);

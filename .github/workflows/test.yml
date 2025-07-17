@@ -41,7 +41,8 @@ jobs:
           libcurl4-openssl-dev \
           postgresql-client \
           libbsd-dev \
-          valgrind
+          valgrind \
+          libargon2-dev
 
     - name: Build application
       run: make all
@@ -112,7 +113,8 @@ jobs:
           libmicrohttpd \
           jansson \
           jq \
-          lua
+          lua \
+          argon2
 
     - name: Start PostgreSQL
       run: |

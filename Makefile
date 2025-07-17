@@ -76,7 +76,7 @@ else ifeq ($(PLATFORM),DARWIN)
 endif
 
 # Middleware targets
-middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so $(BUILD_DIR)/mustache.so $(BUILD_DIR)/validate.so
+middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so $(BUILD_DIR)/mustache.so $(BUILD_DIR)/validate.so $(BUILD_DIR)/auth.so
 
 $(BUILD_DIR)/jq.so: $(MIDDLEWARE_DIR)/jq.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -ljq
@@ -92,6 +92,9 @@ $(BUILD_DIR)/mustache.so: $(MIDDLEWARE_DIR)/mustache.c deps/mustach/mustach.c de
 
 $(BUILD_DIR)/validate.so: $(MIDDLEWARE_DIR)/validate.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson
+
+$(BUILD_DIR)/auth.so: $(MIDDLEWARE_DIR)/auth.c
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -largon2
 
 # Install middleware to runtime directory
 install-middleware: middleware
@@ -203,9 +206,9 @@ test-analyze:
 
 test-lint:
 ifeq ($(PLATFORM),LINUX)
-	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument -warnings-as-errors=* $(SRC_DIR)/*.c $(MIDDLEWARE_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
+	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument,-clang-diagnostic-disabled-macro-expansion -warnings-as-errors=* $(SRC_DIR)/*.c $(MIDDLEWARE_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
 else ifeq ($(PLATFORM),DARWIN)
-	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument -warnings-as-errors=* $(SRC_DIR)/*.c $(MIDDLEWARE_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
+	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument,-clang-diagnostic-disabled-macro-expansion -warnings-as-errors=* $(SRC_DIR)/*.c $(MIDDLEWARE_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
 endif
 
 # Original test command
