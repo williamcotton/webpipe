@@ -110,6 +110,27 @@ GET /test6
         message: .errors[0].message
       }`
 
+GET /test7
+  |> lua: `
+    -- Test executeSql function in Lua
+    local result, err = executeSql("SELECT * FROM teams LIMIT 5")
+    
+    if err then
+      return {
+        error = "Database error: " .. err,
+        sql = "SELECT * FROM teams LIMIT 5"
+      }
+    end
+    
+    return {
+      message = "Lua executeSql test successful",
+      sql = "SELECT * FROM teams LIMIT 5",
+      data = result,
+      luaVersion = _VERSION
+    }
+  `
+
+
 GET /test-sql-error
   |> jq: `{ sqlParams: [] }`
   |> pg: `SELECT * FROM nonexistent_table`

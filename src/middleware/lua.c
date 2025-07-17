@@ -14,10 +14,25 @@ typedef void (*arena_free_func)(void* arena);
 // Memory arena type (forward declaration)
 typedef struct MemoryArena MemoryArena;
 
+// Database API structure that gets injected by server
+typedef struct {
+    json_t* (*execute_sql)(const char* sql, json_t* params, void* arena, arena_alloc_func alloc_func);
+    void* (*get_database_provider)(const char* name);
+    bool (*has_database_provider)(void);
+    const char* (*get_default_database_provider_name)(void);
+} WebpipeDatabaseAPI;
+
+// Declare the global database API first
+extern WebpipeDatabaseAPI webpipe_db_api;
+
+// Global database API - will be injected by server if database providers are available
+WebpipeDatabaseAPI webpipe_db_api = {0};
+
 // Function prototypes
 static void jansson_to_lua(lua_State *L, json_t *json);
 static json_t *lua_to_jansson(lua_State *L, int index);
 static json_t *lua_to_jansson_with_depth(lua_State *L, int index, int depth);
+static int lua_execute_sql(lua_State *L);
 json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code, json_t *middleware_config, char **contentType, json_t *variables);
 
 // Conversion functions
@@ -162,6 +177,95 @@ static int lua_panic_handler(lua_State *L) {
     return 0; // Don't call abort()
 }
 
+// Lua C function for executeSql - callable from Lua scripts
+static int lua_execute_sql(lua_State *L) {
+    // Check if database API is available
+    if (!webpipe_db_api.execute_sql || !webpipe_db_api.has_database_provider || 
+        !webpipe_db_api.has_database_provider()) {
+        lua_pushnil(L);
+        lua_pushstring(L, "No database provider available");
+        return 2; // Return nil, error
+    }
+    
+    // Get arguments: sql (string) and optional params (table)
+    if (lua_gettop(L) < 1) {
+        lua_pushnil(L);
+        lua_pushstring(L, "executeSql requires at least SQL string argument");
+        return 2;
+    }
+    
+    // First argument must be SQL string
+    if (!lua_isstring(L, 1)) {
+        lua_pushnil(L);
+        lua_pushstring(L, "First argument to executeSql must be a string");
+        return 2;
+    }
+    
+    const char *sql = lua_tostring(L, 1);
+    json_t *params = NULL;
+    
+    // Second argument is optional parameters (table/array)
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
+        params = lua_to_jansson(L, 2);
+        if (!params || (!json_is_array(params) && !json_is_null(params))) {
+            if (params) json_decref(params);
+            lua_pushnil(L);
+            lua_pushstring(L, "Second argument to executeSql must be an array of parameters");
+            return 2;
+        }
+    }
+    
+    // Get the current arena from the global we'll set during execution
+    lua_getglobal(L, "_webpipe_arena");
+    void *arena = lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    
+    lua_getglobal(L, "_webpipe_alloc_func");
+    arena_alloc_func alloc_func = (arena_alloc_func)lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    
+    if (!arena || !alloc_func) {
+        if (params) json_decref(params);
+        lua_pushnil(L);
+        lua_pushstring(L, "Arena not available for database operation");
+        return 2;
+    }
+    
+    // Execute SQL using database API
+    json_t *result = webpipe_db_api.execute_sql(sql, params, arena, alloc_func);
+    
+    if (params) json_decref(params);
+    
+    if (!result) {
+        lua_pushnil(L);
+        lua_pushstring(L, "Database execution failed");
+        return 2;
+    }
+    
+    // Check for errors in result
+    json_t *errors = json_object_get(result, "errors");
+    if (errors && json_is_array(errors) && json_array_size(errors) > 0) {
+        // Return nil and error message
+        lua_pushnil(L);
+        
+        json_t *first_error = json_array_get(errors, 0);
+        json_t *message = json_object_get(first_error, "message");
+        if (message && json_is_string(message)) {
+            lua_pushstring(L, json_string_value(message));
+        } else {
+            lua_pushstring(L, "Database error occurred");
+        }
+        
+        json_decref(result);
+        return 2;
+    }
+    
+    // Convert result to Lua table and return
+    jansson_to_lua(L, result);
+    json_decref(result);
+    return 1; // Return result table
+}
+
 // Middleware execute function
 json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code, json_t *middleware_config, char **contentType, json_t *variables) {
   (void)free_func; // Suppress unused parameter warning
@@ -220,6 +324,19 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
     // Push input as 'request' global variable
     jansson_to_lua(L, input);
     lua_setglobal(L, "request");
+    
+    // Store arena and alloc_func as hidden globals for executeSql to use
+    lua_pushlightuserdata(L, arena);
+    lua_setglobal(L, "_webpipe_arena");
+    
+    lua_pushlightuserdata(L, (void*)alloc_func);
+    lua_setglobal(L, "_webpipe_alloc_func");
+    
+    // Register executeSql function only if database provider is available
+    if (webpipe_db_api.has_database_provider && webpipe_db_api.has_database_provider()) {
+        lua_pushcfunction(L, lua_execute_sql);
+        lua_setglobal(L, "executeSql");
+    }
     
     // Execute lua code
     if (luaL_dostring(L, arena_code) != LUA_OK) {
