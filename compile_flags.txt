@@ -20,6 +20,7 @@
 -Wno-pre-c2x-compat
 -Wno-covered-switch-default
 -Wno-implicit-int-float-conversion
+-Wno-disabled-macro-expansion
 -I/opt/homebrew/include
 -L/opt/homebrew/lib
 -I/opt/homebrew/include/postgresql@14

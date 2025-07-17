@@ -108,7 +108,7 @@ install-api-header:
 
 # Test targets
 TEST_CFLAGS = $(CFLAGS) -I$(TEST_DIR) -I$(SRC_DIR) -DUNITY_INCLUDE_DOUBLE
-TEST_LDFLAGS = $(LDFLAGS) -ljq $(LUA_LIB) -lpq
+TEST_LDFLAGS = $(LDFLAGS) -ljq
 # Unity framework with suppressed warnings
 UNITY_CFLAGS = $(CFLAGS) -I$(TEST_DIR) -I$(SRC_DIR) -DUNITY_INCLUDE_DOUBLE -Wno-double-promotion
 TEST_COMMON_SOURCES = $(TEST_DIR)/helpers/test_utils.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(DOTENV_OBJ)

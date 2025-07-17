@@ -5,7 +5,11 @@
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wundef"
+#pragma GCC diagnostic ignored "-Wdocumentation-unknown-command"
 #include <argon2.h>
+#pragma GCC diagnostic pop
 
 // Global database API (initialized by core server)
 WebpipeDatabaseAPI webpipe_db_api = {0};
