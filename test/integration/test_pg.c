@@ -69,7 +69,7 @@ static void test_pg_middleware_simple_select(void) {
     json_t *middleware_config = json_object();
     json_object_set_new(middleware_config, "host", json_string("localhost"));
     json_object_set_new(middleware_config, "port", json_string("5432"));
-    json_object_set_new(middleware_config, "database", json_string("express-test"));
+    json_object_set_new(middleware_config, "database", json_string("wp-test"));
     json_object_set_new(middleware_config, "user", json_string("postgres"));
     json_object_set_new(middleware_config, "password", json_string("postgres"));
     json_object_set_new(middleware_config, "ssl", json_boolean(false));
@@ -118,7 +118,7 @@ static void test_pg_middleware_parameterized_query(void) {
     json_t *middleware_config = json_object();
     json_object_set_new(middleware_config, "host", json_string("localhost"));
     json_object_set_new(middleware_config, "port", json_string("5432"));
-    json_object_set_new(middleware_config, "database", json_string("express-test"));
+    json_object_set_new(middleware_config, "database", json_string("wp-test"));
     json_object_set_new(middleware_config, "user", json_string("postgres"));
     json_object_set_new(middleware_config, "password", json_string("postgres"));
     json_object_set_new(middleware_config, "ssl", json_boolean(false));
@@ -159,7 +159,7 @@ static void test_pg_middleware_sql_error_handling(void) {
     json_t *middleware_config = json_object();
     json_object_set_new(middleware_config, "host", json_string("localhost"));
     json_object_set_new(middleware_config, "port", json_string("5432"));
-    json_object_set_new(middleware_config, "database", json_string("express-test"));
+    json_object_set_new(middleware_config, "database", json_string("wp-test"));
     json_object_set_new(middleware_config, "user", json_string("postgres"));
     json_object_set_new(middleware_config, "password", json_string("postgres"));
     json_object_set_new(middleware_config, "ssl", json_boolean(false));
