@@ -628,8 +628,8 @@ static json_t *handle_logout(json_t *input, void *arena, arena_alloc_func alloc_
         fprintf(stderr, "Warning: Session deletion failed during logout\n");
     }
     
-    // Create response with clear cookie
-    json_t *result = json_deep_copy(input);
+    // Create response with clear cookie (modify input in place)
+    json_t *result = input;
     char *clear_cookie = create_clear_cookie(arena, alloc_func);
     if (clear_cookie) {
         json_t *set_cookies = json_object_get(result, "setCookies");
@@ -705,8 +705,8 @@ static json_t *handle_register(json_t *input, void *arena, arena_alloc_func allo
     
     json_t *created_user = json_array_get(rows, 0);
     
-    // Create response with user data
-    json_t *result = json_deep_copy(input);
+    // Create response with user data (modify input in place)
+    json_t *result = input;
     json_t *user_obj = json_object();
     json_object_set_new(user_obj, "id", json_copy(json_object_get(created_user, "id")));
     json_object_set_new(user_obj, "login", json_copy(json_object_get(created_user, "login")));
@@ -756,8 +756,8 @@ static json_t *handle_required_auth(json_t *input, void *arena, arena_alloc_func
     
     json_t *session_data = json_array_get(rows, 0);
     
-    // Add user to request
-    json_t *result = json_deep_copy(input);
+    // Add user to request (modify input in place)
+    json_t *result = input;
     json_t *user_obj = json_object();
     json_object_set_new(user_obj, "id", json_copy(json_object_get(session_data, "user_id")));
     json_object_set_new(user_obj, "login", json_copy(json_object_get(session_data, "login")));
@@ -774,39 +774,39 @@ static json_t *handle_optional_auth(json_t *input, void *arena, arena_alloc_func
     json_t *cookies = json_object_get(input, "cookies");
     if (!cookies) {
         // No cookies, return input as-is
-        return json_deep_copy(input);
+        return input;
     }
     
     json_t *session_cookie = json_object_get(cookies, get_cookie_name());
     if (!session_cookie) {
         // No session cookie, return input as-is
-        return json_deep_copy(input);
+        return input;
     }
     
     const char *session_token = json_string_value(session_cookie);
     if (!session_token) {
         // Invalid session cookie, return input as-is
-        return json_deep_copy(input);
+        return input;
     }
     
     // Try to get session by token
     json_t *session_result = find_session_by_token_db(session_token, arena, alloc_func);
     if (!session_result || webpipe_has_errors(session_result)) {
         // Session lookup failed, return input as-is
-        return json_deep_copy(input);
+        return input;
     }
     
     // Extract session data from result
     json_t *rows = json_object_get(session_result, "rows");
     if (!rows || json_array_size(rows) == 0) {
         // No valid session, return input as-is
-        return json_deep_copy(input);
+        return input;
     }
     
     json_t *session_data = json_array_get(rows, 0);
     
-    // Add user to request
-    json_t *result = json_deep_copy(input);
+    // Add user to request (modify input in place)
+    json_t *result = input;
     json_t *user_obj = json_object();
     json_object_set_new(user_obj, "id", json_copy(json_object_get(session_data, "user_id")));
     json_object_set_new(user_obj, "login", json_copy(json_object_get(session_data, "login")));

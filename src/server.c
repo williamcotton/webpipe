@@ -728,7 +728,7 @@ static enum MHD_Result find_and_process_route(struct MHD_Connection *connection,
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
                                 json_t **final_response, int *response_code, char **content_type) {
     json_t *current = request;
-    json_t *original_request = json_deep_copy(request); // Store original request
+    json_t *original_request = request; // Store original request
     *response_code = 200; // Default
     *content_type = arena_strdup(arena, "application/json"); // Default content type
     
