@@ -214,10 +214,6 @@ else ifeq ($(PLATFORM),DARWIN)
 	$(TIDY) --checks=-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,-clang-diagnostic-unused-command-line-argument,-clang-diagnostic-disabled-macro-expansion -warnings-as-errors=* $(SRC_DIR)/*.c $(MIDDLEWARE_DIR)/*.c -- $(CFLAGS) $(SANITIZE_FLAGS)
 endif
 
-# Original test command
-test-wp: $(BUILD_DIR)/wp
-	$(BUILD_DIR)/wp -f test.wp
-
 # Run server
 run: $(BUILD_DIR)/wp install-middleware
 	$(BUILD_DIR)/wp test.wp
