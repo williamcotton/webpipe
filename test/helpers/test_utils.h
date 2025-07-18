@@ -32,6 +32,7 @@ void assert_arena_used(MemoryArena *arena, size_t expected_used);
 json_t *create_test_request(const char *method, const char *url);
 json_t *create_test_request_with_params(const char *method, const char *url, json_t *params);
 json_t *create_test_request_with_body(const char *method, const char *url, json_t *body);
+json_t *create_test_request_with_cookies(const char *method, const char *url, json_t *cookies);
 json_t *parse_json_string(const char *json_str);
 char *json_to_string(json_t *json);
 

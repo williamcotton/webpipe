@@ -99,6 +99,12 @@ json_t *create_test_request_with_body(const char *method, const char *url, json_
     return request;
 }
 
+json_t *create_test_request_with_cookies(const char *method, const char *url, json_t *cookies) {
+    json_t *request = create_test_request(method, url);
+    json_object_set(request, "cookies", cookies);
+    return request;
+}
+
 json_t *parse_json_string(const char *json_str) {
     json_error_t error;
     json_t *json = json_loads(json_str, 0, &error);
