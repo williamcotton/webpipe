@@ -5,8 +5,13 @@
 #include <unistd.h>
 #include <libgen.h>
 #include <getopt.h>
+#include <sys/stat.h>
+#include <time.h>
 #include "wp.h"
 #include "../deps/dotenv-c/dotenv.h"
+
+#define MAX_PATH_LENGTH 4096
+#define MAX_INCLUDES 100
 
 // Execution modes
 typedef enum {
@@ -15,6 +20,17 @@ typedef enum {
     WP_MODE_TEST,
     WP_MODE_TIMEOUT
 } wp_execution_mode_t;
+
+// File modification tracking
+typedef struct {
+    char filepath[MAX_PATH_LENGTH];
+    time_t last_mod_time;
+} FileModInfo;
+
+typedef struct {
+    FileModInfo files[MAX_INCLUDES];
+    int count;
+} ModificationTracker;
 
 // Global variables for signal handling
 static volatile int shutdown_requested = 0;
@@ -31,6 +47,35 @@ static void timeout_handler(int signum) {
     (void)signum; // Suppress unused parameter warning
     printf("Timeout reached, shutting down...\n");
     shutdown_requested = 1;
+}
+
+// File modification tracking functions
+static time_t get_file_mod_time(const char* path) {
+    struct stat attr;
+    if (stat(path, &attr) == 0) {
+        return attr.st_mtime;
+    }
+    return 0;
+}
+
+static void init_mod_tracker(ModificationTracker* tracker, const char* main_file) {
+    tracker->count = 1;
+    strncpy(tracker->files[0].filepath, main_file, MAX_PATH_LENGTH - 1);
+    tracker->files[0].filepath[MAX_PATH_LENGTH - 1] = '\0';
+    tracker->files[0].last_mod_time = 0;  // Initialize to 0 to force first load
+}
+
+static int check_modifications(ModificationTracker* tracker) {
+    int modified = 0;
+    for (int i = 0; i < tracker->count; i++) {
+        time_t current_mod = get_file_mod_time(tracker->files[i].filepath);
+        if (current_mod > tracker->files[i].last_mod_time) {
+            printf("\nFile modified: %s\n", tracker->files[i].filepath);
+            tracker->files[i].last_mod_time = current_mod;
+            modified = 1;
+        }
+    }
+    return modified;
 }
 
 // Initialize environment variables from .env file
@@ -159,39 +204,28 @@ static void setup_signal_handlers(wp_execution_mode_t mode) {
 }
 
 // Wait for shutdown based on execution mode
-static void wait_for_shutdown(wp_execution_mode_t mode, int port) {
-    switch (mode) {
-        case WP_MODE_INTERACTIVE:
-            printf("WP Runtime started on port %d\n", port);
-            printf("Press Ctrl+C to stop...\n");
-            while (!shutdown_requested) {
-                sleep(1);
-            }
-            printf("Shutdown signal received, stopping...\n");
-            break;
-            
-        case WP_MODE_DAEMON:
-            printf("WP Runtime started in daemon mode on port %d\n", port);
-            while (!shutdown_requested) {
-                sleep(1);
-            }
-            printf("Shutdown signal received, stopping...\n");
-            break;
-            
-        case WP_MODE_TEST:
-            printf("WP Runtime started in test mode on port %d\n", port);
-            while (!shutdown_requested) {
-                sleep(1);
-            }
-            break;
-            
-        case WP_MODE_TIMEOUT:
-            printf("WP Runtime started with %d second timeout on port %d\n", timeout_seconds, port);
-            while (!shutdown_requested) {
-                sleep(1);
-            }
-            break;
+static void wait_for_shutdown(wp_execution_mode_t mode, int port, int watch_enabled, ModificationTracker* mod_tracker, const char* wp_file) {
+    (void)mode;
+    printf("WP Runtime started on port %d\n", port);
+    printf("Press Ctrl+C to stop...\n");
+    if (watch_enabled) {
+        printf("File monitoring enabled\n");
     }
+    while (!shutdown_requested) {
+        if (watch_enabled && check_modifications(mod_tracker)) {
+            printf("Reloading server configuration...\n");
+            // Hot reload will be implemented in Phase 3
+            wp_runtime_cleanup();
+            if (wp_runtime_init(wp_file, port) != 0) {
+                fprintf(stderr, "Failed to reload server, shutting down\n");
+                shutdown_requested = 1;
+            } else {
+                printf("Server reloaded successfully\n");
+            }
+        }
+        usleep(100000); // 100ms sleep for responsive file monitoring
+    }
+    printf("Shutdown signal received, stopping...\n");
 }
 
 // Main function
@@ -208,13 +242,19 @@ int main(int argc, char *argv[]) {
     // Initialize environment variables from .env file
     initialize_environment(wp_file);
     
+    // Initialize file modification tracker
+    ModificationTracker mod_tracker = {0};
+    if (watch_enabled) {
+        init_mod_tracker(&mod_tracker, wp_file);
+    }
+    
     // Server mode - run the runtime
     if (wp_runtime_init(wp_file, port) != 0) {
         return 1;
     }
     
     // Wait for shutdown based on mode
-    wait_for_shutdown(mode, port);
+    wait_for_shutdown(mode, port, watch_enabled, &mod_tracker, wp_file);
     
     // Cleanup
     wp_runtime_cleanup();
