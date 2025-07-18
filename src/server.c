@@ -396,6 +396,16 @@ static enum MHD_Result form_data_iterator(void *cls, enum MHD_ValueKind kind,
     return MHD_YES;
 }
 
+// Helper function to collect query parameters
+static enum MHD_Result query_iterator(void *cls, enum MHD_ValueKind kind, const char *key, const char *value) {
+    (void)kind; // unused parameter
+    json_t *query_obj = (json_t *)cls;
+    if (key && value) {
+        json_object_set_new(query_obj, key, json_string(value));
+    }
+    return MHD_YES;
+}
+
 // Helper function to parse cookies from Cookie header
 json_t *parse_cookies(const char *cookie_header) {
     json_t *cookies = json_object();
@@ -470,8 +480,9 @@ json_t *create_request_json(struct MHD_Connection *connection,
     json_t *params = json_object();
     json_object_set_new(request, "params", params);
     
-    // Parse query string
+    // Parse query string using MHD
     json_t *query = json_object();
+    MHD_get_connection_values(connection, MHD_GET_ARGUMENT_KIND, query_iterator, query);
     json_object_set_new(request, "query", query);
     
     // Parse cookies from Cookie header
