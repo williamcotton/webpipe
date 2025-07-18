@@ -47,7 +47,8 @@ void setUp(void) {
 
 void tearDown(void) {
     // Tear down function called after each test
-    unload_auth_middleware();
+    // Don't unload the middleware after each test - keep it loaded
+    // to avoid crashes from repeated dlclose() calls
 }
 
 static void test_auth_middleware_login_missing_body(void) {
@@ -245,8 +246,13 @@ static void test_auth_middleware_optional_auth_no_cookies(void) {
     json_t *user = json_object_get(output, "user");
     TEST_ASSERT_NULL(user);
     
-    json_decref(input);
-    json_decref(output);
+    // Only decref if input and output are different objects
+    if (input != output) {
+        json_decref(input);
+        json_decref(output);
+    } else {
+        json_decref(input);
+    }
     destroy_test_arena(arena);
 }
 
@@ -272,8 +278,13 @@ static void test_auth_middleware_optional_auth_no_session_cookie(void) {
     TEST_ASSERT_NULL(user);
     
     json_decref(cookies);
-    json_decref(input);
-    json_decref(output);
+    // Only decref if input and output are different objects
+    if (input != output) {
+        json_decref(input);
+        json_decref(output);
+    } else {
+        json_decref(input);
+    }
     destroy_test_arena(arena);
 }
 
@@ -432,5 +443,10 @@ int main(void) {
     RUN_TEST(test_auth_middleware_invalid_config);
     RUN_TEST(test_auth_middleware_null_config);
     
-    return UNITY_END();
+    int result = UNITY_END();
+    
+    // Clean up the middleware at the end of all tests
+    unload_auth_middleware();
+    
+    return result;
 }
