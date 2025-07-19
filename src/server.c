@@ -406,6 +406,16 @@ static enum MHD_Result query_iterator(void *cls, enum MHD_ValueKind kind, const 
     return MHD_YES;
 }
 
+// Helper function to collect headers
+static enum MHD_Result header_iterator(void *cls, enum MHD_ValueKind kind, const char *key, const char *value) {
+    (void)kind; // unused parameter
+    json_t *headers_obj = (json_t *)cls;
+    if (key && value) {
+        json_object_set_new(headers_obj, key, json_string(value));
+    }
+    return MHD_YES;
+}
+
 // Helper function to parse cookies from Cookie header
 json_t *parse_cookies(const char *cookie_header) {
     json_t *cookies = json_object();
@@ -518,6 +528,7 @@ json_t *create_request_json(struct MHD_Connection *connection,
     
     // Headers
     json_t *headers = json_object();
+    MHD_get_connection_values(connection, MHD_HEADER_KIND, header_iterator, headers);
     json_object_set_new(request, "headers", headers);
     
     return request;
