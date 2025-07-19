@@ -57,7 +57,7 @@ bool parser_match(Parser *parser, TokenType type) {
 }
 
 void parser_consume_newlines(Parser *parser) {
-  while (parser_match(parser, TOKEN_NEWLINE)) {
+  while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
   }
 }
 
@@ -708,7 +708,7 @@ ASTNode *parser_parse(Parser *parser) {
   program->data.program.statement_count = 0;
 
   while (!parser_is_at_end(parser)) {
-    if (parser_match(parser, TOKEN_NEWLINE))
+    if (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT))
       continue;
 
     ASTNode *stmt = parser_parse_statement(parser);

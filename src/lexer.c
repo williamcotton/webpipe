@@ -174,6 +174,25 @@ Token lexer_read_number(Lexer *lexer) {
   return token;
 }
 
+Token lexer_read_comment(Lexer *lexer) {
+  lexer_advance(lexer); // Skip '#'
+  int start = lexer->current;
+
+  // Read until end of line or end of file
+  while (lexer_peek(lexer) != '\0' && lexer_peek(lexer) != '\n') {
+    lexer_advance(lexer);
+  }
+
+  int length = lexer->current - start;
+  char *value = malloc((size_t)length + 1);
+  strncpy(value, lexer->source + start, (size_t)length);
+  value[length] = '\0';
+
+  Token token = lexer_make_token(lexer, TOKEN_COMMENT, value);
+  free(value);
+  return token;
+}
+
 Token lexer_next_token(Lexer *lexer) {
   // Skip whitespace except newlines
   while (isspace(lexer_peek(lexer)) && lexer_peek(lexer) != '\n') {
@@ -266,6 +285,10 @@ Token lexer_next_token(Lexer *lexer) {
 
   if (c == '"') {
     return lexer_read_string(lexer);
+  }
+
+  if (c == '#') {
+    return lexer_read_comment(lexer);
   }
 
   if (c == '/') {

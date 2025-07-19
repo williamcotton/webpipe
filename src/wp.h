@@ -46,7 +46,8 @@ typedef enum {
   TOKEN_RBRACKET,
   TOKEN_TRUE,
   TOKEN_FALSE,
-  TOKEN_NULL
+  TOKEN_NULL,
+  TOKEN_COMMENT
 } TokenType;
 
 // Token structure
@@ -200,6 +201,7 @@ Token lexer_read_string(Lexer *lexer);
 Token lexer_read_identifier(Lexer *lexer);
 Token lexer_read_route(Lexer *lexer);
 Token lexer_read_number(Lexer *lexer);
+Token lexer_read_comment(Lexer *lexer);
 Token lexer_next_token(Lexer *lexer);
 Token *lexer_tokenize(const char *source, int *token_count);
 Parser *parser_new(Token *tokens, int token_count);
