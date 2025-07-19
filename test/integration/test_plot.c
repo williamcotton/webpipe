@@ -304,6 +304,128 @@ static void test_plot_svg_structure_validity(void) {
     json_decref(result);
 }
 
+static void test_plot_bar_chart(void) {
+    // Create bar chart test data
+    json_t *input = json_object();
+    json_t *data_array = json_array();
+    
+    // Add bar data points
+    for (int i = 1; i <= 4; i++) {
+        json_t *point = json_array();
+        json_array_append_new(point, json_integer(i));
+        json_array_append_new(point, json_integer(i * 25));
+        json_array_append_new(data_array, point);
+    }
+    
+    json_object_set_new(input, "data", data_array);
+    
+    const char *plot_spec = "data(.data) + geom_bar()";
+    json_t *result = execute_plot_middleware(plot_spec, input);
+    
+    TEST_ASSERT_NOT_NULL_MESSAGE(result, "Should return result for bar chart");
+    TEST_ASSERT_TRUE_MESSAGE(json_is_string(result), "Result should be SVG string");
+    
+    const char *svg_content = json_string_value(result);
+    TEST_ASSERT_NOT_NULL_MESSAGE(svg_content, "SVG content should not be null");
+    
+    // Check for rectangle elements (bars)
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(svg_content, "<rect"), "Should contain rect elements for bars");
+    
+    json_decref(input);
+    json_decref(result);
+}
+
+static void test_plot_area_chart(void) {
+    // Create area chart test data
+    json_t *input = json_object();
+    json_t *data_array = json_array();
+    
+    // Add area data points
+    for (int i = 1; i <= 5; i++) {
+        json_t *point = json_array();
+        json_array_append_new(point, json_integer(i));
+        json_array_append_new(point, json_integer(i * 10 + 5));
+        json_array_append_new(data_array, point);
+    }
+    
+    json_object_set_new(input, "data", data_array);
+    
+    const char *plot_spec = "data(.data) + geom_area()";
+    json_t *result = execute_plot_middleware(plot_spec, input);
+    
+    TEST_ASSERT_NOT_NULL_MESSAGE(result, "Should return result for area chart");
+    TEST_ASSERT_TRUE_MESSAGE(json_is_string(result), "Result should be SVG string");
+    
+    const char *svg_content = json_string_value(result);
+    TEST_ASSERT_NOT_NULL_MESSAGE(svg_content, "SVG content should not be null");
+    
+    // Check for path elements (area fill)
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(svg_content, "<path"), "Should contain path elements for area");
+    
+    json_decref(input);
+    json_decref(result);
+}
+
+static void test_plot_object_data_format(void) {
+    // Create object-format test data
+    json_t *input = json_object();
+    json_t *data_array = json_array();
+    
+    // Add object-format data points
+    for (int i = 1; i <= 3; i++) {
+        json_t *point = json_object();
+        json_object_set_new(point, "x", json_integer(i));
+        json_object_set_new(point, "y", json_integer(i * 20));
+        json_object_set_new(point, "category", json_string("test"));
+        json_array_append_new(data_array, point);
+    }
+    
+    json_object_set_new(input, "data", data_array);
+    
+    const char *plot_spec = "data(.data) + geom_bar()";
+    json_t *result = execute_plot_middleware(plot_spec, input);
+    
+    TEST_ASSERT_NOT_NULL_MESSAGE(result, "Should handle object format data");
+    TEST_ASSERT_TRUE_MESSAGE(json_is_string(result), "Result should be SVG string");
+    
+    const char *svg_content = json_string_value(result);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(svg_content, "<rect"), "Should render bars from object data");
+    
+    json_decref(input);
+    json_decref(result);
+}
+
+static void test_plot_labels_support(void) {
+    // Create test data with labels
+    json_t *input = json_object();
+    json_t *data_array = json_array();
+    
+    json_t *point = json_array();
+    json_array_append_new(point, json_integer(1));
+    json_array_append_new(point, json_integer(10));
+    json_array_append_new(data_array, point);
+    
+    json_object_set_new(input, "data", data_array);
+    json_object_set_new(input, "chartTitle", json_string("Test Chart"));
+    
+    const char *plot_spec = "data(.data) + geom_point() + labs(title = chartTitle, x = \"X Axis\", y = \"Y Axis\")";
+    json_t *result = execute_plot_middleware(plot_spec, input);
+    
+    TEST_ASSERT_NOT_NULL_MESSAGE(result, "Should return result with labels");
+    TEST_ASSERT_TRUE_MESSAGE(json_is_string(result), "Result should be SVG string");
+    
+    const char *svg_content = json_string_value(result);
+    
+    // Check for text elements (labels)
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(svg_content, "<text"), "Should contain text elements for labels");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(svg_content, "Test Chart"), "Should contain title text");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(svg_content, "X Axis"), "Should contain x-axis label");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(svg_content, "Y Axis"), "Should contain y-axis label");
+    
+    json_decref(input);
+    json_decref(result);
+}
+
 // Test runner
 int main(void) {
     UNITY_BEGIN();
@@ -318,6 +440,10 @@ int main(void) {
     RUN_TEST(test_plot_no_geometry_returns_error);
     RUN_TEST(test_plot_content_type_is_svg);
     RUN_TEST(test_plot_svg_structure_validity);
+    RUN_TEST(test_plot_bar_chart);
+    RUN_TEST(test_plot_area_chart);
+    RUN_TEST(test_plot_object_data_format);
+    RUN_TEST(test_plot_labels_support);
     
     return UNITY_END();
 }

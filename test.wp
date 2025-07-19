@@ -425,6 +425,62 @@ GET /plot/demo-bar-vs-line
     title: "Bar Chart with Trend Line"
   }`
   |> plot: `data(.data) + geom_bar() + geom_line()`
+
+GET /plot/demo-with-labels
+  |> jq: `{
+    data: [[1,25], [2,40], [3,35], [4,55], [5,45]],
+    chartTitle: "Monthly Revenue Growth",
+    xAxisLabel: "Month",
+    yAxisLabel: "Revenue ($K)"
+  }`
+  |> plot: `data(.data) + geom_bar() + labs(title = chartTitle, x = xAxisLabel, y = yAxisLabel)`
+
+GET /plot/demo-static-labels
+  |> jq: `{
+    data: [[1,120], [2,150], [3,135], [4,180], [5,165]]
+  }`
+  |> plot: `data(.data) + geom_line() + geom_point() + labs(title = "Sales Performance Q1", x = "Week", y = "Sales ($K)")`
+
+GET /plot/demo-object-data
+  |> jq: `{
+    salesData: [
+      {x: 1, y: 25, category: "Q1"},
+      {x: 2, y: 40, category: "Q2"}, 
+      {x: 3, y: 35, category: "Q3"},
+      {x: 4, y: 55, category: "Q4"}
+    ]
+  }`
+  |> plot: `data(.salesData) + geom_bar() + labs(title = "Quarterly Sales (Object Format)", x = "Quarter", y = "Sales ($K)")`
+
+GET /plot/demo-mixed-object
+  |> jq: `{
+    revenue: [
+      {x: 1, y: 100},
+      {x: 2, y: 150},
+      {x: 3, y: 120},
+      {x: 4, y: 180}
+    ]
+  }`
+  |> plot: `data(.revenue) + geom_line() + geom_point() + labs(title = "Revenue Trend (Objects)", x = "Month", y = "Revenue ($K)")`
+
+GET /plot/demo-area
+  |> jq: `{
+    data: [[1,20], [2,35], [3,30], [4,45], [5,40], [6,25]]
+  }`
+  |> plot: `data(.data) + geom_area() + labs(title = "Area Chart Demo", x = "Time", y = "Value")`
+
+GET /plot/demo-area-with-line
+  |> jq: `{
+    trend: [
+      {x: 1, y: 50},
+      {x: 2, y: 75},
+      {x: 3, y: 60},
+      {x: 4, y: 85},
+      {x: 5, y: 90},
+      {x: 6, y: 70}
+    ]
+  }`
+  |> plot: `data(.trend) + geom_area() + geom_line() + labs(title = "Sales Trend with Area", x = "Month", y = "Sales ($K)")`
   
 ## Todos App
 

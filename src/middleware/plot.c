@@ -36,6 +36,7 @@ typedef enum {
     PLOT_TOKEN_GEOM_POINT,
     PLOT_TOKEN_GEOM_LINE,
     PLOT_TOKEN_GEOM_BAR,
+    PLOT_TOKEN_GEOM_AREA,
     PLOT_TOKEN_LABS,
     PLOT_TOKEN_THEME
 } PlotTokenType;
@@ -72,7 +73,8 @@ typedef struct {
 typedef enum {
     GEOM_POINT,
     GEOM_LINE,
-    GEOM_BAR
+    GEOM_BAR,
+    GEOM_AREA
 } GeomType;
 
 typedef struct PlotLayer {
@@ -208,6 +210,15 @@ static void svg_rect(SVGBuilder *svg, double x, double y, double width, double h
         x, y, width, height, 
         fill ? fill : "none", stroke ? stroke : "none", stroke_width);
     svg_append(svg, rect);
+}
+
+static void svg_path(SVGBuilder *svg, const char *path_data, const char *fill, 
+                    const char *stroke, double stroke_width) {
+    char path[1024];
+    snprintf(path, sizeof(path),
+        "<path d=\"%s\" fill=\"%s\" stroke=\"%s\" stroke-width=\"%.2f\"/>\n",
+        path_data, fill ? fill : "none", stroke ? stroke : "none", stroke_width);
+    svg_append(svg, path);
 }
 
 // Lexer functions
@@ -363,6 +374,7 @@ static PlotLexer *plot_tokenize(const char *input, void *arena, arena_alloc_func
                     else if (strcmp(ident, "geom_point") == 0) type = PLOT_TOKEN_GEOM_POINT;
                     else if (strcmp(ident, "geom_line") == 0) type = PLOT_TOKEN_GEOM_LINE;
                     else if (strcmp(ident, "geom_bar") == 0) type = PLOT_TOKEN_GEOM_BAR;
+                    else if (strcmp(ident, "geom_area") == 0) type = PLOT_TOKEN_GEOM_AREA;
                     else if (strcmp(ident, "labs") == 0) type = PLOT_TOKEN_LABS;
                     else if (strncmp(ident, "theme_", 6) == 0) type = PLOT_TOKEN_THEME;
                 }
@@ -444,6 +456,16 @@ static PlotData *extract_plot_data(json_t *input, const char *data_field,
             json_t *y_val = json_array_get(point, 1);
             
             if (json_is_number(x_val) && json_is_number(y_val)) {
+                data->x_values[data->count] = json_number_value(x_val);
+                data->y_values[data->count] = json_number_value(y_val);
+                data->count++;
+            }
+        } else if (json_is_object(point)) {
+            // Object format: {x: 1, y: 10, ...}
+            json_t *x_val = json_object_get(point, data->x_field);
+            json_t *y_val = json_object_get(point, data->y_field);
+            
+            if (x_val && y_val && json_is_number(x_val) && json_is_number(y_val)) {
                 data->x_values[data->count] = json_number_value(x_val);
                 data->y_values[data->count] = json_number_value(y_val);
                 data->count++;
@@ -560,6 +582,43 @@ static void render_plot(SVGBuilder *svg, PlotSpec *spec) {
                     svg_rect(svg, bar_x, bar_y, bar_width, bar_height, "steelblue", "steelblue", 1.0);
                 }
             }
+            
+            // Draw area for area geom
+            if (layer->type == GEOM_AREA && layer->data->count > 1) {
+                // Build path data for area fill
+                char path_data[2048];
+                size_t path_pos = 0;
+                
+                // Start from bottom-left of first point
+                double first_x = layer->data->x_values[0];
+                double first_px = plot_x + ((first_x - min_x) / (max_x - min_x)) * plot_w;
+                double baseline_py = plot_y + plot_h;
+                
+                path_pos += (size_t)snprintf(path_data + path_pos, sizeof(path_data) - path_pos,
+                                   "M %.2f %.2f", first_px, baseline_py);
+                
+                // Draw line to each data point
+                for (size_t i = 0; i < layer->data->count; i++) {
+                    double x = layer->data->x_values[i];
+                    double y = layer->data->y_values[i];
+                    
+                    double px = plot_x + ((x - min_x) / (max_x - min_x)) * plot_w;
+                    double py = plot_y + plot_h - ((y - min_y) / (max_y - min_y)) * plot_h;
+                    
+                    path_pos += (size_t)snprintf(path_data + path_pos, sizeof(path_data) - path_pos,
+                                       " L %.2f %.2f", px, py);
+                }
+                
+                // Close the path back to baseline
+                double last_x = layer->data->x_values[layer->data->count - 1];
+                double last_px = plot_x + ((last_x - min_x) / (max_x - min_x)) * plot_w;
+                
+                snprintf(path_data + path_pos, sizeof(path_data) - path_pos,
+                        " L %.2f %.2f Z", last_px, baseline_py);
+                
+                // Render the filled area
+                svg_path(svg, path_data, "lightsteelblue", "steelblue", 1.0);
+            }
         }
         layer = layer->next;
     }
@@ -567,6 +626,18 @@ static void render_plot(SVGBuilder *svg, PlotSpec *spec) {
     // Add title if present
     if (spec->title) {
         svg_text(svg, spec->width / 2, 30, spec->title, "Arial", 16);
+    }
+    
+    // Add axis labels if present
+    if (spec->x_label) {
+        // X-axis label at bottom center
+        svg_text(svg, spec->width / 2, spec->height - 10, spec->x_label, "Arial", 12);
+    }
+    
+    if (spec->y_label) {
+        // Y-axis label on left side, rotated (for now, just positioned vertically)
+        // TODO: Add text rotation support for proper Y-axis label
+        svg_text(svg, 15, spec->height / 2, spec->y_label, "Arial", 12);
     }
     
     svg_end(svg);
@@ -650,12 +721,68 @@ json_t *middleware_execute(json_t *input, void *arena,
         return create_error("plotError", "Failed to extract data from input", "Check data(.field) specification");
     }
     
+    // Look for labs() and extract labels
+    for (size_t i = 0; i < lexer->count; i++) {
+        if (lexer->tokens[i].type == PLOT_TOKEN_LABS) {
+            // Expect: labs ( ... )
+            if (i + 1 < lexer->count && lexer->tokens[i + 1].type == PLOT_TOKEN_LPAREN) {
+                // Find the matching closing parenthesis
+                size_t j = i + 2;
+                int paren_count = 1;
+                while (j < lexer->count && paren_count > 0) {
+                    if (lexer->tokens[j].type == PLOT_TOKEN_LPAREN) paren_count++;
+                    if (lexer->tokens[j].type == PLOT_TOKEN_RPAREN) paren_count--;
+                    j++;
+                }
+                
+                // Parse parameters between parentheses
+                for (size_t k = i + 2; k < j - 1; k++) {
+                    if (lexer->tokens[k].type == PLOT_TOKEN_IDENTIFIER) {
+                        const char *param_name = lexer->tokens[k].value;
+                        if (param_name && k + 2 < j - 1 && 
+                            lexer->tokens[k + 1].type == PLOT_TOKEN_EQUALS) {
+                            
+                            if (lexer->tokens[k + 2].type == PLOT_TOKEN_STRING) {
+                                // String literal value
+                                const char *value = lexer->tokens[k + 2].value;
+                                if (strcmp(param_name, "title") == 0) {
+                                    spec->title = arena_strdup(arena, alloc_func, value);
+                                } else if (strcmp(param_name, "x") == 0) {
+                                    spec->x_label = arena_strdup(arena, alloc_func, value);
+                                } else if (strcmp(param_name, "y") == 0) {
+                                    spec->y_label = arena_strdup(arena, alloc_func, value);
+                                }
+                            } else if (lexer->tokens[k + 2].type == PLOT_TOKEN_IDENTIFIER) {
+                                // Field reference - extract from input JSON
+                                const char *field_name = lexer->tokens[k + 2].value;
+                                json_t *field_value = json_object_get(input, field_name);
+                                if (field_value && json_is_string(field_value)) {
+                                    const char *value = json_string_value(field_value);
+                                    if (strcmp(param_name, "title") == 0) {
+                                        spec->title = arena_strdup(arena, alloc_func, value);
+                                    } else if (strcmp(param_name, "x") == 0) {
+                                        spec->x_label = arena_strdup(arena, alloc_func, value);
+                                    } else if (strcmp(param_name, "y") == 0) {
+                                        spec->y_label = arena_strdup(arena, alloc_func, value);
+                                    }
+                                }
+                            }
+                            k += 2; // Skip the = and value tokens
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    
     // Look for geometries and create layers
     PlotLayer *last_layer = NULL;
     for (size_t i = 0; i < lexer->count; i++) {
         if (lexer->tokens[i].type == PLOT_TOKEN_GEOM_POINT || 
             lexer->tokens[i].type == PLOT_TOKEN_GEOM_LINE ||
-            lexer->tokens[i].type == PLOT_TOKEN_GEOM_BAR) {
+            lexer->tokens[i].type == PLOT_TOKEN_GEOM_BAR ||
+            lexer->tokens[i].type == PLOT_TOKEN_GEOM_AREA) {
             
             PlotLayer *layer = alloc_func(arena, sizeof(PlotLayer));
             if (!layer) continue;
@@ -666,6 +793,8 @@ json_t *middleware_execute(json_t *input, void *arena,
                 layer->type = GEOM_LINE;
             } else if (lexer->tokens[i].type == PLOT_TOKEN_GEOM_BAR) {
                 layer->type = GEOM_BAR;
+            } else if (lexer->tokens[i].type == PLOT_TOKEN_GEOM_AREA) {
+                layer->type = GEOM_AREA;
             }
             layer->data = spec->data; // For now, use the same data
             layer->params = NULL; // No parameters needed for basic geometries
