@@ -404,6 +404,27 @@ GET /plot/demo-combined
     title: "Combined Point and Line Demo"
   }`
   |> plot: `data(.data) + geom_point() + geom_line()`
+
+GET /plot/demo-bar
+  |> jq: `{
+    data: [[1,25], [2,40], [3,30], [4,55], [5,35]],
+    title: "Bar Chart Demo"
+  }`
+  |> plot: `data(.data) + geom_bar()`
+
+GET /plot/demo-bar-quarterly
+  |> jq: `{
+    data: [[1,120], [2,150], [3,135], [4,180]],
+    title: "Quarterly Sales ($K)"
+  }`
+  |> plot: `data(.data) + geom_bar()`
+
+GET /plot/demo-bar-vs-line
+  |> jq: `{
+    data: [[1,50], [2,75], [3,60], [4,90], [5,65]],
+    title: "Bar Chart with Trend Line"
+  }`
+  |> plot: `data(.data) + geom_bar() + geom_line()`
   
 ## Todos App
 

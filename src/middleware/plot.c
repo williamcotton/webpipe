@@ -35,6 +35,7 @@ typedef enum {
     PLOT_TOKEN_AES,
     PLOT_TOKEN_GEOM_POINT,
     PLOT_TOKEN_GEOM_LINE,
+    PLOT_TOKEN_GEOM_BAR,
     PLOT_TOKEN_LABS,
     PLOT_TOKEN_THEME
 } PlotTokenType;
@@ -70,7 +71,8 @@ typedef struct {
 
 typedef enum {
     GEOM_POINT,
-    GEOM_LINE
+    GEOM_LINE,
+    GEOM_BAR
 } GeomType;
 
 typedef struct PlotLayer {
@@ -195,6 +197,17 @@ static void svg_text(SVGBuilder *svg, double x, double y, const char *text,
         "<text x=\"%.2f\" y=\"%.2f\" font-family=\"%s\" font-size=\"%.2f\">%s</text>\n",
         x, y, font_family ? font_family : "Arial", font_size, text ? text : "");
     svg_append(svg, text_elem);
+}
+
+static void svg_rect(SVGBuilder *svg, double x, double y, double width, double height, 
+                    const char *fill, const char *stroke, double stroke_width) {
+    char rect[256];
+    snprintf(rect, sizeof(rect),
+        "<rect x=\"%.2f\" y=\"%.2f\" width=\"%.2f\" height=\"%.2f\" "
+        "fill=\"%s\" stroke=\"%s\" stroke-width=\"%.2f\"/>\n",
+        x, y, width, height, 
+        fill ? fill : "none", stroke ? stroke : "none", stroke_width);
+    svg_append(svg, rect);
 }
 
 // Lexer functions
@@ -349,6 +362,7 @@ static PlotLexer *plot_tokenize(const char *input, void *arena, arena_alloc_func
                     else if (strcmp(ident, "aes") == 0) type = PLOT_TOKEN_AES;
                     else if (strcmp(ident, "geom_point") == 0) type = PLOT_TOKEN_GEOM_POINT;
                     else if (strcmp(ident, "geom_line") == 0) type = PLOT_TOKEN_GEOM_LINE;
+                    else if (strcmp(ident, "geom_bar") == 0) type = PLOT_TOKEN_GEOM_BAR;
                     else if (strcmp(ident, "labs") == 0) type = PLOT_TOKEN_LABS;
                     else if (strncmp(ident, "theme_", 6) == 0) type = PLOT_TOKEN_THEME;
                 }
@@ -523,6 +537,29 @@ static void render_plot(SVGBuilder *svg, PlotSpec *spec) {
                     svg_line(svg, px1, py1, px2, py2, "steelblue", 2.0);
                 }
             }
+            
+            // Draw bars for bar geom
+            if (layer->type == GEOM_BAR && layer->data->count > 0) {
+                double bar_width = plot_w / (double)layer->data->count * 0.8; // 80% of available width
+                double bar_spacing = plot_w / (double)layer->data->count * 0.2; // 20% for spacing
+                
+                for (size_t i = 0; i < layer->data->count; i++) {
+                    double y = layer->data->y_values[i];
+                    
+                    // Calculate bar position and dimensions
+                    double bar_x = plot_x + (i * plot_w / (double)layer->data->count) + bar_spacing / 2.0;
+                    double bar_height = ((y - min_y) / (max_y - min_y)) * plot_h;
+                    double bar_y = plot_y + plot_h - bar_height;
+                    
+                    // Ensure bars don't have negative height
+                    if (bar_height < 0) {
+                        bar_height = 0;
+                        bar_y = plot_y + plot_h;
+                    }
+                    
+                    svg_rect(svg, bar_x, bar_y, bar_width, bar_height, "steelblue", "steelblue", 1.0);
+                }
+            }
         }
         layer = layer->next;
     }
@@ -617,12 +654,19 @@ json_t *middleware_execute(json_t *input, void *arena,
     PlotLayer *last_layer = NULL;
     for (size_t i = 0; i < lexer->count; i++) {
         if (lexer->tokens[i].type == PLOT_TOKEN_GEOM_POINT || 
-            lexer->tokens[i].type == PLOT_TOKEN_GEOM_LINE) {
+            lexer->tokens[i].type == PLOT_TOKEN_GEOM_LINE ||
+            lexer->tokens[i].type == PLOT_TOKEN_GEOM_BAR) {
             
             PlotLayer *layer = alloc_func(arena, sizeof(PlotLayer));
             if (!layer) continue;
             
-            layer->type = (lexer->tokens[i].type == PLOT_TOKEN_GEOM_POINT) ? GEOM_POINT : GEOM_LINE;
+            if (lexer->tokens[i].type == PLOT_TOKEN_GEOM_POINT) {
+                layer->type = GEOM_POINT;
+            } else if (lexer->tokens[i].type == PLOT_TOKEN_GEOM_LINE) {
+                layer->type = GEOM_LINE;
+            } else if (lexer->tokens[i].type == PLOT_TOKEN_GEOM_BAR) {
+                layer->type = GEOM_BAR;
+            }
             layer->data = spec->data; // For now, use the same data
             layer->params = NULL; // No parameters needed for basic geometries
             layer->next = NULL;
