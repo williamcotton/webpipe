@@ -613,6 +613,9 @@ static enum MHD_Result send_response(struct MHD_Connection *connection,
             }
         } else if (strcmp(content_type, "text/html") == 0 || 
                    strcmp(content_type, "text/plain") == 0 ||
+                   strcmp(content_type, "image/svg+xml") == 0 ||
+                   strcmp(content_type, "application/postscript") == 0 ||
+                   strcmp(content_type, "application/pdf") == 0 ||
                    strncmp(content_type, "text/", 5) == 0) {
             // HTML or text response - extract string from JSON
             if (json_is_string(json_data)) {

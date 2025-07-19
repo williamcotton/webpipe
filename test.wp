@@ -347,6 +347,42 @@ POST /debug/test-hash
     errors: .errors
   }`
 
+GET /analytics/chart
+  |> jq: `{
+    data: [[1,100], [2,150], [3,200], [4,175]],
+    title: "Q1 Sales Performance",
+    xlabel: "Week",
+    ylabel: "Sales ($K)"
+  }`
+  |> gnuplot: `
+    set terminal svg size 800,600
+    set output
+    set title "{title}"
+    set xlabel "{xlabel}"
+    set ylabel "{ylabel}"
+    plot "-" using 1:2 with lines title "Sales"
+    {data}
+    e
+  `
+  |> mustache: `
+    <img src="data:{{contentType}};base64,{{data}}" alt="Sales Chart">
+  `
+
+GET /canvas-chart
+  |> jq: `{
+    data: [[1,10], [2,20], [3,15]],
+    title: "Interactive Chart", 
+    contentType: "image/svg+xml"
+  }`
+  |> gnuplot: `
+    set terminal svg size 600,400
+    set output
+    set title "{title}"
+    plot "-" using 1:2 with lines title "Sales"
+    {data}
+    e
+  `
+  
 ## Todos App
 
 mustache baseLayout = `

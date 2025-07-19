@@ -76,7 +76,7 @@ else ifeq ($(PLATFORM),DARWIN)
 endif
 
 # Middleware targets
-middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so $(BUILD_DIR)/mustache.so $(BUILD_DIR)/validate.so $(BUILD_DIR)/auth.so
+middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so $(BUILD_DIR)/mustache.so $(BUILD_DIR)/validate.so $(BUILD_DIR)/auth.so $(BUILD_DIR)/gnuplot.so
 
 $(BUILD_DIR)/jq.so: $(MIDDLEWARE_DIR)/jq.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -ljq
@@ -95,6 +95,9 @@ $(BUILD_DIR)/validate.so: $(MIDDLEWARE_DIR)/validate.c
 
 $(BUILD_DIR)/auth.so: $(MIDDLEWARE_DIR)/auth.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -largon2
+
+$(BUILD_DIR)/gnuplot.so: $(MIDDLEWARE_DIR)/gnuplot.c
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson
 
 # Install middleware to runtime directory
 install-middleware: middleware
@@ -160,6 +163,9 @@ $(BUILD_DIR)/test_validate: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integ
 $(BUILD_DIR)/test_auth: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_auth.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_auth.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
+$(BUILD_DIR)/test_gnuplot: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_gnuplot.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_gnuplot.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
+
 $(BUILD_DIR)/test_server: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
@@ -171,7 +177,7 @@ $(BUILD_DIR)/test_perf: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/system/te
 
 # Test group targets
 TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_middleware $(BUILD_DIR)/test_cookies $(BUILD_DIR)/test_database_registry
-TEST_INTEGRATION_BINS = $(BUILD_DIR)/test_jq $(BUILD_DIR)/test_lua $(BUILD_DIR)/test_mustache $(BUILD_DIR)/test_mustache_partials $(BUILD_DIR)/test_pg $(BUILD_DIR)/test_pipeline $(BUILD_DIR)/test_validate $(BUILD_DIR)/test_auth
+TEST_INTEGRATION_BINS = $(BUILD_DIR)/test_jq $(BUILD_DIR)/test_lua $(BUILD_DIR)/test_mustache $(BUILD_DIR)/test_mustache_partials $(BUILD_DIR)/test_pg $(BUILD_DIR)/test_pipeline $(BUILD_DIR)/test_validate $(BUILD_DIR)/test_auth $(BUILD_DIR)/test_gnuplot
 TEST_SYSTEM_BINS = $(BUILD_DIR)/test_server $(BUILD_DIR)/test_e2e $(BUILD_DIR)/test_perf
 TEST_ALL_BINS = $(TEST_UNIT_BINS) $(TEST_INTEGRATION_BINS) $(TEST_SYSTEM_BINS)
 

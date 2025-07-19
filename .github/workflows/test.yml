@@ -42,7 +42,8 @@ jobs:
           postgresql-client \
           libbsd-dev \
           valgrind \
-          libargon2-dev
+          libargon2-dev \
+          gnuplot
 
     - name: Build application
       run: make all
@@ -114,7 +115,8 @@ jobs:
           jansson \
           jq \
           lua \
-          argon2
+          argon2 \
+          gnuplot
 
     - name: Start PostgreSQL
       run: |

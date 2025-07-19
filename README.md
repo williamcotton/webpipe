@@ -217,6 +217,110 @@ GET /hello-mustache
   `
 ```
 
+### Gnuplot Middleware
+Generates plots and charts using gnuplot scripts with JSON data integration.
+
+```wp
+config gnuplot {
+  outputMode: "base64"
+  timeout: 30
+  maxOutputSize: 10485760
+}
+
+GET /analytics/chart
+  |> jq: `{
+    data: [[1,100], [2,150], [3,200], [4,175]],
+    title: "Q1 Sales Performance",
+    xlabel: "Week",
+    ylabel: "Sales ($K)"
+  }`
+  |> gnuplot: `
+    set terminal png size 800,600
+    set output
+    set title "{title}"
+    set xlabel "{xlabel}"
+    set ylabel "{ylabel}"
+    plot "-" using 1:2 with lines title "Sales"
+    {data}
+    e
+  `
+  |> mustache: `
+    <img src="data:{{contentType}};base64,{{data}}" alt="Sales Chart">
+  `
+```
+
+**Template Variables:**
+- `{variable}`: Substituted with JSON data from input
+- `{data}`: JSON arrays converted to gnuplot data format
+- Support for nested JSON access and multiple data series
+
+**Output Formats:**
+- `base64` (default): Returns base64-encoded image in JSON response
+- `binary`: Returns raw image data with appropriate Content-Type header  
+- `text`: Returns raw text output (for SVG, EPS formats)
+
+**Content Type Override:**
+You can override the output format by including a `contentType` field in the input JSON:
+
+```wp
+GET /canvas-chart
+  |> jq: `{
+    data: [[1,10], [2,20], [3,15]],
+    title: "Interactive Chart", 
+    contentType: "text/html"
+  }`
+  |> gnuplot: `
+    set terminal canvas size 600,400
+    set output
+    set title "{title}"
+    plot "-" using 1:2 with lines
+    {data}
+    e
+  `
+```
+
+**Supported Content Types:**
+- `text/html`: For gnuplot canvas terminal (interactive HTML/JS charts)
+- `image/svg+xml`: For SVG vector graphics
+- `image/png`, `image/jpeg`, `image/gif`: For raster images
+- `application/pdf`: For PDF output
+- `application/postscript`: For PostScript/EPS output
+
+The `contentType` input overrides the middleware configuration and automatically selects the appropriate output mode (`text` for HTML/SVG/PostScript, `binary` for images/PDF, `base64` for JSON responses).
+
+**Multiple Data Series Example:**
+```wp
+GET /multi-series
+  |> jq: `{
+    sales_data: [[1,100], [2,150], [3,200]],
+    profit_data: [[1,20], [2,35], [3,50]],
+    title: "Sales vs Profit"
+  }`
+  |> gnuplot: `
+    set terminal svg size 1000,700
+    set output
+    set title "{title}"
+    plot "-" using 1:2 with lines title "Sales", \
+         "-" using 1:2 with lines title "Profit"
+    {sales_data}
+    e
+    {profit_data}
+    e
+  `
+```
+
+**Configuration Options:**
+- `outputMode`: Output format (`base64`, `binary`, `text`)
+- `timeout`: Script execution timeout in seconds (default: 30)
+- `maxOutputSize`: Maximum output file size in bytes (default: 50MB)
+- `enableSecurityChecks`: Enable script security validation (default: true)
+
+**Security Features:**
+- Script validation prevents dangerous commands (`system`, `load`, `save`, etc.)
+- Resource limits on execution time and output size
+- Sandboxed execution environment
+- Template variable sanitization
+
 #### Mustache Partials
 
 The mustache middleware supports partials for reusable template components. Partials are defined as variables and can be included in other templates using the `{{>partialName}}` syntax.
@@ -366,7 +470,8 @@ brew install \
   libmicrohttpd \
   jansson \
   jq \
-  lua
+  lua \
+  gnuplot
 ```
 
 ### Build Commands
