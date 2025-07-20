@@ -62,6 +62,8 @@ typedef struct {
     double *x_values;
     double *y_values;
     char **categories;
+    double *colors;       // Numeric color mapping
+    double *sizes;        // Size mapping
     size_t count;
     size_t capacity;
     char *x_field;
@@ -69,6 +71,16 @@ typedef struct {
     char *color_field;
     char *size_field;
 } PlotData;
+
+// Aesthetics mapping structure
+typedef struct {
+    char *x_field;
+    char *y_field;
+    char *color_field;
+    char *size_field;
+    char *shape_field;
+    char *alpha_field;
+} PlotAesthetics;
 
 typedef enum {
     GEOM_POINT,
@@ -80,12 +92,14 @@ typedef enum {
 typedef struct PlotLayer {
     GeomType type;
     PlotData *data;
-    json_t *params;  // color, size, etc.
+    PlotAesthetics *aes;  // Aesthetic mappings for this layer
+    json_t *params;       // Fixed parameters (color, size, etc.)
     struct PlotLayer *next;
 } PlotLayer;
 
 typedef struct {
     PlotData *data;
+    PlotAesthetics *global_aes;  // Global aesthetic mappings
     PlotLayer *layers;
     char *title;
     char *x_label;
@@ -118,6 +132,39 @@ static char *arena_strdup(void *arena, arena_alloc_func alloc_func, const char *
         copy[len] = '\0';
     }
     return copy;
+}
+
+// Create aesthetics object
+static PlotAesthetics *create_aesthetics(void *arena, arena_alloc_func alloc_func) {
+    PlotAesthetics *aes = alloc_func(arena, sizeof(PlotAesthetics));
+    if (!aes) return NULL;
+    
+    aes->x_field = NULL;
+    aes->y_field = NULL;
+    aes->color_field = NULL;
+    aes->size_field = NULL;
+    aes->shape_field = NULL;
+    aes->alpha_field = NULL;
+    
+    return aes;
+}
+
+// Simple color palette (ggplot2-like colors)
+static const char *get_color_from_palette(int index) {
+    static const char *colors[] = {
+        "#1f77b4",  // blue
+        "#ff7f0e",  // orange  
+        "#2ca02c",  // green
+        "#d62728",  // red
+        "#9467bd",  // purple
+        "#8c564b",  // brown
+        "#e377c2",  // pink
+        "#7f7f7f",  // gray
+        "#bcbd22",  // olive
+        "#17becf"   // cyan
+    };
+    int num_colors = sizeof(colors) / sizeof(colors[0]);
+    return colors[index % num_colors];
 }
 
 // SVG Builder functions
@@ -412,10 +459,13 @@ static json_t *create_error(const char *type, const char *message, const char *c
     return error_obj;
 }
 
-// Simple plot data extraction from JSON
-static PlotData *extract_plot_data(json_t *input, const char *data_field, 
+// Enhanced plot data extraction with aesthetics support and debugging
+static PlotData *extract_plot_data(json_t *input, const char *data_field, PlotAesthetics *aes,
                                   void *arena, arena_alloc_func alloc_func) {
-    if (!input || !data_field) return NULL;
+    
+    if (!input || !data_field) {
+        return NULL;
+    }
     
     // Handle .field syntax - skip the '.' prefix
     const char *field_name = data_field;
@@ -425,25 +475,52 @@ static PlotData *extract_plot_data(json_t *input, const char *data_field,
     
     // Extract the data field from input JSON
     json_t *data_json = json_object_get(input, field_name);
-    if (!data_json || !json_is_array(data_json)) return NULL;
+    if (!data_json) {
+        return NULL;
+    }
+    
+    if (!json_is_array(data_json)) {
+        return NULL;
+    }
     
     size_t array_size = json_array_size(data_json);
-    if (array_size == 0) return NULL;
+    
+    if (array_size == 0) {
+        return NULL;
+    }
     
     PlotData *data = alloc_func(arena, sizeof(PlotData));
-    if (!data) return NULL;
+    if (!data) {
+        return NULL;
+    }
     
     data->x_values = alloc_func(arena, sizeof(double) * array_size);
     data->y_values = alloc_func(arena, sizeof(double) * array_size);
-    if (!data->x_values || !data->y_values) return NULL;
+    data->colors = alloc_func(arena, sizeof(double) * array_size);
+    data->sizes = alloc_func(arena, sizeof(double) * array_size);
+    if (!data->x_values || !data->y_values || !data->colors || !data->sizes) {
+        return NULL;
+    }
     
     data->count = 0;
     data->capacity = array_size;
     data->categories = NULL;
-    data->x_field = arena_strdup(arena, alloc_func, "x");
-    data->y_field = arena_strdup(arena, alloc_func, "y");
-    data->color_field = NULL;
-    data->size_field = NULL;
+    
+    // Use aesthetics to determine field mappings, fallback to defaults
+    if (aes && aes->x_field) {
+        data->x_field = arena_strdup(arena, alloc_func, aes->x_field);
+    } else {
+        data->x_field = arena_strdup(arena, alloc_func, "x");
+    }
+    
+    if (aes && aes->y_field) {
+        data->y_field = arena_strdup(arena, alloc_func, aes->y_field);
+    } else {
+        data->y_field = arena_strdup(arena, alloc_func, "y");
+    }
+    
+    data->color_field = (aes && aes->color_field) ? arena_strdup(arena, alloc_func, aes->color_field) : NULL;
+    data->size_field = (aes && aes->size_field) ? arena_strdup(arena, alloc_func, aes->size_field) : NULL;
     
     // Extract data points
     for (size_t i = 0; i < array_size; i++) {
@@ -458,6 +535,11 @@ static PlotData *extract_plot_data(json_t *input, const char *data_field,
             if (json_is_number(x_val) && json_is_number(y_val)) {
                 data->x_values[data->count] = json_number_value(x_val);
                 data->y_values[data->count] = json_number_value(y_val);
+                
+                // Set default values for array format
+                data->colors[data->count] = 1.0; // Default color index
+                data->sizes[data->count] = 3.0;  // Default size
+                
                 data->count++;
             }
         } else if (json_is_object(point)) {
@@ -465,9 +547,61 @@ static PlotData *extract_plot_data(json_t *input, const char *data_field,
             json_t *x_val = json_object_get(point, data->x_field);
             json_t *y_val = json_object_get(point, data->y_field);
             
-            if (x_val && y_val && json_is_number(x_val) && json_is_number(y_val)) {
-                data->x_values[data->count] = json_number_value(x_val);
-                data->y_values[data->count] = json_number_value(y_val);
+            double x_numeric = 0.0;
+            double y_numeric = 0.0;
+            bool x_valid = false;
+            bool y_valid = false;
+            
+            // Handle x value - support both numeric and string values
+            if (x_val) {
+                if (json_is_number(x_val)) {
+                    x_numeric = json_number_value(x_val);
+                    x_valid = true;
+                } else if (json_is_string(x_val)) {
+                    // Convert string to numeric index (categorical data)
+                    // Simple mapping: assign sequential indices to unique string values
+                    const char *x_str = json_string_value(x_val);
+                    if (x_str) {
+                        // For categorical data, create a simple hash-based index
+                        // This is a basic approach - could be improved with proper categorical mapping
+                        size_t hash = 0;
+                        for (const char *c = x_str; *c; c++) {
+                            hash = hash * 31 + (unsigned char)*c;
+                        }
+                        x_numeric = (double)(hash % 100); // Use modulo to keep values reasonable
+                        x_valid = true;
+                    }
+                }
+            }
+            
+            // Handle y value - must be numeric
+            if (y_val && json_is_number(y_val)) {
+                y_numeric = json_number_value(y_val);
+                y_valid = true;
+            }
+            
+            if (x_valid && y_valid) {
+                data->x_values[data->count] = x_numeric;
+                data->y_values[data->count] = y_numeric;
+                
+                // Extract color and size mappings if specified
+                data->colors[data->count] = 1.0; // Default color index
+                data->sizes[data->count] = 3.0;  // Default size
+                
+                if (data->color_field) {
+                    json_t *color_val = json_object_get(point, data->color_field);
+                    if (color_val && json_is_number(color_val)) {
+                        data->colors[data->count] = json_number_value(color_val);
+                    }
+                }
+                
+                if (data->size_field) {
+                    json_t *size_val = json_object_get(point, data->size_field);
+                    if (size_val && json_is_number(size_val)) {
+                        data->sizes[data->count] = json_number_value(size_val);
+                    }
+                }
+                
                 data->count++;
             }
         }
@@ -539,12 +673,29 @@ static void render_plot(SVGBuilder *svg, PlotSpec *spec) {
                 double py = plot_y + plot_h - ((y - min_y) / (max_y - min_y)) * plot_h;
                 
                 if (layer->type == GEOM_POINT) {
-                    svg_circle(svg, px, py, 3.0, "steelblue", "steelblue");
+                    // Use aesthetics for color and size
+                    double point_size = layer->data->sizes[i];
+                    const char *color = "steelblue"; // Default color
+                    
+                    // Use color mapping if available
+                    if (layer->aes && layer->aes->color_field && layer->data->color_field) {
+                        int color_index = (int)layer->data->colors[i];
+                        color = get_color_from_palette(color_index);
+                    }
+                    svg_circle(svg, px, py, point_size, color, color);
                 }
             }
             
             // Draw lines for line geom
             if (layer->type == GEOM_LINE && layer->data->count > 1) {
+                const char *line_color = "steelblue"; // Default color
+                
+                // Use first point's color for the entire line
+                if (layer->aes && layer->aes->color_field && layer->data->color_field) {
+                    int color_index = (int)layer->data->colors[0];
+                    line_color = get_color_from_palette(color_index);
+                }
+                
                 for (size_t i = 0; i < layer->data->count - 1; i++) {
                     double x1 = layer->data->x_values[i];
                     double y1 = layer->data->y_values[i];
@@ -556,20 +707,69 @@ static void render_plot(SVGBuilder *svg, PlotSpec *spec) {
                     double px2 = plot_x + ((x2 - min_x) / (max_x - min_x)) * plot_w;
                     double py2 = plot_y + plot_h - ((y2 - min_y) / (max_y - min_y)) * plot_h;
                     
-                    svg_line(svg, px1, py1, px2, py2, "steelblue", 2.0);
+                    svg_line(svg, px1, py1, px2, py2, line_color, 2.0);
                 }
             }
             
-            // Draw bars for bar geom
+            // Draw bars for bar geom with proper grouping
             if (layer->type == GEOM_BAR && layer->data->count > 0) {
-                double bar_width = plot_w / (double)layer->data->count * 0.8; // 80% of available width
-                double bar_spacing = plot_w / (double)layer->data->count * 0.2; // 20% for spacing
+                // First, identify unique x-values (quarters) and count bars per group
+                double unique_x[100]; // Max 100 unique x-values
+                size_t bars_per_group[100]; // Count of bars for each x-value
+                size_t unique_count = 0;
+                
+                // Find unique x-values and count bars per group
+                for (size_t i = 0; i < layer->data->count; i++) {
+                    double x = layer->data->x_values[i];
+                    bool found = false;
+                    
+                    for (size_t j = 0; j < unique_count; j++) {
+                        if (fabs(unique_x[j] - x) < 1e-9) { // Found existing group
+                            bars_per_group[j]++;
+                            found = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!found && unique_count < 100) { // New group
+                        unique_x[unique_count] = x;
+                        bars_per_group[unique_count] = 1;
+                        unique_count++;
+                    }
+                }
+                
+                // Calculate spacing: 70% for bars, 30% for spacing between quarters
+                double total_bar_space = plot_w * 0.7;
+                double total_quarter_spacing = plot_w * 0.3;
+                double quarter_width = total_bar_space / unique_count;
+                double quarter_gap = (unique_count > 1) ? total_quarter_spacing / (unique_count - 1) : 0;
+                
+                // Track position within each quarter group
+                size_t group_positions[100] = {0}; // Current position within each group
                 
                 for (size_t i = 0; i < layer->data->count; i++) {
+                    double x = layer->data->x_values[i];
                     double y = layer->data->y_values[i];
                     
-                    // Calculate bar position and dimensions
-                    double bar_x = plot_x + (i * plot_w / (double)layer->data->count) + bar_spacing / 2.0;
+                    // Find which quarter group this bar belongs to
+                    size_t group_index = 0;
+                    for (size_t j = 0; j < unique_count; j++) {
+                        if (fabs(unique_x[j] - x) < 1e-9) {
+                            group_index = j;
+                            break;
+                        }
+                    }
+                    
+                    // Calculate bar dimensions
+                    double bar_width = quarter_width / bars_per_group[group_index] * 0.8; // 80% of available space within group
+                    double bar_spacing_within_group = quarter_width / bars_per_group[group_index] * 0.2; // 20% for spacing within group
+                    
+                    // Calculate bar position
+                    double quarter_start_x = plot_x + (group_index * (quarter_width + quarter_gap));
+                    double bar_x = quarter_start_x + 
+                                  (group_positions[group_index] * (bar_width + bar_spacing_within_group / bars_per_group[group_index])) + 
+                                  bar_spacing_within_group / 2.0;
+                    
                     double bar_height = ((y - min_y) / (max_y - min_y)) * plot_h;
                     double bar_y = plot_y + plot_h - bar_height;
                     
@@ -579,7 +779,17 @@ static void render_plot(SVGBuilder *svg, PlotSpec *spec) {
                         bar_y = plot_y + plot_h;
                     }
                     
-                    svg_rect(svg, bar_x, bar_y, bar_width, bar_height, "steelblue", "steelblue", 1.0);
+                    // Use color mapping for bars
+                    const char *bar_color = "steelblue"; // Default color
+                    if (layer->aes && layer->aes->color_field && layer->data->color_field) {
+                        int color_index = (int)layer->data->colors[i];
+                        bar_color = get_color_from_palette(color_index);
+                    }
+                    
+                    svg_rect(svg, bar_x, bar_y, bar_width, bar_height, bar_color, bar_color, 1.0);
+                    
+                    // Increment position within this quarter group
+                    group_positions[group_index]++;
                 }
             }
             
@@ -613,8 +823,8 @@ static void render_plot(SVGBuilder *svg, PlotSpec *spec) {
                 double last_x = layer->data->x_values[layer->data->count - 1];
                 double last_px = plot_x + ((last_x - min_x) / (max_x - min_x)) * plot_w;
                 
-                snprintf(path_data + path_pos, sizeof(path_data) - path_pos,
-                        " L %.2f %.2f Z", last_px, baseline_py);
+                path_pos += (size_t)snprintf(path_data + path_pos, sizeof(path_data) - path_pos,
+                                   " L %.2f %.2f Z", last_px, baseline_py);
                 
                 // Render the filled area
                 svg_path(svg, path_data, "lightsteelblue", "steelblue", 1.0);
@@ -685,6 +895,7 @@ json_t *middleware_execute(json_t *input, void *arena,
     }
     
     spec->data = NULL;
+    spec->global_aes = create_aesthetics(arena, alloc_func);
     spec->layers = NULL;
     spec->title = NULL;
     spec->x_label = NULL;
@@ -696,7 +907,8 @@ json_t *middleware_execute(json_t *input, void *arena,
     spec->margin_bottom = 50;
     spec->margin_left = 60;
     
-    // Simple parsing: look for data(.field) first
+    // Step 1: Find the data source specification  
+    const char *data_field = NULL;
     for (size_t i = 0; i < lexer->count; i++) {
         if (lexer->tokens[i].type == PLOT_TOKEN_DATA) {
             // Expect: data ( .field )
@@ -706,16 +918,64 @@ json_t *middleware_execute(json_t *input, void *arena,
                 lexer->tokens[i + 3].type == PLOT_TOKEN_IDENTIFIER &&
                 lexer->tokens[i + 4].type == PLOT_TOKEN_RPAREN) {
                 
-                // Get the field name (the identifier after the dot)
-                const char *token_value = lexer->tokens[i + 3].value;
-                if (token_value) {
-                    // The token_value is the field name, extract_plot_data will handle the JSON lookup
-                    spec->data = extract_plot_data(input, token_value, arena, alloc_func);
+                data_field = lexer->tokens[i + 3].value;
+                break;
+            }
+        }
+    }
+    
+    if (!data_field) {
+        return create_error("plotError", "No data specification found", "Add data(.field)");
+    }
+    
+    // Step 2: Parse aesthetics to get field mappings
+    for (size_t i = 0; i < lexer->count; i++) {
+        if (lexer->tokens[i].type == PLOT_TOKEN_AES) {
+            // Expect: aes ( ... )
+            if (i + 1 < lexer->count && lexer->tokens[i + 1].type == PLOT_TOKEN_LPAREN) {
+                // Find the matching closing parenthesis
+                size_t j = i + 2;
+                int paren_count = 1;
+                while (j < lexer->count && paren_count > 0) {
+                    if (lexer->tokens[j].type == PLOT_TOKEN_LPAREN) paren_count++;
+                    if (lexer->tokens[j].type == PLOT_TOKEN_RPAREN) paren_count--;
+                    j++;
+                }
+                
+                // Parse aesthetic mappings between parentheses
+                for (size_t k = i + 2; k < j - 1; k++) {
+                    if (lexer->tokens[k].type == PLOT_TOKEN_IDENTIFIER) {
+                        const char *aes_name = lexer->tokens[k].value;
+                        if (aes_name && k + 2 < j - 1 && 
+                            lexer->tokens[k + 1].type == PLOT_TOKEN_EQUALS &&
+                            lexer->tokens[k + 2].type == PLOT_TOKEN_IDENTIFIER) {
+                            
+                            const char *field_name = lexer->tokens[k + 2].value;
+                            
+                            if (strcmp(aes_name, "x") == 0) {
+                                spec->global_aes->x_field = arena_strdup(arena, alloc_func, field_name);
+                            } else if (strcmp(aes_name, "y") == 0) {
+                                spec->global_aes->y_field = arena_strdup(arena, alloc_func, field_name);
+                            } else if (strcmp(aes_name, "color") == 0 || strcmp(aes_name, "colour") == 0) {
+                                spec->global_aes->color_field = arena_strdup(arena, alloc_func, field_name);
+                            } else if (strcmp(aes_name, "size") == 0) {
+                                spec->global_aes->size_field = arena_strdup(arena, alloc_func, field_name);
+                            } else if (strcmp(aes_name, "shape") == 0) {
+                                spec->global_aes->shape_field = arena_strdup(arena, alloc_func, field_name);
+                            } else if (strcmp(aes_name, "alpha") == 0) {
+                                spec->global_aes->alpha_field = arena_strdup(arena, alloc_func, field_name);
+                            }
+                            k += 2; // Skip the = and field tokens
+                        }
+                    }
                 }
                 break;
             }
         }
     }
+    
+    // Step 3: Now extract data using the data source + aesthetics  
+    spec->data = extract_plot_data(input, data_field, spec->global_aes, arena, alloc_func);
     
     if (!spec->data) {
         return create_error("plotError", "Failed to extract data from input", "Check data(.field) specification");
@@ -796,7 +1056,9 @@ json_t *middleware_execute(json_t *input, void *arena,
             } else if (lexer->tokens[i].type == PLOT_TOKEN_GEOM_AREA) {
                 layer->type = GEOM_AREA;
             }
-            layer->data = spec->data; // For now, use the same data
+            
+            layer->data = spec->data; // Use the same data (already re-extracted with aesthetics if needed)
+            layer->aes = spec->global_aes; // Use global aesthetics
             layer->params = NULL; // No parameters needed for basic geometries
             layer->next = NULL;
             

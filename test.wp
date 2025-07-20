@@ -439,7 +439,12 @@ GET /plot/demo-static-labels
   |> jq: `{
     data: [[1,120], [2,150], [3,135], [4,180], [5,165]]
   }`
-  |> plot: `data(.data) + geom_line() + geom_point() + labs(title = "Sales Performance Q1", x = "Week", y = "Sales ($K)")`
+  |> plot: `
+    data(.data)
+      + geom_line()
+      + geom_point()
+      + labs(title = "Sales Performance Q1", x = "Week", y = "Sales ($K)")
+    `
 
 GET /plot/demo-object-data
   |> jq: `{
@@ -928,3 +933,110 @@ mustache todoItemPartial = `
     </div>
   </li>
 `
+
+# Advanced plotting with aesthetics mapping
+GET /advanced-chart
+  |> jq: `{
+    data: [
+      {quarter: 1, revenue: 120, dept: 0, priority: 8},
+      {quarter: 2, revenue: 150, dept: 1, priority: 9},
+      {quarter: 3, revenue: 135, dept: 2, priority: 7}
+    ]
+  }`
+  |> plot: `
+    data(.data)
+    + aes(x = quarter, y = revenue, color = dept, size = priority)
+    + geom_point()
+    + geom_line()
+    + labs(title = "Advanced Revenue Analysis", x = "Quarter", y = "Revenue ($K)")
+  `
+
+GET /plot/debug-aes
+  |> jq: `{
+    data: [
+      {x: 1, y: 10, color: 0, size: 5},
+      {x: 2, y: 15, color: 1, size: 6}
+    ]
+  }`
+  |> plot: `
+    data(.data)
+    + aes(x = x, y = y, color = color, size = size)
+    + geom_point()
+    + labs(title = "Debug AES Test")
+  `
+
+GET /plot/demo-color-mapping
+  |> jq: `{
+    sales_data: [
+      {quarter: 1, revenue: 100, department: 0, size: 5},
+      {quarter: 2, revenue: 150, department: 1, size: 6},
+      {quarter: 3, revenue: 120, department: 2, size: 4},
+      {quarter: 4, revenue: 180, department: 0, size: 8},
+      {quarter: 5, revenue: 160, department: 1, size: 7},
+      {quarter: 6, revenue: 200, department: 2, size: 9}
+    ]
+  }`
+  |> plot: `
+    data(.sales_data) 
+    + aes(x = quarter, y = revenue, color = department, size = size)
+    + geom_point()
+    + labs(title = "Revenue by Department (Color-coded)", x = "Quarter", y = "Revenue ($K)")
+  `
+
+GET /plot/multibar-demo
+  |> jq: `{
+    sales: [
+      {quarter: "Q1", revenue: 120, department: 0},
+      {quarter: "Q1", revenue: 90, department: 1}, 
+      {quarter: "Q1", revenue: 110, department: 2},
+      {quarter: "Q2", revenue: 150, department: 0},
+      {quarter: "Q2", revenue: 130, department: 1},
+      {quarter: "Q2", revenue: 140, department: 2},
+      {quarter: "Q3", revenue: 135, department: 0},
+      {quarter: "Q3", revenue: 145, department: 1},
+      {quarter: "Q3", revenue: 125, department: 2},
+      {quarter: "Q4", revenue: 180, department: 0},
+      {quarter: "Q4", revenue: 160, department: 1},
+      {quarter: "Q4", revenue: 170, department: 2}
+    ]
+  }`
+  |> plot: `
+    data(.sales)
+    + aes(x = quarter, y = revenue, color = department)
+    + geom_bar()
+    + labs(title = "Quarterly Sales by Department", x = "Quarter", y = "Revenue ($K)")
+  `
+
+# For better multibar positioning, we can manually offset x coordinates
+GET /plot/multibar-positioned
+  |> jq: `{
+    sales: [
+      {x: 0.8, revenue: 120, dept: 0},  
+      {x: 1.0, revenue: 90, dept: 1},   
+      {x: 1.2, revenue: 110, dept: 2},  
+      {x: 1.8, revenue: 150, dept: 0},  
+      {x: 2.0, revenue: 130, dept: 1},  
+      {x: 2.2, revenue: 140, dept: 2},  
+      {x: 2.8, revenue: 135, dept: 0},  
+      {x: 3.0, revenue: 145, dept: 1},  
+      {x: 3.2, revenue: 125, dept: 2},  
+      {x: 3.8, revenue: 180, dept: 0},  
+      {x: 4.0, revenue: 160, dept: 1},  
+      {x: 4.2, revenue: 170, dept: 2}   
+    ]
+  }`
+  |> plot: `
+    data(.sales)
+    + aes(x = x, y = revenue, color = dept)
+    + geom_bar()
+    + labs(title = "Positioned Multibar Chart", x = "Quarter", y = "Revenue ($K)")
+  `
+
+# Simple multibar chart test without jq preprocessing
+GET /plot/multibar-simple
+  |> plot: `
+    data(.sales)
+    + aes(x = quarter, y = revenue, color = department)
+    + geom_bar()
+    + labs(title = "Simple Multibar Test", x = "Quarter", y = "Revenue")
+  `
