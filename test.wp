@@ -793,3 +793,510 @@ mustache todoItemPartial = `
     </div>
   </li>
 `
+# ============================================================================
+# R MIDDLEWARE DEMO ROUTES
+# ============================================================================
+
+# Basic R middleware demo
+GET /r/hello
+  |> r: `list(message = "Hello from R!", timestamp = Sys.time(), r_version = R.version.string)`
+
+# R with input data processing
+GET /r/math
+  |> jq: `{ numbers: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }`
+  |> r: `
+    nums <- .input$numbers
+    list(
+      input = nums,
+      sum = sum(nums),
+      mean = mean(nums),
+      median = median(nums),
+      std_dev = sd(nums),
+      stats = summary(nums)
+    )
+  `
+
+# R linear regression analysis
+GET /r/plot-data
+  |> jq: `{ x: [1,2,3,4,5,6,7,8,9,10], y: [2.1,3.9,6.2,7.8,10.1,12.2,13.8,16.1,17.9,20.2] }`
+  |> r: `
+    df <- data.frame(x = .input$x, y = .input$y)
+    model <- lm(y ~ x, data = df)
+    list(
+      data = df,
+      slope = unname(coef(model)[2]),
+      intercept = unname(coef(model)[1]),
+      r_squared = summary(model)$r.squared,
+      prediction_10 = predict(model, data.frame(x = 10))
+    )
+  `
+
+# R with JSON output using jsonlite
+GET /r/json-output
+  |> jq: `{ name: "Alice", age: 30, scores: [85, 92, 78, 95] }`
+  |> r: `
+    result <- list(
+      greeting = paste("Hello", .input$name),
+      age_group = if(.input$age >= 30) "adult" else "young",
+      average_score = mean(.input$scores),
+      grade = if(mean(.input$scores) >= 90) "A" else if(mean(.input$scores) >= 80) "B" else "C",
+      processed_at = as.character(Sys.time())
+    )
+    jsonlite::toJSON(result, auto_unbox = TRUE)
+  `
+
+# R statistical analysis
+GET /r/stats
+  |> jq: `{ 
+    dataset: [
+      {group: "A", value: 23}, {group: "A", value: 25}, {group: "A", value: 27},
+      {group: "B", value: 31}, {group: "B", value: 33}, {group: "B", value: 35},
+      {group: "C", value: 19}, {group: "C", value: 21}, {group: "C", value: 23}
+    ]
+  }`
+  |> r: `
+    df <- data.frame(
+      group = sapply(.input$dataset, function(x) x$group),
+      value = sapply(.input$dataset, function(x) x$value)
+    )
+    
+    # Basic statistics by group
+    stats_by_group <- aggregate(value ~ group, df, function(x) {
+      c(mean = mean(x), sd = sd(x), count = length(x))
+    })
+    
+    list(
+      raw_data = df,
+      group_stats = stats_by_group,
+      overall_mean = mean(df$value),
+      total_records = nrow(df)
+    )
+  `
+
+# R error handling demo
+GET /r/error-test
+  |> r: `
+    # This should trigger an error
+    result <- sqrt(-1)  # Warning in R
+    undefined_variable   # Error in R
+  `
+
+# R data transformation
+GET /r/transform
+  |> jq: `{
+    sales: [
+      {month: "Jan", revenue: 12000},
+      {month: "Feb", revenue: 15000}, 
+      {month: "Mar", revenue: 18000},
+      {month: "Apr", revenue: 22000}
+    ]
+  }`
+  |> r: `
+    sales_df <- data.frame(
+      month = sapply(.input$sales, function(x) x$month),
+      revenue = sapply(.input$sales, function(x) x$revenue)
+    )
+    
+    # Add derived columns
+    sales_df$revenue_k <- sales_df$revenue / 1000
+    sales_df$growth_rate <- c(NA, diff(sales_df$revenue) / sales_df$revenue[-length(sales_df$revenue)] * 100)
+    
+    list(
+      monthly_data = sales_df,
+      total_revenue = sum(sales_df$revenue),
+      average_monthly = mean(sales_df$revenue),
+      best_month = sales_df$month[which.max(sales_df$revenue)]
+    )
+  `
+
+# R package check
+GET /r/packages
+  |> r: `
+    list(
+      message = "Checking ggplot2 availability...",
+      r_version = R.version.string,
+      ggplot2_test = "testing"
+    )
+  `
+
+# R with ggplot2 - scatter plot
+GET /r/ggplot/scatter
+  |> jq: `{
+    x: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    y: [2.1, 3.9, 6.2, 8.1, 9.8, 12.3, 14.1, 16.2, 18.1, 20.2]
+  }`
+  |> r: `
+    df <- data.frame(x = .input$x, y = .input$y)
+    
+    # Create ggplot scatter plot
+    p <- ggplot(df, aes(x = x, y = y)) +
+      geom_point(color = "blue", size = 3) +
+      geom_smooth(method = "lm", se = FALSE, color = "red") +
+      labs(title = "Scatter Plot with Trend Line",
+           x = "X Values", 
+           y = "Y Values") +
+      theme_minimal()
+    
+    # Save plot to temporary file and return base64
+    temp_file <- tempfile(fileext = ".png")
+    ggsave(temp_file, plot = p, width = 8, height = 6, dpi = 150)
+    
+    # Read file and encode as base64
+    plot_data <- readBin(temp_file, "raw", file.info(temp_file)$size)
+    plot_base64 <- base64enc::base64encode(plot_data)
+    
+    # Clean up temp file
+    unlink(temp_file)
+    
+    list(
+      plot_type = "scatter",
+      data_points = nrow(df),
+      correlation = cor(df$x, df$y),
+      plot_base64 = plot_base64,
+      plot_info = "PNG image encoded as base64"
+    )
+  `
+
+# R with ggplot2 - simple test
+GET /r/ggplot/test
+  |> r: `
+    # Test ggplot2 availability
+    result <- tryCatch({
+      library(ggplot2)
+      # Simple plot data generation
+      df <- data.frame(x = 1:5, y = c(2, 4, 6, 8, 10))
+      
+      list(
+        success = TRUE,
+        message = "ggplot2 loaded successfully",
+        data_summary = paste("Generated", nrow(df), "data points"),
+        sample_data = df
+      )
+    }, error = function(e) {
+      list(
+        success = FALSE,
+        error = as.character(e),
+        message = "ggplot2 not available"
+      )
+    })
+    
+    result
+  `
+
+# R vector serialization test  
+GET /r/vector-test
+  |> r: `
+    # Test improved vector serialization
+    list(
+      single_number = 42,
+      number_vector = c(1, 2, 3, 4, 5),
+      single_string = "hello",
+      string_vector = c("a", "b", "c"),
+      logical_vector = c(TRUE, FALSE, TRUE),
+      mixed_list = list(
+        numbers = c(10, 20, 30),
+        words = c("hello", "world"),
+        flag = TRUE
+      )
+    )
+  `
+
+# R with ggplot2 - working demo
+GET /r/ggplot/demo
+  |> r: `
+    # Create simple plot data without complex ggplot objects
+    x_vals <- c(1, 2, 3, 4, 5)
+    y_vals <- c(2, 4, 3, 5, 6)
+    
+    # Test that we can create the plot (ggplot2 already loaded)
+    df <- data.frame(x = x_vals, y = y_vals)
+    p <- ggplot(df, aes(x = x, y = y)) + geom_point() + geom_line()
+    
+    # Return summary data instead of the complex ggplot object
+    list(
+      plot_created = TRUE,
+      data_points = length(x_vals),
+      x_values = x_vals,
+      y_values = y_vals,
+      x_range = c(min(x_vals), max(x_vals)),
+      y_range = c(min(y_vals), max(y_vals)),
+      correlation = cor(x_vals, y_vals),
+      plot_type = "scatter_line",
+      message = "ggplot2 plot created successfully"
+    )
+  `
+
+# R ggplot2 - base64 image export with error handling
+GET /r/ggplot/base64
+  |> r: `
+    result <- tryCatch({
+      # Create a simple ggplot
+      df <- data.frame(
+        x = c(1, 2, 3, 4, 5),
+        y = c(2, 4, 3, 5, 6)
+      )
+      
+      p <- ggplot(df, aes(x = x, y = y)) +
+        geom_point(color = "blue", size = 3) +
+        geom_line(color = "red") +
+        labs(title = "Test Plot", x = "X Values", y = "Y Values") +
+        theme_minimal()
+      
+      # Check if plot was created
+      if (is.null(p)) {
+        return(list(error = "Failed to create ggplot object"))
+      }
+      
+      # Save to temporary file
+      temp_file <- tempfile(fileext = ".png")
+      ggsave(temp_file, plot = p, width = 6, height = 4, dpi = 100)
+      
+      # Check if file was created
+      if (!file.exists(temp_file)) {
+        return(list(error = "Failed to save plot file"))
+      }
+      
+      # Get file info
+      file_info <- file.info(temp_file)
+      if (is.na(file_info$size) || file_info$size == 0) {
+        unlink(temp_file)
+        return(list(error = "Plot file is empty"))
+      }
+      
+      # Try to encode with base64
+      if (requireNamespace("base64enc", quietly = TRUE)) {
+        plot_bytes <- readBin(temp_file, "raw", file_info$size)
+        plot_base64 <- base64enc::base64encode(plot_bytes)
+        unlink(temp_file)
+        
+        list(
+          success = TRUE,
+          plot_base64 = plot_base64,
+          image_size = file_info$size,
+          format = "PNG"
+        )
+      } else {
+        # Return file info without base64
+        unlink(temp_file)
+        list(
+          success = TRUE,
+          message = "Plot created successfully but base64enc not available",
+          image_size = file_info$size,
+          format = "PNG"
+        )
+      }
+    }, error = function(e) {
+      list(
+        success = FALSE,
+        error = as.character(e),
+        message = "Error in ggplot creation or file handling"
+      )
+    })
+    
+    result
+  `
+  |> mustache: `
+    <h3>ggplot2 Generated Image</h3>
+    <p>Success: {{success}}</p>
+    <p>Format: {{format}}</p>
+    <p>Image Size: {{image_size}} bytes</p>
+    {{#success}}
+    <img src="data:image/png;base64,{{plot_base64}}" style="border: 1px solid #ccc; max-width: 600px;">
+    {{/success}}
+    {{^success}}
+    <p style="color: red;">Error: {{error}}</p>
+    <p>Message: {{message}}</p>
+    {{/success}}
+  `
+
+# R ggplot2 - SVG base64 export (faster rendering)
+GET /r/ggplot/svg
+  |> r: `
+    result <- tryCatch({
+      # Create a simple ggplot
+      df <- data.frame(
+        x = c(1, 2, 3, 4, 5),
+        y = c(2, 4, 3, 5, 6)
+      )
+      
+      p <- ggplot(df, aes(x = x, y = y)) +
+        geom_point(color = "blue", size = 3) +
+        geom_line(color = "red") +
+        labs(title = "Test Plot (SVG)", x = "X Values", y = "Y Values") +
+        theme_minimal()
+      
+      # Check if plot was created
+      if (is.null(p)) {
+        return(list(error = "Failed to create ggplot object"))
+      }
+      
+      # Save to temporary SVG file
+      temp_file <- tempfile(fileext = ".svg")
+      ggsave(temp_file, plot = p, width = 6, height = 4, device = "svg")
+      
+      # Check if file was created
+      if (!file.exists(temp_file)) {
+        return(list(error = "Failed to save SVG file"))
+      }
+      
+      # Get file info
+      file_info <- file.info(temp_file)
+      if (is.na(file_info$size) || file_info$size == 0) {
+        unlink(temp_file)
+        return(list(error = "SVG file is empty"))
+      }
+      
+      # Try to encode with base64
+      if (requireNamespace("base64enc", quietly = TRUE)) {
+        svg_bytes <- readBin(temp_file, "raw", file_info$size)
+        svg_base64 <- base64enc::base64encode(svg_bytes)
+        unlink(temp_file)
+        
+        list(
+          success = TRUE,
+          plot_base64 = svg_base64,
+          image_size = file_info$size,
+          format = "SVG"
+        )
+      } else {
+        # Return file info without base64
+        unlink(temp_file)
+        list(
+          success = TRUE,
+          message = "SVG created successfully but base64enc not available",
+          image_size = file_info$size,
+          format = "SVG"
+        )
+      }
+    }, error = function(e) {
+      list(
+        success = FALSE,
+        error = as.character(e),
+        message = "Error in ggplot SVG creation or file handling"
+      )
+    })
+    
+    result
+  `
+  |> mustache: `
+    <h3>ggplot2 Generated SVG Image</h3>
+    <p>Success: {{success}}</p>
+    <p>Format: {{format}}</p>
+    <p>Image Size: {{image_size}} bytes</p>
+    {{#success}}
+    <img src="data:image/svg+xml;base64,{{plot_base64}}" style="border: 1px solid #ccc; max-width: 600px;">
+    {{/success}}
+    {{^success}}
+    <p style="color: red;">Error: {{error}}</p>
+    <p>Message: {{message}}</p>
+    {{/success}}
+  `
+
+# R ggplot2 - Fast SVG output (no temp files, direct memory)
+GET /r/ggplot/svg-fast
+  |> r: `
+    result <- tryCatch({
+      # Create a simple ggplot
+      df <- data.frame(
+        x = c(1, 2, 3, 4, 5),
+        y = c(2, 4, 3, 5, 6)
+      )
+      
+      p <- ggplot(df, aes(x = x, y = y)) +
+        geom_point(color = "blue", size = 3) +
+        geom_line(color = "red") +
+        labs(title = "Fast SVG Plot", x = "X Values", y = "Y Values") +
+        theme_minimal()
+      
+      # Generate SVG directly to string using svglite
+      svg_string <- svglite::svgstring(width = 6, height = 4)
+      print(p)
+      svg_content <- svg_string()
+      dev.off()
+      
+      list(
+        success = TRUE,
+        svg_content = svg_content,
+        format = "SVG",
+        method = "direct_memory"
+      )
+    }, error = function(e) {
+      list(
+        success = FALSE,
+        error = as.character(e),
+        message = "Error in fast SVG generation"
+      )
+    })
+    
+    result
+  `
+
+# Base R plot() - Fast SVG generation (speed test)
+GET /r/plot/svg-fast
+  |> r: `
+    result <- tryCatch({
+      # Create simple data
+      x <- c(1, 2, 3, 4, 5)
+      y <- c(2, 4, 3, 5, 6)
+      
+      # Generate SVG directly using base R plot
+      svg_string <- svglite::svgstring(width = 6, height = 4)
+      
+      # Use base R plotting (much faster than ggplot2)
+      plot(x, y, 
+           type = "b",                    # both points and lines
+           col = "blue", 
+           pch = 16,                      # solid circles
+           lwd = 2,                       # line width
+           main = "Fast Base R Plot",
+           xlab = "X Values",
+           ylab = "Y Values",
+           cex = 1.5)                     # point size
+      
+      # Add grid
+      grid()
+      
+      svg_content <- svg_string()
+      dev.off()
+      
+      list(
+        success = TRUE,
+        svg_content = svg_content,
+        format = "SVG",
+        method = "base_R_plot",
+        note = "Should be much faster than ggplot2"
+      )
+    }, error = function(e) {
+      list(
+        success = FALSE,
+        error = as.character(e),
+        message = "Error in base R plot generation"
+      )
+    })
+    
+    result
+  `
+
+# Test just the R and jq steps
+GET /r/ggplot/test-json
+  |> r: `
+    list(
+      success = TRUE,
+      plot_base64 = "test123",
+      image_size = 12345,
+      format = "PNG"
+    )
+  `
+  |> jq: `.`
+  |> mustache: `
+    <h3>ggplot2 Image</h3>
+    <p>Success: {{success}}</p>
+    <p>Format: {{format}}</p>
+    <p>Image Size: {{image_size}} bytes</p>
+    {{#success}}
+    <img src="data:image/png;base64,{{plot_base64}}" style="border: 1px solid #ccc;">
+    {{/success}}
+    {{^success}}
+    <p style="color: red;">Error: {{error}}</p>
+    {{/success}}
+  `
