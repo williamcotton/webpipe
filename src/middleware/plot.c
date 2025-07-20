@@ -823,8 +823,8 @@ static void render_plot(SVGBuilder *svg, PlotSpec *spec) {
                 double last_x = layer->data->x_values[layer->data->count - 1];
                 double last_px = plot_x + ((last_x - min_x) / (max_x - min_x)) * plot_w;
                 
-                path_pos += (size_t)snprintf(path_data + path_pos, sizeof(path_data) - path_pos,
-                                   " L %.2f %.2f Z", last_px, baseline_py);
+                snprintf(path_data + path_pos, sizeof(path_data) - path_pos,
+                        " L %.2f %.2f Z", last_px, baseline_py);
                 
                 // Render the filled area
                 svg_path(svg, path_data, "lightsteelblue", "steelblue", 1.0);

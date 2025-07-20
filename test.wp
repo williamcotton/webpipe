@@ -1040,3 +1040,253 @@ GET /plot/multibar-simple
     + geom_bar()
     + labs(title = "Simple Multibar Test", x = "Quarter", y = "Revenue")
   `
+
+# ============================================================================
+# COMMON CHART TYPES DEMOS - Real-world examples with current features
+# ============================================================================
+
+# Time Series Chart - Stock price over time
+GET /plot/timeseries
+  |> jq: `{
+    stock_prices: [
+      {day: 1, price: 120.50},
+      {day: 2, price: 122.30},
+      {day: 3, price: 119.80},
+      {day: 4, price: 125.10},
+      {day: 5, price: 127.45},
+      {day: 6, price: 124.20},
+      {day: 7, price: 128.90},
+      {day: 8, price: 132.15},
+      {day: 9, price: 129.60},
+      {day: 10, price: 135.25}
+    ]
+  }`
+  |> plot: `
+    data(.stock_prices)
+    + aes(x = day, y = price)
+    + geom_line()
+    + geom_point()
+    + labs(title = "Stock Price Trend (10 Days)", x = "Day", y = "Price ($)")
+  `
+
+# Performance Dashboard - Multiple metrics
+GET /plot/performance-dashboard
+  |> jq: `{
+    metrics: [
+      {metric: 1, response_time: 45, error_rate: 2.1},
+      {metric: 2, response_time: 52, error_rate: 1.8},
+      {metric: 3, response_time: 38, error_rate: 3.2},
+      {metric: 4, response_time: 41, error_rate: 1.5},
+      {metric: 5, response_time: 48, error_rate: 2.7}
+    ]
+  }`
+  |> plot: `
+    data(.metrics)
+    + aes(x = metric, y = response_time)
+    + geom_bar()
+    + labs(title = "API Response Time by Endpoint", x = "Endpoint", y = "Response Time (ms)")
+  `
+
+# Sales Funnel - Conversion rates
+GET /plot/sales-funnel
+  |> jq: `{
+    funnel_data: [
+      {stage: 1, visitors: 10000},
+      {stage: 2, visitors: 7500},
+      {stage: 3, visitors: 4200},
+      {stage: 4, visitors: 2100},
+      {stage: 5, visitors: 850},
+      {stage: 6, visitors: 420}
+    ]
+  }`
+  |> plot: `
+    data(.funnel_data)
+    + aes(x = stage, y = visitors)
+    + geom_area()
+    + geom_line()
+    + labs(title = "Sales Funnel - Visitor Drop-off", x = "Funnel Stage", y = "Visitors")
+  `
+
+# Resource Usage Over Time - Area chart
+GET /plot/resource-usage
+  |> jq: `{
+    usage: [
+      {hour: 1, cpu: 25, memory: 40},
+      {hour: 2, cpu: 30, memory: 45},
+      {hour: 3, cpu: 45, memory: 55},
+      {hour: 4, cpu: 60, memory: 70},
+      {hour: 5, cpu: 75, memory: 80},
+      {hour: 6, cpu: 55, memory: 65},
+      {hour: 7, cpu: 40, memory: 50},
+      {hour: 8, cpu: 35, memory: 45}
+    ]
+  }`
+  |> plot: `
+    data(.usage)
+    + aes(x = hour, y = cpu)
+    + geom_area()
+    + labs(title = "CPU Usage Over Time", x = "Hour", y = "CPU Usage (%)")
+  `
+
+# Customer Satisfaction Scores - Scatter plot with size
+GET /plot/satisfaction-scores
+  |> jq: `{
+    surveys: [
+      {month: 1, satisfaction: 7.2, responses: 150},
+      {month: 2, satisfaction: 7.8, responses: 180},
+      {month: 3, satisfaction: 6.9, responses: 120},
+      {month: 4, satisfaction: 8.1, responses: 200},
+      {month: 5, satisfaction: 8.5, responses: 220},
+      {month: 6, satisfaction: 7.9, responses: 190}
+    ]
+  }`
+  |> plot: `
+    data(.surveys)
+    + aes(x = month, y = satisfaction, size = responses)
+    + geom_point()
+    + labs(title = "Customer Satisfaction by Month", x = "Month", y = "Satisfaction Score (1-10)")
+  `
+
+# Product Sales Comparison - Multi-category bar chart
+GET /plot/product-sales
+  |> jq: `{
+    products: [
+      {quarter: 1, laptops: 1200, tablets: 800, phones: 2400},
+      {quarter: 2, laptops: 1350, tablets: 950, phones: 2650},
+      {quarter: 3, laptops: 1180, tablets: 720, phones: 2200},
+      {quarter: 4, laptops: 1580, tablets: 1100, phones: 3200}
+    ]
+  }`
+  |> plot: `
+    data(.products)
+    + aes(x = quarter, y = laptops)
+    + geom_bar()
+    + labs(title = "Laptop Sales by Quarter", x = "Quarter", y = "Units Sold")
+  `
+
+# Website Traffic Analysis - Combined line and point
+GET /plot/traffic-analysis
+  |> jq: `{
+    traffic: [
+      {week: 1, visitors: 15000, bounce_rate: 35},
+      {week: 2, visitors: 18500, bounce_rate: 32},
+      {week: 3, visitors: 22000, bounce_rate: 28},
+      {week: 4, visitors: 19500, bounce_rate: 30},
+      {week: 5, visitors: 25000, bounce_rate: 25},
+      {week: 6, visitors: 28500, bounce_rate: 22},
+      {week: 7, visitors: 26000, bounce_rate: 24},
+      {week: 8, visitors: 31000, bounce_rate: 20}
+    ]
+  }`
+  |> plot: `
+    data(.traffic)
+    + aes(x = week, y = visitors)
+    + geom_area()
+    + geom_line()
+    + geom_point()
+    + labs(title = "Weekly Website Visitors", x = "Week", y = "Unique Visitors")
+  `
+
+# Budget vs Actual Spending - Comparative bars
+GET /plot/budget-comparison
+  |> jq: `{
+    budget_data: [
+      {department: 1, budget: 50000, actual: 47500},
+      {department: 2, budget: 75000, actual: 82000},
+      {department: 3, budget: 30000, actual: 28500},
+      {department: 4, budget: 60000, actual: 58200},
+      {department: 5, budget: 40000, actual: 45000}
+    ]
+  }`
+  |> plot: `
+    data(.budget_data)
+    + aes(x = department, y = budget)
+    + geom_bar()
+    + labs(title = "Budget Allocation by Department", x = "Department", y = "Budget ($)")
+  `
+
+# Project Timeline - Progress tracking
+GET /plot/project-timeline
+  |> jq: `{
+    milestones: [
+      {milestone: 1, planned: 100, completed: 100},
+      {milestone: 2, planned: 100, completed: 85},
+      {milestone: 3, planned: 100, completed: 70},
+      {milestone: 4, planned: 100, completed: 45},
+      {milestone: 5, planned: 100, completed: 20},
+      {milestone: 6, planned: 100, completed: 0}
+    ]
+  }`
+  |> plot: `
+    data(.milestones)
+    + aes(x = milestone, y = completed)
+    + geom_bar()
+    + labs(title = "Project Completion Progress", x = "Milestone", y = "Completion (%)")
+  `
+
+# Temperature Data - Environmental monitoring
+GET /plot/temperature-monitoring
+  |> jq: `{
+    sensors: [
+      {hour: 0, temp: 18.5},
+      {hour: 2, temp: 17.2},
+      {hour: 4, temp: 16.8},
+      {hour: 6, temp: 19.1},
+      {hour: 8, temp: 22.4},
+      {hour: 10, temp: 25.7},
+      {hour: 12, temp: 28.9},
+      {hour: 14, temp: 31.2},
+      {hour: 16, temp: 29.6},
+      {hour: 18, temp: 26.3},
+      {hour: 20, temp: 23.1},
+      {hour: 22, temp: 20.4}
+    ]
+  }`
+  |> plot: `
+    data(.sensors)
+    + aes(x = hour, y = temp)
+    + geom_line()
+    + geom_point()
+    + geom_area()
+    + labs(title = "24-Hour Temperature Profile", x = "Hour", y = "Temperature (°C)")
+  `
+
+# Marketing Campaign ROI - Bubble chart effect with size
+GET /plot/campaign-roi
+  |> jq: `{
+    campaigns: [
+      {campaign: 1, roi: 125, spend: 5000, conversions: 45},
+      {campaign: 2, roi: 180, spend: 8000, conversions: 72},
+      {campaign: 3, roi: 95, spend: 3000, conversions: 28},
+      {campaign: 4, roi: 220, spend: 12000, conversions: 96},
+      {campaign: 5, roi: 155, spend: 6500, conversions: 58}
+    ]
+  }`
+  |> plot: `
+    data(.campaigns)
+    + aes(x = campaign, y = roi, size = conversions)
+    + geom_point()
+    + labs(title = "Campaign ROI Analysis", x = "Campaign ID", y = "ROI (%)")
+  `
+
+# User Engagement - Weekly active users
+GET /plot/user-engagement
+  |> jq: `{
+    engagement: [
+      {week: 1, active_users: 12500, new_users: 2100},
+      {week: 2, active_users: 13200, new_users: 1800},
+      {week: 3, active_users: 14100, new_users: 2400},
+      {week: 4, active_users: 13800, new_users: 1950},
+      {week: 5, active_users: 15600, new_users: 2800},
+      {week: 6, active_users: 16200, new_users: 2200},
+      {week: 7, active_users: 17500, new_users: 3100},
+      {week: 8, active_users: 18200, new_users: 2650}
+    ]
+  }`
+  |> plot: `
+    data(.engagement)
+    + aes(x = week, y = active_users)
+    + geom_area()
+    + geom_line()
+    + labs(title = "Weekly Active Users Growth", x = "Week", y = "Active Users")
+  `
