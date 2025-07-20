@@ -831,7 +831,6 @@ GET /r/plot-data
     )
   `
 
-# R with JSON output using jsonlite
 GET /r/json-output
   |> jq: `{ name: "Alice", age: 30, scores: [85, 92, 78, 95] }`
   |> r: `
@@ -842,7 +841,7 @@ GET /r/json-output
       grade = if(mean(.input$scores) >= 90) "A" else if(mean(.input$scores) >= 80) "B" else "C",
       processed_at = as.character(Sys.time())
     )
-    jsonlite::toJSON(result, auto_unbox = TRUE)
+    result
   `
 
 # R statistical analysis
@@ -865,12 +864,14 @@ GET /r/stats
       c(mean = mean(x), sd = sd(x), count = length(x))
     })
     
-    list(
+    result <- list(
       raw_data = df,
       group_stats = stats_by_group,
       overall_mean = mean(df$value),
       total_records = nrow(df)
     )
+
+    result
   `
 
 # R error handling demo
@@ -901,12 +902,14 @@ GET /r/transform
     sales_df$revenue_k <- sales_df$revenue / 1000
     sales_df$growth_rate <- c(NA, diff(sales_df$revenue) / sales_df$revenue[-length(sales_df$revenue)] * 100)
     
-    list(
+    result <- list(
       monthly_data = sales_df,
       total_revenue = sum(sales_df$revenue),
       average_monthly = mean(sales_df$revenue),
       best_month = sales_df$month[which.max(sales_df$revenue)]
     )
+
+    result
   `
 
 # R package check
@@ -955,6 +958,9 @@ GET /r/ggplot/scatter
       plot_base64 = plot_base64,
       plot_info = "PNG image encoded as base64"
     )
+  `
+  |> mustache: `
+    <img src="data:image/png;base64,{{plot_base64}}" style="border: 1px solid #ccc; max-width: 600px;">
   `
 
 # R with ggplot2 - simple test

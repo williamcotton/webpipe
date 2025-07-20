@@ -75,7 +75,9 @@ static SEXP cached_parse(const char *src)
         UNPROTECT(1);
         return R_NilValue;
     }
-    SEXP expr = VECTOR_ELT(vec, 0);     /* first expr */
+    
+    /* For multi-line expressions, we need to store the entire vector, not just first expr */
+    SEXP expr = vec;  /* Store the entire expression vector */
     R_PreserveObject(expr);             /* keep across GC */
     UNPROTECT(1);
 
@@ -95,28 +97,61 @@ static SEXP json_to_sexp(json_t *j)
 {
     if (json_is_null(j))     return R_NilValue;
     if (json_is_boolean(j))  return Rf_ScalarLogical(json_boolean_value(j));
-    if (json_is_integer(j))  return Rf_ScalarReal((double)json_integer_value(j));
+    if (json_is_integer(j)) {
+        json_int_t int_val = json_integer_value(j);
+        return Rf_ScalarReal((double)int_val);
+    }
     if (json_is_real(j))     return Rf_ScalarReal(json_real_value(j));
     if (json_is_string(j))   return Rf_mkString(json_string_value(j));
 
     if (json_is_array(j)) {
         size_t n = json_array_size(j);
-        SEXP vec = PROTECT(Rf_allocVector(VECSXP, n));
-        for (size_t i = 0; i < n; ++i)
-            SET_VECTOR_ELT(vec, i, json_to_sexp(json_array_get(j,i)));
-        UNPROTECT(1);
-        return vec;
+        
+        /* Check if it's a homogeneous numeric array */
+        int all_numbers = 1;
+        for (size_t i = 0; i < n; ++i) {
+            json_t *elem = json_array_get(j, i);
+            if (!json_is_number(elem)) {
+                all_numbers = 0;
+                break;
+            }
+        }
+        
+        if (all_numbers && n > 0) {
+            /* Create numeric vector */
+            SEXP vec = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
+            for (size_t i = 0; i < n; ++i) {
+                json_t *elem = json_array_get(j, i);
+                double val;
+                if (json_is_integer(elem)) {
+                    json_int_t int_val = json_integer_value(elem);
+                    val = (double)int_val;
+                } else {
+                    val = json_real_value(elem);
+                }
+                REAL(vec)[(R_xlen_t)i] = val;
+            }
+            UNPROTECT(1);
+            return vec;
+        } else {
+            /* Mixed types or empty - use generic list */
+            SEXP vec = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)n));
+            for (size_t i = 0; i < n; ++i)
+                SET_VECTOR_ELT(vec, (R_xlen_t)i, json_to_sexp(json_array_get(j,i)));
+            UNPROTECT(1);
+            return vec;
+        }
     }
     if (json_is_object(j)) {
         size_t len = json_object_size(j);
-        SEXP names = PROTECT(Rf_allocVector(STRSXP, len));
-        SEXP vals  = PROTECT(Rf_allocVector(VECSXP,  len));
+        SEXP names = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)len));
+        SEXP vals  = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)len));
         size_t idx = 0;
         const char *k;
         json_t     *v;
         json_object_foreach(j, k, v) {
-            SET_STRING_ELT(names, idx, Rf_mkChar(k));
-            SET_VECTOR_ELT(vals,  idx, json_to_sexp(v));
+            SET_STRING_ELT(names, (R_xlen_t)idx, Rf_mkChar(k));
+            SET_VECTOR_ELT(vals, (R_xlen_t)idx, json_to_sexp(v));
             ++idx;
         }
         Rf_setAttrib(vals, R_NamesSymbol, names);
@@ -128,7 +163,9 @@ static SEXP json_to_sexp(json_t *j)
 
 static json_t *sexp_to_json(SEXP x)
 {
-    if (x == R_NilValue) return json_null();
+    if (x == R_NilValue) {
+        return json_null();
+    }
     
     R_xlen_t len = XLENGTH(x);
     
@@ -178,6 +215,7 @@ static json_t *sexp_to_json(SEXP x)
         
     case VECSXP: {
         SEXP names = Rf_getAttrib(x, R_NamesSymbol);
+        
         if (Rf_isNull(names)) {
             /* treat as JSON array */
             json_t *arr = json_array();
@@ -187,10 +225,12 @@ static json_t *sexp_to_json(SEXP x)
         } else {
             /* treat as named object */
             json_t *obj = json_object();
-            for (R_xlen_t i = 0; i < len; i++)
+            for (R_xlen_t i = 0; i < len; i++) {
+                const char *name = CHAR(STRING_ELT(names,i));
                 json_object_set_new(obj,
-                                    CHAR(STRING_ELT(names,i)),
+                                    name,
                                     sexp_to_json(VECTOR_ELT(x,i)));
+            }
             return obj;
         }
     }
@@ -250,8 +290,10 @@ int middleware_init(json_t *config)
         return 0;               /* already marked as running */
     }
 
-    if (!getenv("R_HOME") && DEFAULT_R_HOME) {
+    if (!getenv("R_HOME")) {
+#ifdef DEFAULT_R_HOME
         setenv("R_HOME", DEFAULT_R_HOME, 1);
+#endif
     }
 
     /* Only try to initialize R if it was never initialized in this process */
@@ -327,7 +369,7 @@ json_t *middleware_execute(json_t *input,
     /* expose .input to R ------------------------ */
     SEXP r_input = PROTECT(json_to_sexp(input));
     Rf_defineVar(Rf_install(".input"), r_input, R_GlobalEnv);
-
+    
     /* get parsed expression --------------------- */
     SEXP expr = cached_parse(filter);
     if (expr == R_NilValue) {
@@ -335,22 +377,35 @@ json_t *middleware_execute(json_t *input,
         pthread_mutex_unlock(&r_lock);
         return json_pack("{s:s}", "error","R parse error");
     }
-
+    
     /* evaluate ---------------------------------- */
     int err = 0;
-    SEXP res = R_tryEval(expr, R_GlobalEnv, &err);
+    SEXP res = R_NilValue;
+    
+    /* Evaluate all expressions in the vector, keep result of last one */
+    R_xlen_t n_exprs = LENGTH(expr);
+    for (R_xlen_t i = 0; i < n_exprs; i++) {
+        SEXP single_expr = VECTOR_ELT(expr, i);
+        res = R_tryEval(single_expr, R_GlobalEnv, &err);
+        if (err) {
+            break;
+        }
+    }
+    
     json_t *out = NULL;
 
     if (!err && res != R_NilValue) {
+        
         /* common pattern: user returns jsonlite::toJSON(x, auto_unbox=TRUE) */
         if (TYPEOF(res)==STRSXP && XLENGTH(res)==1) {
             const char *txt = CHAR(STRING_ELT(res,0));
             json_error_t jerr;
             out = json_loads(txt, 0, &jerr);
-            if (!out)
+            if (!out) {
                 out = json_pack("{s:s,s:s}",
                                 "error","json parse failed",
                                 "detail", jerr.text);
+            }
         } else {
             out = sexp_to_json(res);
         }
