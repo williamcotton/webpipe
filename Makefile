@@ -11,6 +11,11 @@ ifeq ($(PLATFORM),LINUX)
 	LUA_INCLUDE = -I/usr/include/lua5.4
 	PG_LIBDIR = /usr/lib/x86_64-linux-gnu
 	PG_INCLUDE = -I/usr/include/postgresql
+	# R settings for Linux
+	R_HOME_DIR = $(shell R RHOME)
+	R_CFLAGS = $(shell $(R_HOME_DIR)/bin/R CMD config --cflags) -std=gnu99
+	R_LDFLAGS = $(shell $(R_HOME_DIR)/bin/R CMD config --ldflags)
+	R_LIBS = $(shell $(R_HOME_DIR)/bin/R CMD config --libs)
 	SANITIZE_FLAGS = -fsanitize=address,undefined
 	PLATFORM_LIBS = -lm -lpthread -ldl
 	CODESIGN_CMD = 
@@ -21,6 +26,11 @@ else ifeq ($(PLATFORM),DARWIN)
 	LUA_INCLUDE = -I/opt/homebrew/include/lua
 	PG_LIBDIR = /opt/homebrew/lib/postgresql@14
 	PG_INCLUDE = -I/opt/homebrew/include/postgresql@14
+	# R settings for macOS
+	R_HOME_DIR = /Library/Frameworks/R.framework/Resources
+	R_CFLAGS = -I$(R_HOME_DIR)/include -std=gnu99 -DDEFAULT_R_HOME=\"$(R_HOME_DIR)\"
+	R_LDFLAGS = -F/Library/Frameworks -framework R
+	R_LIBS = 
 	SANITIZE_FLAGS = -fsanitize=address,undefined
 	PLATFORM_LIBS = -ldl
 	CODESIGN_CMD = codesign -s - -v -f --entitlements debug.plist
@@ -76,7 +86,7 @@ else ifeq ($(PLATFORM),DARWIN)
 endif
 
 # Middleware targets
-middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so $(BUILD_DIR)/mustache.so $(BUILD_DIR)/validate.so $(BUILD_DIR)/auth.so
+middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so $(BUILD_DIR)/mustache.so $(BUILD_DIR)/validate.so $(BUILD_DIR)/auth.so $(BUILD_DIR)/r.so
 
 $(BUILD_DIR)/jq.so: $(MIDDLEWARE_DIR)/jq.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -ljq
@@ -95,6 +105,13 @@ $(BUILD_DIR)/validate.so: $(MIDDLEWARE_DIR)/validate.c
 
 $(BUILD_DIR)/auth.so: $(MIDDLEWARE_DIR)/auth.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -largon2
+
+$(BUILD_DIR)/r.so: $(MIDDLEWARE_DIR)/r.c
+ifeq ($(PLATFORM),DARWIN)
+	$(CC) $(CFLAGS) $(R_CFLAGS) -shared -fPIC -o $@ $< -ljansson $(R_LDFLAGS) $(R_LIBS)
+else ifeq ($(PLATFORM),LINUX)
+	$(CC) $(CFLAGS) $(R_CFLAGS) -shared -fPIC -o $@ $< -ljansson $(R_LDFLAGS) $(R_LIBS)
+endif
 
 # Install middleware to runtime directory
 install-middleware: middleware

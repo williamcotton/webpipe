@@ -1,0 +1,91 @@
+# Cross‑platform build for an R‑embedded C program
+OS        := $(shell uname)
+TARGET    := embed_r
+SRC       := embed_r.c
+
+ifeq ($(OS), Darwin)                               # ---------- macOS ----------
+  R_HOME_DIR := /Library/Frameworks/R.framework/Resources
+  CFLAGS     := -I$(R_HOME_DIR)/include -std=gnu99 \
+                -DDEFAULT_R_HOME=\"$(R_HOME_DIR)\"
+  LDFLAGS    := -F/Library/Frameworks -framework R
+  PKG_LIBS   :=
+else                                               # ---------- Linux ----------
+  R_HOME_DIR := $(shell R RHOME)
+  CFLAGS     := $(shell $(R_HOME_DIR)/bin/R CMD config --cflags) -std=gnu99
+  LDFLAGS    := $(shell $(R_HOME_DIR)/bin/R CMD config --ldflags)
+  PKG_LIBS   := $(shell $(R_HOME_DIR)/bin/R CMD config --libs)
+endif
+
+# ---------------------------------------------------------------------------
+all: $(TARGET)
+
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(PKG_LIBS)
+
+check-tidyverse:
+	Rscript -e "if (!requireNamespace('tidyverse', quietly = TRUE)) " \
+	         -e "  install.packages('tidyverse', repos='https://cloud.r-project.org')"
+
+run: all check-tidyverse
+	R_HOME=$(R_HOME_DIR) ./$(TARGET)
+	@echo "If scatter.png exists, ggplot2 rendered successfully."
+
+clean:
+	rm -f $(TARGET) scatter.png
+
+___
+
+/* embed_r.c : Minimal R‑in‑C example that auto‑loads tidyverse
+ *             and demonstrates ggplot2 (writes scatter.png).
+ */
+
+ #define R_NO_REMAP
+ #include <R.h>
+ #include <Rinternals.h>
+ #include <Rembedded.h>
+ #include <Rinterface.h>
+ #include <R_ext/Parse.h>
+ 
+ #include <stdlib.h>
+ #include <stdio.h>
+ 
+ /* Helper to run arbitrary R code --------------------------------------- */
+ static void run_R_code(const char *code)
+ {
+     ParseStatus status;
+     SEXP cmd, expr;
+ 
+     PROTECT(cmd  = Rf_mkString(code));
+     PROTECT(expr = R_ParseVector(cmd, -1, &status, R_NilValue));
+ 
+     if (status == PARSE_OK) {
+         for (int i = 0; i < LENGTH(expr); i++)
+             R_tryEval(VECTOR_ELT(expr, i), R_GlobalEnv, NULL);
+     } else {
+         fprintf(stderr, "R parse error\n");
+     }
+     UNPROTECT(2);
+ }
+ 
+ int main(int argc, char *argv[])
+ {
+ #ifdef DEFAULT_R_HOME                     /* set by Makefile on macOS */
+     if (getenv("R_HOME") == NULL)
+         setenv("R_HOME", DEFAULT_R_HOME, 1);
+ #endif
+ 
+     char *r_argv[] = {"R", "--silent"};
+     Rf_initEmbeddedR(2, r_argv);
+ 
+     /* Load tidyverse quietly ------------------------------------------- */
+     run_R_code("suppressPackageStartupMessages(library(tidyverse))");
+ 
+     /* Demo: build a ggplot and save it --------------------------------- */
+     run_R_code(
+         "p <- ggplot(mtcars, aes(mpg, wt)) + geom_point()\n"
+         "ggsave('scatter.png', p, width = 6, height = 4)"
+     );
+ 
+     Rf_endEmbeddedR(0);
+     return 0;
+ }
