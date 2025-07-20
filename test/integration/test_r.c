@@ -57,7 +57,11 @@ void setUp(void) {
     }
     
     // Initialize R middleware
-    if (r_middleware_init(json_object()) != 0) {
+    json_t *config = json_object();
+    int init_result = r_middleware_init(config);
+    json_decref(config);
+    
+    if (init_result != 0) {
         TEST_FAIL_MESSAGE("Failed to initialize r middleware");
     }
 }

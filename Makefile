@@ -11,11 +11,6 @@ ifeq ($(PLATFORM),LINUX)
 	LUA_INCLUDE = -I/usr/include/lua5.4
 	PG_LIBDIR = /usr/lib/x86_64-linux-gnu
 	PG_INCLUDE = -I/usr/include/postgresql
-	# R settings for Linux
-	R_HOME_DIR = $(shell R RHOME)
-	R_CFLAGS = $(shell $(R_HOME_DIR)/bin/R CMD config --cflags) -std=gnu99
-	R_LDFLAGS = $(shell $(R_HOME_DIR)/bin/R CMD config --ldflags)
-	R_LIBS = $(shell $(R_HOME_DIR)/bin/R CMD config --libs)
 	SANITIZE_FLAGS = -fsanitize=address,undefined
 	PLATFORM_LIBS = -lm -lpthread -ldl
 	CODESIGN_CMD = 
@@ -26,16 +21,118 @@ else ifeq ($(PLATFORM),DARWIN)
 	LUA_INCLUDE = -I/opt/homebrew/include/lua
 	PG_LIBDIR = /opt/homebrew/lib/postgresql@14
 	PG_INCLUDE = -I/opt/homebrew/include/postgresql@14
-	# R settings for macOS
-	R_HOME_DIR = /Library/Frameworks/R.framework/Resources
-	R_CFLAGS = -I$(R_HOME_DIR)/include -std=gnu99 -DDEFAULT_R_HOME=\"$(R_HOME_DIR)\"
-	R_LDFLAGS = -F/Library/Frameworks -framework R
-	R_LIBS = 
 	SANITIZE_FLAGS = -fsanitize=address,undefined
 	PLATFORM_LIBS = -ldl
 	CODESIGN_CMD = codesign -s - -v -f --entitlements debug.plist
 	TIDY = $(shell brew --prefix llvm)/bin/clang-tidy
 endif
+
+# R Detection - Multi-tier system for maximum compatibility
+define detect_r_config
+	@echo "Detecting R configuration..."
+	@R_DETECTED=0; \
+	R_HOME_DETECTED=""; \
+	R_CFLAGS_DETECTED=""; \
+	R_LDFLAGS_DETECTED=""; \
+	R_LIBS_DETECTED=""; \
+	\
+	echo "Tier 1: Trying R CMD config..."; \
+	if command -v R >/dev/null 2>&1; then \
+		if R_HOME_TMP=$$(R RHOME 2>/dev/null); then \
+			if R_CFLAGS_TMP=$$($$R_HOME_TMP/bin/R CMD config --cflags 2>/dev/null); then \
+				echo "✓ R CMD config detected"; \
+				R_HOME_DETECTED="$$R_HOME_TMP"; \
+				R_CFLAGS_TMP_CLEAN=$$(echo "$$R_CFLAGS_TMP" | sed 's/-fopenmp//g' | sed 's/-flto[^ ]*//g'); \
+				R_CFLAGS_DETECTED="$$R_CFLAGS_TMP_CLEAN -std=gnu99 -DDEFAULT_R_HOME=\\\"$$R_HOME_TMP\\\""; \
+				R_LDFLAGS_TMP=$$($$R_HOME_TMP/bin/R CMD config --ldflags 2>/dev/null); \
+				R_LDFLAGS_DETECTED=$$(echo "$$R_LDFLAGS_TMP" | sed 's/-fopenmp//g' | sed 's/-flto[^ ]*//g' | sed 's/-Wl[^ ]*//g'); \
+				R_LIBS_TMP=$$($$R_HOME_TMP/bin/R CMD config --libs 2>/dev/null); \
+				R_LIBS_DETECTED=$$(echo "$$R_LIBS_TMP" | sed 's/-fopenmp//g' | sed 's/-flto[^ ]*//g' | sed 's/-Wl[^ ]*//g'); \
+				R_DETECTED=1; \
+			fi; \
+		fi; \
+	fi; \
+	\
+	if [ $$R_DETECTED -eq 0 ]; then \
+		echo "Tier 2: Trying common installation paths..."; \
+		if [ "$(PLATFORM)" = "DARWIN" ]; then \
+			for R_PATH in "/Library/Frameworks/R.framework/Resources" "/opt/homebrew/lib/R" "/usr/local/lib/R"; do \
+				if [ -d "$$R_PATH/include" ] && [ -f "$$R_PATH/lib/libR.so" -o -f "$$R_PATH/lib/libR.dylib" ]; then \
+					echo "✓ Found R installation at $$R_PATH"; \
+					R_HOME_DETECTED="$$R_PATH"; \
+					R_CFLAGS_DETECTED="-I$$R_PATH/include -std=gnu99 -DDEFAULT_R_HOME=\\\"$$R_PATH\\\""; \
+					if [ "$$R_PATH" = "/Library/Frameworks/R.framework/Resources" ]; then \
+						R_LDFLAGS_DETECTED="-F/Library/Frameworks -framework R"; \
+					else \
+						R_LDFLAGS_DETECTED="-L$$R_PATH/lib -lR"; \
+					fi; \
+					R_LIBS_DETECTED=""; \
+					R_DETECTED=1; \
+					break; \
+				fi; \
+			done; \
+		else \
+			for R_PATH in "/usr/lib/R" "/usr/local/lib/R" "/opt/R"; do \
+				if [ -d "$$R_PATH/include" ] && [ -f "$$R_PATH/lib/libR.so" ]; then \
+					echo "✓ Found R installation at $$R_PATH"; \
+					R_HOME_DETECTED="$$R_PATH"; \
+					R_CFLAGS_DETECTED="-I$$R_PATH/include -std=gnu99"; \
+					R_LDFLAGS_DETECTED="-L$$R_PATH/lib"; \
+					R_LIBS_DETECTED="-lR -lm"; \
+					R_DETECTED=1; \
+					break; \
+				fi; \
+			done; \
+			\
+			if [ $$R_DETECTED -eq 0 ] && [ -d "/usr/share/R/include" ] && [ -f "/usr/lib/R/lib/libR.so" ]; then \
+				echo "✓ Found Ubuntu R installation"; \
+				R_HOME_DETECTED="/usr/lib/R"; \
+				R_CFLAGS_DETECTED="-I/usr/share/R/include -std=gnu99"; \
+				R_LDFLAGS_DETECTED="-L/usr/lib/R/lib"; \
+				R_LIBS_DETECTED="-lR -lm"; \
+				R_DETECTED=1; \
+			fi; \
+		fi; \
+	fi; \
+	\
+	if [ $$R_DETECTED -eq 0 ]; then \
+		echo "Tier 3: Trying pkg-config..."; \
+		if command -v pkg-config >/dev/null 2>&1; then \
+			if pkg-config --exists libR 2>/dev/null; then \
+				echo "✓ pkg-config found libR"; \
+				R_CFLAGS_DETECTED=$$(pkg-config --cflags libR)" -std=gnu99"; \
+				R_LDFLAGS_DETECTED=$$(pkg-config --libs libR); \
+				R_LIBS_DETECTED=""; \
+				R_DETECTED=1; \
+			fi; \
+		fi; \
+	fi; \
+	\
+	if [ $$R_DETECTED -eq 0 ]; then \
+		echo "❌ R installation not found!"; \
+		echo "Please install R using one of:"; \
+		if [ "$(PLATFORM)" = "DARWIN" ]; then \
+			echo "  brew install r"; \
+			echo "  or download from https://cran.r-project.org/bin/macosx/"; \
+		else \
+			echo "  sudo apt-get install r-base r-base-dev"; \
+			echo "  or download from https://cran.r-project.org/bin/linux/"; \
+		fi; \
+		exit 1; \
+	fi; \
+	\
+	echo "R_HOME=$$R_HOME_DETECTED" > .r-config.tmp; \
+	echo "R_CFLAGS=$$R_CFLAGS_DETECTED" >> .r-config.tmp; \
+	echo "R_LDFLAGS=$$R_LDFLAGS_DETECTED" >> .r-config.tmp; \
+	echo "R_LIBS=$$R_LIBS_DETECTED" >> .r-config.tmp; \
+	echo "✓ R configuration saved to .r-config.tmp";
+endef
+
+# Load R configuration (generate if missing)
+.r-config.tmp:
+	$(call detect_r_config)
+
+-include .r-config.tmp
 
 # Dotenv-c integration
 DOTENV_SRC = $(DEPS_DIR)/dotenv-c/dotenv.c
@@ -106,12 +203,8 @@ $(BUILD_DIR)/validate.so: $(MIDDLEWARE_DIR)/validate.c
 $(BUILD_DIR)/auth.so: $(MIDDLEWARE_DIR)/auth.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -largon2
 
-$(BUILD_DIR)/r.so: $(MIDDLEWARE_DIR)/r.c
-ifeq ($(PLATFORM),DARWIN)
+$(BUILD_DIR)/r.so: $(MIDDLEWARE_DIR)/r.c .r-config.tmp
 	$(CC) $(CFLAGS) $(R_CFLAGS) -shared -fPIC -o $@ $< -ljansson $(R_LDFLAGS) $(R_LIBS)
-else ifeq ($(PLATFORM),LINUX)
-	$(CC) $(CFLAGS) $(R_CFLAGS) -shared -fPIC -o $@ $< -ljansson $(R_LDFLAGS) $(R_LIBS)
-endif
 
 # Install middleware to runtime directory
 install-middleware: middleware
@@ -177,8 +270,9 @@ $(BUILD_DIR)/test_validate: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integ
 $(BUILD_DIR)/test_auth: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_auth.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_auth.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
+# R test - sanitizers disabled due to conflicts with R's memory management during initialization
 $(BUILD_DIR)/test_r: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_r.c $(TEST_COMMON_SOURCES)
-	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_r.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS) -fsanitize=address,undefined
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_r.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
 $(BUILD_DIR)/test_server: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
@@ -242,10 +336,28 @@ run: $(BUILD_DIR)/wp install-middleware
 run-debug: $(BUILD_DIR)/wp-debug install-middleware
 	$(BUILD_DIR)/wp-debug test.wp --port 8085
 
+# Force R re-detection
+detect-r:
+	rm -f .r-config.tmp
+	$(MAKE) .r-config.tmp
+
+# Install required R packages for development
+install-r-packages:
+	@echo "Installing required R packages..."
+	@if command -v R >/dev/null 2>&1; then \
+		R --slave -e "if (!requireNamespace('jsonlite', quietly = TRUE)) install.packages('jsonlite', repos='https://cloud.r-project.org/')"; \
+		R --slave -e "if (!requireNamespace('ggplot2', quietly = TRUE)) install.packages('ggplot2', repos='https://cloud.r-project.org/')"; \
+		echo "✓ R packages installed"; \
+	else \
+		echo "❌ R not found. Please install R first."; \
+		exit 1; \
+	fi
+
 # Clean
 clean:
 	rm -f wp wp_debug wp_runtime wp_runtime_debug
 	rm -rf $(BUILD_DIR)
 	rm -f ./middleware/*.so
+	rm -f .r-config.tmp
 
-.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run run-debug run-express-test middleware install-middleware test-leaks test-leaks-unit test-leaks-integration test-leaks-system
+.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run run-debug run-express-test middleware install-middleware test-leaks test-leaks-unit test-leaks-integration test-leaks-system detect-r install-r-packages

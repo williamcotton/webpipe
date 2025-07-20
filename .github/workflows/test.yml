@@ -2,7 +2,7 @@ name: Test Suite
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "r" ]
   pull_request:
     branches: [ "main" ]
 
@@ -42,7 +42,20 @@ jobs:
           postgresql-client \
           libbsd-dev \
           valgrind \
-          libargon2-dev
+          libargon2-dev \
+          r-base \
+          r-base-dev
+          
+    - name: Install R packages
+      run: |
+        sudo R -e "install.packages(c('jsonlite', 'ggplot2'), repos='https://cloud.r-project.org/')"
+        
+    - name: Setup R environment for testing
+      run: |
+        echo "R_LIBS_USER=$HOME/R-libs" >> $GITHUB_ENV
+        echo "R_ENVIRON_USER=" >> $GITHUB_ENV
+        echo "R_PROFILE_USER=" >> $GITHUB_ENV
+        echo "R_HOME=$(R RHOME)" >> $GITHUB_ENV
 
     - name: Build application
       run: make all
@@ -122,6 +135,18 @@ jobs:
         sleep 5
         /opt/homebrew/opt/postgresql@14/bin/createuser -s postgres || true
         /opt/homebrew/opt/postgresql@14/bin/createdb wp-test -U postgres || true
+
+    - name: Install R packages
+      run: |
+        brew install r
+        R -e "install.packages(c('jsonlite', 'ggplot2'), repos='https://cloud.r-project.org/')"
+        
+    - name: Setup R environment for testing
+      run: |
+        echo "R_LIBS_USER=$HOME/R-libs" >> $GITHUB_ENV
+        echo "R_ENVIRON_USER=" >> $GITHUB_ENV
+        echo "R_PROFILE_USER=" >> $GITHUB_ENV
+        echo "R_HOME=$(R RHOME)" >> $GITHUB_ENV
 
     - name: Build application
       run: make all

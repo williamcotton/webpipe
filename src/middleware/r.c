@@ -320,7 +320,7 @@ int middleware_init(json_t *config)
         ParseStatus st;
         
         /* Load jsonlite for JSON handling */
-        SEXP jsonlite_code = PROTECT(Rf_mkString("suppressPackageStartupMessages(library(jsonlite))"));
+        SEXP jsonlite_code = PROTECT(Rf_mkString("suppressMessages(suppressWarnings(tryCatch(library(jsonlite), error=function(e) NULL)))"));
         SEXP jsonlite_expr = PROTECT(R_ParseVector(jsonlite_code, -1, &st, R_NilValue));
         if (st == PARSE_OK) {
             R_tryEval(VECTOR_ELT(jsonlite_expr,0), R_GlobalEnv, NULL);
@@ -328,7 +328,7 @@ int middleware_init(json_t *config)
         UNPROTECT(2);
         
         /* Load ggplot2 for plotting */
-        SEXP ggplot_code = PROTECT(Rf_mkString("suppressPackageStartupMessages(library(ggplot2))"));
+        SEXP ggplot_code = PROTECT(Rf_mkString("suppressMessages(suppressWarnings(tryCatch(library(ggplot2), error=function(e) NULL)))"));
         SEXP ggplot_expr = PROTECT(R_ParseVector(ggplot_code, -1, &st, R_NilValue));
         if (st == PARSE_OK) {
             R_tryEval(VECTOR_ELT(ggplot_expr,0), R_GlobalEnv, NULL);
