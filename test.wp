@@ -21,12 +21,15 @@ config auth {
 
 ## Tests
 
+pipeline getTeams =
+  |> jq: `{ sqlParams: [.params.id | tostring] }`
+  |> pg: `SELECT * FROM teams WHERE id = $1`
+
 GET /hello
   |> jq: `{ world: ":)"}`
 
 GET /page/:id
-  |> jq: `{ sqlParams: [.params.id | tostring] }`
-  |> pg: `SELECT * FROM teams WHERE id = $1`
+  |> pipeline: getTeams
   |> jq: `{ team: .data.rows[0] }`
 
 pg teamsQuery = `SELECT * FROM teams`
@@ -664,12 +667,12 @@ GET /todos
       |> pg: `SELECT id, title, completed, created_at, updated_at FROM todos WHERE user_id = $1 ORDER BY created_at DESC`
       |> jq: `. + {
         todos: .data.rows | map(. + {id: (.id | tostring)}),
-        pageTitle: "Todo List - " + .user.login
+        pageTitle: "Todo List"
       }`
       |> mustache: `
         {{<authLayout}}
           {{$title}}{{pageTitle}}{{/title}}
-          {{$pageTitle}}{{pageTitle}}{{/pageTitle}}
+          {{$pageTitle}}{{pageTitle}} - {{user.login}}{{/pageTitle}}
           {{$pageContent}}
             <div class="bg-gray-50 p-6 rounded-lg mb-6">
               <h3 class="text-lg font-semibold mb-4">Add New Todo</h3>
