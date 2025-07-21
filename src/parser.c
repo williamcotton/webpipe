@@ -333,6 +333,40 @@ ASTNode *parser_parse_variable_assignment(Parser *parser) {
   return node;
 }
 
+ASTNode *parser_parse_pipeline_definition(Parser *parser) {
+  parser_advance(parser); // Skip 'pipeline'
+  
+  if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+    fprintf(stderr, "Expected pipeline name after 'pipeline'\n");
+    return NULL;
+  }
+  
+  Token *name = parser_advance(parser);
+  
+  if (!parser_match(parser, TOKEN_EQUALS)) {
+    fprintf(stderr, "Expected = after pipeline name\n");
+    return NULL;
+  }
+  
+  parser_consume_newlines(parser);
+  
+  // Parse the pipeline steps
+  PipelineStep *pipeline = parser_parse_pipeline(parser);
+  
+  ASTNode *node;
+  if (parser->ctx && parser->ctx->parse_arena) {
+    node = arena_alloc(parser->ctx->parse_arena, sizeof(ASTNode));
+    node->data.pipeline_def.name = arena_strdup(parser->ctx->parse_arena, name->value);
+  } else {
+    node = malloc(sizeof(ASTNode));
+    node->data.pipeline_def.name = strdup_safe(name->value);
+  }
+  node->type = AST_PIPELINE_DEFINITION;
+  node->data.pipeline_def.pipeline = pipeline;
+  
+  return node;
+}
+
 // Forward declarations for config parsing
 ASTNode *parser_parse_config_value(Parser *parser);
 ConfigProperty *parser_parse_config_properties(Parser *parser);
@@ -635,6 +669,7 @@ json_t *config_ast_to_json(ASTNode *node) {
     case AST_ROUTE_DEFINITION:
     case AST_PIPELINE_STEP:
     case AST_VARIABLE_ASSIGNMENT:
+    case AST_PIPELINE_DEFINITION:
     case AST_RESULT_STEP:
     case AST_CONFIG_BLOCK:
       // These node types are not configuration values
@@ -672,18 +707,33 @@ ASTNode *parser_parse_statement(Parser *parser) {
     return parser_parse_config_block(parser);
   }
 
-  // Check for variable assignment
+  // Check for pipeline definition: pipeline identifier = 
   if (parser_check(parser, TOKEN_IDENTIFIER)) {
-    int saved = parser->current;
-    parser_advance(parser); // middleware
-    if (parser_check(parser, TOKEN_IDENTIFIER)) {
-      parser_advance(parser); // name
-      if (parser_check(parser, TOKEN_EQUALS)) {
-        parser->current = saved;
-        return parser_parse_variable_assignment(parser);
+    Token *first_token = parser_peek(parser);
+    if (strcmp(first_token->value, "pipeline") == 0) {
+      int saved = parser->current;
+      parser_advance(parser); // pipeline
+      if (parser_check(parser, TOKEN_IDENTIFIER)) {
+        parser_advance(parser); // name
+        if (parser_check(parser, TOKEN_EQUALS)) {
+          parser->current = saved;
+          return parser_parse_pipeline_definition(parser);
+        }
       }
+      parser->current = saved;
+    } else {
+      // Check for variable assignment: middleware identifier = 
+      int saved = parser->current;
+      parser_advance(parser); // middleware
+      if (parser_check(parser, TOKEN_IDENTIFIER)) {
+        parser_advance(parser); // name
+        if (parser_check(parser, TOKEN_EQUALS)) {
+          parser->current = saved;
+          return parser_parse_variable_assignment(parser);
+        }
+      }
+      parser->current = saved;
     }
-    parser->current = saved;
   }
 
   // If we can't parse a statement, skip the current token to prevent infinite loops
@@ -766,6 +816,11 @@ void stringify_node(FILE *out, ASTNode *node, int level) {
   case AST_VARIABLE_ASSIGNMENT:
     fprintf(out, "%s %s = `%s`\n", node->data.var_assign.middleware,
             node->data.var_assign.name, node->data.var_assign.value);
+    break;
+
+  case AST_PIPELINE_DEFINITION:
+    fprintf(out, "pipeline %s = \n", node->data.pipeline_def.name);
+    stringify_pipeline(out, node->data.pipeline_def.pipeline, 1);
     break;
 
   case AST_PIPELINE_STEP:
@@ -894,6 +949,11 @@ void free_ast(ASTNode *node) {
     free(node->data.var_assign.middleware);
     free(node->data.var_assign.name);
     free(node->data.var_assign.value);
+    break;
+
+  case AST_PIPELINE_DEFINITION:
+    free(node->data.pipeline_def.name);
+    free_pipeline(node->data.pipeline_def.pipeline);
     break;
 
   case AST_RESULT_STEP:

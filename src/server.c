@@ -840,6 +840,65 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             return 0;
         }
         
+        // Special handling for pipeline middleware
+        if (strcmp(step->middleware, "pipeline") == 0) {
+            // Look up pipeline variable
+            json_t *pipeline_var = json_object_get(runtime->variables, step->value);
+            if (!pipeline_var) {
+                fprintf(stderr, "Pipeline variable not found: %s\n", step->value);
+                return -1;
+            }
+            
+            // Check if it's a pipeline definition
+            json_t *type_field = json_object_get(pipeline_var, "_type");
+            if (!type_field || !json_is_string(type_field) || 
+                strcmp(json_string_value(type_field), "pipeline") != 0) {
+                fprintf(stderr, "Variable '%s' is not a pipeline definition\n", step->value);
+                return -1;
+            }
+            
+            // Get the pipeline definition AST node
+            json_t *def_field = json_object_get(pipeline_var, "_definition");
+            if (!def_field || !json_is_integer(def_field)) {
+                fprintf(stderr, "Invalid pipeline definition for '%s'\n", step->value);
+                return -1;
+            }
+            
+            ASTNode *pipeline_node = (ASTNode*)(uintptr_t)json_integer_value(def_field);
+            if (!pipeline_node || pipeline_node->type != AST_PIPELINE_DEFINITION) {
+                fprintf(stderr, "Corrupted pipeline definition for '%s'\n", step->value);
+                return -1;
+            }
+            
+            // Execute the pipeline steps inline
+            PipelineStep *pipeline_steps = pipeline_node->data.pipeline_def.pipeline;
+            if (pipeline_steps) {
+                json_t *pipeline_result = NULL;
+                int temp_code;
+                char *temp_content_type = NULL;
+                int result = execute_pipeline_with_result(pipeline_steps, current, arena, 
+                                                        &pipeline_result, &temp_code, &temp_content_type);
+                // Ensure arena context is still set after recursive execution
+                set_current_arena(arena);
+                if (result != 0 || !pipeline_result) {
+                    fprintf(stderr, "Pipeline '%s' execution failed\n", step->value);
+                    return -1;
+                }
+                
+                // Update current with pipeline result
+                current = pipeline_result;
+                
+                // Update content type if pipeline changed it
+                if (temp_content_type && strcmp(temp_content_type, "application/json") != 0) {
+                    *content_type = temp_content_type;
+                }
+            }
+            
+            // Continue with next step
+            step = step->next;
+            continue;
+        }
+        
         Middleware *middleware = find_middleware(step->middleware);
         if (!middleware) {
             fprintf(stderr, "Middleware not found: %s\n", step->middleware);
@@ -1170,8 +1229,8 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
             // Collect middleware from the main pipeline
             PipelineStep *step = node->data.route_def.pipeline;
             while (step) {
-                // Skip "result" as it's built-in
-                if (strcmp(step->middleware, "result") != 0) {
+                // Skip "result" and "pipeline" as they are built-in
+                if (strcmp(step->middleware, "result") != 0 && strcmp(step->middleware, "pipeline") != 0) {
                     // Check if middleware is already in the list
                     bool found = false;
                     for (int i = 0; i < *middleware_count; i++) {
@@ -1193,8 +1252,8 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
                     while (condition) {
                         PipelineStep *condition_step = condition->pipeline;
                         while (condition_step) {
-                            // Skip "result" as it's built-in
-                            if (strcmp(condition_step->middleware, "result") != 0) {
+                            // Skip "result" and "pipeline" as they are built-in
+                            if (strcmp(condition_step->middleware, "result") != 0 && strcmp(condition_step->middleware, "pipeline") != 0) {
                                 // Check if middleware is already in the list
                                 bool found = false;
                                 for (int i = 0; i < *middleware_count; i++) {
@@ -1222,6 +1281,59 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
         case AST_VARIABLE_ASSIGNMENT:
             // Variable assignments don't contain pipeline steps
             break;
+            
+        case AST_PIPELINE_DEFINITION: {
+            // Collect middleware from pipeline definition
+            PipelineStep *step = node->data.pipeline_def.pipeline;
+            while (step) {
+                // Skip "result" and "pipeline" as they are built-in
+                if (strcmp(step->middleware, "result") != 0 && strcmp(step->middleware, "pipeline") != 0) {
+                    // Check if middleware is already in the list
+                    bool found = false;
+                    for (int i = 0; i < *middleware_count; i++) {
+                        if (strcmp(middleware_names[i], step->middleware) == 0) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found && *middleware_count < max_middleware) {
+                        middleware_names[*middleware_count] = strdup(step->middleware);
+                        (*middleware_count)++;
+                    }
+                }
+                
+                // If this is a result step, collect middleware from its conditions
+                if (strcmp(step->middleware, "result") == 0) {
+                    ASTNode *result_node = (ASTNode*)(uintptr_t)step->value;
+                    ResultCondition *condition = result_node->data.result_step.conditions;
+                    while (condition) {
+                        PipelineStep *condition_step = condition->pipeline;
+                        while (condition_step) {
+                            // Skip "result" and "pipeline" as they are built-in
+                            if (strcmp(condition_step->middleware, "result") != 0 && strcmp(condition_step->middleware, "pipeline") != 0) {
+                                // Check if middleware is already in the list
+                                bool found = false;
+                                for (int i = 0; i < *middleware_count; i++) {
+                                    if (strcmp(middleware_names[i], condition_step->middleware) == 0) {
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (!found && *middleware_count < max_middleware) {
+                                    middleware_names[*middleware_count] = strdup(condition_step->middleware);
+                                    (*middleware_count)++;
+                                }
+                            }
+                            condition_step = condition_step->next;
+                        }
+                        condition = condition->next;
+                    }
+                }
+                
+                step = step->next;
+            }
+            break;
+        }
             
         case AST_RESULT_STEP:
             // This case is handled in the route definition case
@@ -1317,12 +1429,19 @@ int wp_runtime_init(const char *wp_file, int port) {
     // Process configuration blocks
     process_config_blocks(runtime->program);
     
-    // Process variable assignments
+    // Process variable assignments and pipeline definitions
     for (int i = 0; i < runtime->program->data.program.statement_count; i++) {
         ASTNode *stmt = runtime->program->data.program.statements[i];
         if (stmt->type == AST_VARIABLE_ASSIGNMENT) {
             json_object_set_new(runtime->variables, stmt->data.var_assign.name,
                                json_string(stmt->data.var_assign.value));
+        } else if (stmt->type == AST_PIPELINE_DEFINITION) {
+            // Store pipeline definitions as a special marker in variables
+            // We'll use a JSON object with a special "pipeline" type to identify them
+            json_t *pipeline_marker = json_object();
+            json_object_set_new(pipeline_marker, "_type", json_string("pipeline"));
+            json_object_set_new(pipeline_marker, "_definition", json_integer((json_int_t)(uintptr_t)stmt));
+            json_object_set_new(runtime->variables, stmt->data.pipeline_def.name, pipeline_marker);
         }
     }
     
