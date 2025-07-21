@@ -113,6 +113,8 @@ Token lexer_read_identifier(Lexer *lexer) {
     type = TOKEN_HTTP_METHOD;
   } else if (strcmp(value, "config") == 0) {
     type = TOKEN_CONFIG;
+  } else if (strcmp(value, "pipeline") == 0) {
+    type = TOKEN_IDENTIFIER; // Keep as identifier, we'll handle it in parser
   } else if (strcmp(value, "true") == 0) {
     type = TOKEN_TRUE;
   } else if (strcmp(value, "false") == 0) {

@@ -64,6 +64,7 @@ typedef enum {
   AST_ROUTE_DEFINITION,
   AST_PIPELINE_STEP,
   AST_VARIABLE_ASSIGNMENT,
+  AST_PIPELINE_DEFINITION,
   AST_RESULT_STEP,
   AST_CONFIG_BLOCK,
   AST_CONFIG_VALUE_STRING,
@@ -121,6 +122,10 @@ struct ASTNode {
       char *name;
       char *value;
     } var_assign;
+    struct {
+      char *name;
+      PipelineStep *pipeline;
+    } pipeline_def;
     struct {
       ResultCondition *conditions;
     } result_step;
@@ -225,6 +230,7 @@ void parser_consume_newlines(Parser *parser);
 PipelineStep *parser_parse_pipeline(Parser *parser);
 ASTNode *parser_parse_route_definition(Parser *parser);
 ASTNode *parser_parse_variable_assignment(Parser *parser);
+ASTNode *parser_parse_pipeline_definition(Parser *parser);
 ASTNode *parser_parse_config_block(Parser *parser);
 ASTNode *parser_parse_config_value(Parser *parser);
 ConfigProperty *parser_parse_config_properties(Parser *parser);

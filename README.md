@@ -55,8 +55,28 @@ GET /page/:id
 pg articlesQuery = `select * from articles`
 
 GET /articles
+  |> jq: `{ sqlParams: [] }`
   |> pg: articlesQuery
 ```
+
+### Pipeline Variables
+
+Define reusable pipeline sequences that can be referenced by name:
+
+```wp
+pipeline getPage = 
+  |> jq: `{ sqlParams: [.params.id | tostring] }`
+  |> pg: `SELECT * FROM teams WHERE id = $1`
+  |> jq: `{ team: .data.rows[0] }`
+
+GET /page/:id
+  |> pipeline: getPage
+```
+
+Pipeline variables allow you to:
+- **Reuse Logic**: Define complex pipeline sequences once and use them in multiple routes
+- **Modular Design**: Break down complex processing into named, testable components
+- **Maintainability**: Change pipeline logic in one place and have it apply everywhere it's used
 
 ### Error Handling with Result Steps
 

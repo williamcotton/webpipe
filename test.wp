@@ -32,6 +32,7 @@ GET /page/:id
 pg teamsQuery = `SELECT * FROM teams`
 
 GET /teams
+  |> jq: `{ sqlParams: [] }`
   |> pg: teamsQuery
 
 GET /test
