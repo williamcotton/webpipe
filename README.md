@@ -218,6 +218,65 @@ Returns standardized validation errors when constraints are violated:
 }
 ```
 
+### Cache Middleware
+Provides intelligent request-response caching with TTL expiration, LRU eviction, and template-based cache keys.
+
+```wp
+# Basic caching with TTL
+GET /cached-data
+  |> cache: `
+    ttl: 60
+    enabled: true
+  `
+  |> jq: `{
+    message: "This response is cached",
+    timestamp: now,
+    data: "expensive computation result"
+  }`
+
+# Cache with custom key template using request parameters
+GET /user/:id/profile
+  |> cache: `
+    keyTemplate: user-profile-{params.id}
+    ttl: 300
+    enabled: true
+  `
+  |> jq: `{ sqlParams: [.params.id] }`
+  |> pg: `SELECT * FROM users WHERE id = $1`
+
+# Cache with query parameter-based keys
+GET /api/search
+  |> cache: `
+    keyTemplate: search-{query.q}-{query.category}
+    ttl: 60
+    enabled: true
+  `
+  |> jq: `{ search_term: .query.q, category: .query.category }`
+```
+
+**Cache Features:**
+- **TTL Expiration**: Configurable time-to-live for cached responses
+- **LRU Eviction**: Least Recently Used eviction when cache size limits are reached
+- **Template Keys**: Dynamic cache keys using `{object.property}` syntax to incorporate request parameters, query strings, and headers
+- **Memory Management**: Thread-safe operations with automatic memory cleanup
+- **Size Limits**: Configurable maximum cache size with automatic eviction
+- **Pipeline Integration**: Seamless integration with WebPipe's pipeline system
+
+**Configuration Options:**
+- `ttl`: Time-to-live in seconds (default: 300)
+- `enabled`: Enable/disable caching for this step (default: true)
+- `keyTemplate`: Template string for generating cache keys (e.g., `user-{params.id}-{query.type}`)
+- `key`: Static custom cache key (alternative to keyTemplate)
+
+**Global Cache Configuration:**
+```wp
+config cache {
+  enabled: true
+  defaultTtl: 300
+  maxCacheSize: 104857600  # 100MB
+}
+```
+
 ### Mustache Middleware
 Renders HTML templates using mustache syntax with JSON data.
 
