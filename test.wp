@@ -351,6 +351,106 @@ POST /debug/test-hash
     errors: .errors
   }`
 
+config cache {
+  enabled: true
+  defaultTtl: 60
+  maxCacheSize: 10485760
+}
+
+GET /cache-test
+  |> cache: `
+    ttl: 10
+    enabled: true
+  `
+  |> jq: `{
+    message: "Hello from cache test!",
+    timestamp: now,
+    random: (now % 1000)
+  }`
+
+GET /no-cache-test  
+  |> jq: `{
+    message: "No cache here",
+    timestamp: now,
+    random: (now % 1000)
+  }`
+
+GET /slow-cached-test
+  |> cache: `
+    ttl: 30
+    enabled: true
+  `
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT pg_sleep(0.25), 'Slow database operation completed!' as message, now() as timestamp`
+  |> jq: `{
+    message: .data.rows[0].message,
+    timestamp: .data.rows[0].timestamp,
+    cached: true,
+    note: "This query sleeps for 250ms - should be fast on cache hit!"
+  }`
+
+GET /slow-uncached-test
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT pg_sleep(0.25), 'Slow database operation completed!' as message, now() as timestamp`
+  |> jq: `{
+    message: .data.rows[0].message,
+    timestamp: .data.rows[0].timestamp,
+    cached: false,
+    note: "This query sleeps for 250ms - always slow!"
+  }`
+
+GET /very-slow-cached-test
+  |> cache: `
+    ttl: 60
+    enabled: true
+  `
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT pg_sleep(1.0), 'Very slow database operation completed!' as message, now() as timestamp, random() as random_value`
+  |> jq: `{
+    message: .data.rows[0].message,
+    timestamp: .data.rows[0].timestamp,
+    random_value: .data.rows[0].random_value,
+    cached: true,
+    note: "This query sleeps for 1 second - cache makes a huge difference!"
+  }`
+
+GET /user/:id/profile
+  |> cache: `
+    keyTemplate: user-profile-{params.id}
+    ttl: 30
+    enabled: true
+  `
+  |> jq: `{ sqlParams: [.params.id] }`
+  |> pg: `SELECT pg_sleep(0.5), $1 as user_id, 'User profile data' as profile_type, now() as fetched_at`
+  |> jq: `{
+    user_id: .data.rows[0].user_id,
+    profile_type: .data.rows[0].profile_type,
+    fetched_at: .data.rows[0].fetched_at,
+    cache_key_used: "user-profile-" + (.originalRequest.params.id | tostring),
+    note: "Cache key includes user ID from URL parameter"
+  }`
+
+GET /api/search
+  |> cache: `
+    keyTemplate: search-{query.q}-{query.category}
+    ttl: 15
+    enabled: true
+  `
+  |> jq: `{ 
+    sqlParams: [.query.q // "default", .query.category // "all"],
+    search_term: .query.q,
+    search_category: .query.category
+  }`
+  |> pg: `SELECT pg_sleep(0.3), $1 as term, $2 as category, 'Search results' as result_type, now() as searched_at`
+  |> jq: `{
+    search_term: .data.rows[0].term,
+    category: .data.rows[0].category,
+    result_type: .data.rows[0].result_type,
+    searched_at: .data.rows[0].searched_at,
+    cache_key_used: "search-" + (.originalRequest.query.q | tostring) + "-" + (.originalRequest.query.category | tostring),
+    note: "Cache key varies by search term and category query parameters"
+  }`
+
 ## Todos App
 
 mustache baseLayout = `

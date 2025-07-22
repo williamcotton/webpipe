@@ -176,11 +176,22 @@ typedef struct {
 typedef void* (*arena_alloc_func)(void* arena, size_t size);
 typedef void (*arena_free_func)(void* arena);
 
+// Post-execute hook function type
+typedef void (*post_execute_func)(json_t *final_response, void *arena, arena_alloc_func alloc_func, json_t *middleware_config);
+
+// Post-execute hook registry entry
+typedef struct PostExecuteHook {
+    post_execute_func func;
+    json_t *middleware_config;
+    struct PostExecuteHook *next;
+} PostExecuteHook;
+
 // Middleware interface with arena functions
 typedef struct {
     char *name;
     void *handle;
     json_t *(*execute)(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *config, json_t *middleware_config, char **contentType, json_t *variables);
+    post_execute_func post_execute; // Optional post-execute function
 } Middleware;
 
 // Function declarations
@@ -270,5 +281,10 @@ bool match_route(const char *pattern, const char *url, json_t *params);
 
 // Cookie parsing function
 json_t *parse_cookies(const char *cookie_header);
+
+// Post-execute hook registry functions
+void register_post_execute_hook(post_execute_func func, json_t *middleware_config, MemoryArena *arena);
+void execute_post_hooks(json_t *final_response, MemoryArena *arena);
+void clear_post_hooks(void);
 
 #endif // WP_H

@@ -190,6 +190,9 @@ void parse_context_destroy(ParseContext *ctx) {
 // Thread-local storage for current arena
 static _Thread_local MemoryArena *currentArena = NULL;
 
+// Thread-local storage for post-execute hook registry
+static _Thread_local PostExecuteHook *hook_registry = NULL;
+
 // Set current arena for this thread
 void set_current_arena(MemoryArena *arena) {
     currentArena = arena;
@@ -229,6 +232,44 @@ static void arena_free_wrapper(void *arena) {
     arena_free((MemoryArena*)arena);
 }
 
+// Hook registry system implementation
+void register_post_execute_hook(post_execute_func func, json_t *middleware_config, MemoryArena *arena) {
+    if (!func) {
+        return;
+    }
+    
+    // Allocate hook entry using the arena
+    PostExecuteHook *hook = arena_alloc(arena, sizeof(PostExecuteHook));
+    if (!hook) {
+        fprintf(stderr, "Failed to allocate memory for post-execute hook\n");
+        return;
+    }
+    
+    hook->func = func;
+    hook->middleware_config = middleware_config; // Reference, not copied
+    hook->next = hook_registry; // Add to front of list
+    hook_registry = hook;
+}
+
+void execute_post_hooks(json_t *final_response, MemoryArena *arena) {
+    PostExecuteHook *current = hook_registry;
+    
+    // Execute hooks in reverse order (LIFO - last registered, first executed)
+    while (current) {
+        if (current->func) {
+            current->func(final_response, arena, arena_alloc_wrapper, 
+                         current->middleware_config);
+        }
+        current = current->next;
+    }
+}
+
+void clear_post_hooks(void) {
+    // Since hooks are allocated in the request arena, 
+    // we just need to clear the registry pointer
+    hook_registry = NULL;
+}
+
 // Middleware loading and management
 int load_middleware(const char *name) {
     // Check if runtime is initialized
@@ -262,11 +303,16 @@ int load_middleware(const char *name) {
         return -1;
     }
     
+    // Check for optional post_execute function
+    post_execute_func post_execute_func_ptr = (post_execute_func)dlsym(handle, "middleware_post_execute");
+    // No error checking needed - post_execute is optional
+    
     // Add to runtime middleware
     runtime->middleware = realloc(runtime->middleware, sizeof(Middleware) * (size_t)(runtime->middleware_count + 1));
     runtime->middleware[runtime->middleware_count].name = strdup(name);
     runtime->middleware[runtime->middleware_count].handle = handle;
     runtime->middleware[runtime->middleware_count].execute = execute;
+    runtime->middleware[runtime->middleware_count].post_execute = post_execute_func_ptr;
     runtime->middleware_count++;
     
     // Check if this middleware is a database provider
@@ -788,6 +834,12 @@ static inline void attach_request_meta(json_t *dst, json_t *orig) {
         json_t *sc = json_object_get(orig, "setCookies");
         if (sc) json_object_set(dst, "setCookies", sc);
     }
+    
+    // Preserve cache metadata if present
+    if (!json_object_get(dst, "_cache_metadata")) {
+        json_t *cache_meta = json_object_get(orig, "_cache_metadata");
+        if (cache_meta) json_object_set(dst, "_cache_metadata", cache_meta);
+    }
 }
 
 static int dispatch_result(ASTNode *result_node, json_t *state, MemoryArena *arena,
@@ -831,6 +883,9 @@ static int dispatch_result(ASTNode *result_node, json_t *state, MemoryArena *are
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena,
                                  json_t **final_response, int *response_code, char **content_type) {
     set_current_arena(arena);          /* establish arena context once     */
+
+    // Clear any existing post-execute hooks from previous requests
+    clear_post_hooks();
 
     json_t *current      = request;
     json_t *original_req = request;
@@ -907,7 +962,41 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             return -1;
         }
 
+        // Check for pipeline control response (early termination)
+        json_t *pipeline_action = json_object_get(result, "_pipeline_action");
+        if (pipeline_action && json_is_string(pipeline_action)) {
+            const char *action = json_string_value(pipeline_action);
+            if (strcmp(action, "return") == 0) {
+                // Early termination - extract value and execute post hooks
+                json_t *value = json_object_get(result, "value");
+                if (value) {
+                    attach_request_meta(value, original_req);
+                    execute_post_hooks(value, arena);
+                    json_object_del(value, "originalRequest");
+                    *final_response = value;
+                    return 0;
+                } else {
+                    fprintf(stderr, "Pipeline control 'return' without 'value' field\n");
+                    return -1;
+                }
+            }
+        }
+
         attach_request_meta(result, original_req);
+        
+        // Also preserve cache metadata from current request step (if different from original)
+        if (current != original_req) {
+            json_t *current_cache_meta = json_object_get(current, "_cache_metadata");
+            if (current_cache_meta && !json_object_get(result, "_cache_metadata")) {
+                json_object_set(result, "_cache_metadata", current_cache_meta);
+            }
+        }
+
+        /* ─── register post-execute hooks for middleware that have them ─── */
+        if (mw->post_execute) {
+            // Register the middleware's post_execute function to be called later
+            register_post_execute_hook(mw->post_execute, mw_cfg, arena);
+        }
 
         /* ─── early‑exit on error ─────────────────────────────────────── */
         if (has_errors(result)) {
@@ -923,6 +1012,9 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
     }
 
     /* ─── end of pipeline ──────────────────────────────────────────────── */
+    // Execute any registered post-execute hooks
+    execute_post_hooks(current, arena);
+    
     json_object_del(current, "originalRequest");
     *final_response = current;
     return 0;
