@@ -750,265 +750,180 @@ static enum MHD_Result find_and_process_route(struct MHD_Connection *connection,
                              MHD_HTTP_NOT_FOUND);
 }
 
-int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
-                                json_t **final_response, int *response_code, char **content_type) {
-    json_t *current = request;
-    json_t *original_request = request; // Store original request
-    *response_code = 200; // Default
-    *content_type = arena_strdup(arena, "application/json"); // Default content type
-    
-    PipelineStep *step = pipeline;
-    while (step) {
-        if (strcmp(step->middleware, "result") == 0) {
-            // Ensure current object has originalRequest and setCookies field before result processing
-            if (json_is_object(current) && original_request) {
-                // Always set the clean original request, not a nested one
-                json_object_set(current, "originalRequest", original_request);
-                
-                // Ensure setCookies is preserved in current object
-                json_t *set_cookies = json_object_get(current, "setCookies");
-                if (!set_cookies) {
-                    set_cookies = json_array();
-                    json_object_set_new(current, "setCookies", set_cookies);
-                }
-            }
-            
-            // Handle result step
-            ASTNode *result_node = (ASTNode*)(uintptr_t)step->value;
-            
-            // Determine which condition to execute based on current state
-            ResultCondition *condition = result_node->data.result_step.conditions;
-            ResultCondition *selected_condition = NULL;
-            
-            // Check for error conditions first using new standardized format
-            if (has_errors(current)) {
-                const char *error_type = get_first_error_type(current);
-                if (error_type) {
-                    // Look for matching error condition
-                    while (condition) {
-                        if (strcmp(condition->condition_name, error_type) == 0) {
-                            selected_condition = condition;
-                            break;
-                        }
-                        condition = condition->next;
-                    }
-                    
-                    // If no specific error condition found, look for "default" condition
-                    if (!selected_condition) {
-                        condition = result_node->data.result_step.conditions;
-                        while (condition) {
-                            if (strcmp(condition->condition_name, "default") == 0) {
-                                selected_condition = condition;
-                                break;
-                            }
-                            condition = condition->next;
-                        }
-                    }
-                }
-            }
-            
-            // If no error condition found, use "ok" condition
-            if (!selected_condition) {
-                condition = result_node->data.result_step.conditions;
-                while (condition) {
-                    if (strcmp(condition->condition_name, "ok") == 0) {
-                        selected_condition = condition;
-                        break;
-                    }
-                    condition = condition->next;
-                }
-            }
-            
-            if (selected_condition) {
-                *response_code = selected_condition->status_code;
-                
-                // Execute the selected condition's pipeline
-                if (selected_condition->pipeline) {
-                    json_t *condition_result = NULL;
-                    int temp_code;
-                    int result = execute_pipeline_with_result(selected_condition->pipeline, 
-                                                            current, arena, &condition_result, &temp_code, content_type);
-                    // Ensure arena context is still set after recursive execution
-                    set_current_arena(arena);
-                    if (result == 0 && condition_result) {
-                        current = condition_result;
-                    }
-                }
-            }
-            
-            *final_response = current;
-            return 0;
+/* ───────────────────── helper utilities ──────────────────────────────── */
+
+static ResultCondition *find_condition_by_name(ResultCondition *c, const char *name) {
+    for (; c; c = c->next) {
+        if (strcmp(c->condition_name, name) == 0) {
+            return c;
         }
-        
-        // Special handling for pipeline middleware
+    }
+    return NULL;
+}
+
+static ResultCondition *select_result_condition(ResultCondition *conds, json_t *obj) {
+    if (has_errors(obj)) {
+        const char *err = get_first_error_type(obj);
+        if (err) {
+            ResultCondition *match = find_condition_by_name(conds, err);
+            if (match) {
+                return match;
+            }
+        }
+        ResultCondition *dflt = find_condition_by_name(conds, "default");
+        if (dflt) {
+            return dflt;
+        }
+    }
+    return find_condition_by_name(conds, "ok");
+}
+
+
+static inline void attach_request_meta(json_t *dst, json_t *orig) {
+    if (!json_is_object(dst) || !orig) return;
+
+    json_object_set(dst, "originalRequest", orig);
+
+    if (!json_object_get(dst, "setCookies")) {
+        json_t *sc = json_object_get(orig, "setCookies");
+        if (sc) json_object_set(dst, "setCookies", sc);
+    }
+}
+
+static int dispatch_result(ASTNode *result_node, json_t *state, MemoryArena *arena,
+                           json_t **resp, int *code, char **ctype) {
+    ResultCondition *cond = select_result_condition(result_node->data.result_step.conditions, state);
+    if (!cond) {                       /* no branch found ⇒ 200 OK         */
+        *resp = state;
+        *code = 200;
+        return 0;
+    }
+
+    *code = cond->status_code;
+
+    if (!cond->pipeline) {             /* leaf branch                      */
+        *resp = state;
+        return 0;
+    }
+
+    /* inner branch – run its pipeline if present */
+    json_t *tmp   = NULL;
+    int     tmp_code;
+    int ok = execute_pipeline_with_result(cond->pipeline, state, arena,
+                                          &tmp, &tmp_code, ctype);
+    set_current_arena(arena);
+
+    if (ok == 0 && tmp) {
+        state = tmp;                   /* use branch body                  */
+    }
+
+    /* keep outer status unless inner pipeline explicitly changed it       */
+    if (tmp_code != 200) {
+        *code = tmp_code;
+    }
+
+    *resp = state;
+    return ok;
+}
+
+/* ───────────────────── main routine ──────────────────────────────────── */
+
+int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena,
+                                 json_t **final_response, int *response_code, char **content_type) {
+    set_current_arena(arena);          /* establish arena context once     */
+
+    json_t *current      = request;
+    json_t *original_req = request;
+
+    *response_code = 200;
+    *content_type  = arena_strdup(arena, "application/json");
+
+    for (PipelineStep *step = pipeline; step; step = step->next) {
+
+        /* ─── result step ─────────────────────────────────────────────── */
+        if (strcmp(step->middleware, "result") == 0) {
+            attach_request_meta(current, original_req);
+            return dispatch_result((ASTNode *)(uintptr_t)step->value, current,
+                                   arena, final_response, response_code, content_type);
+        }
+
+        /* ─── inline pipeline variable ────────────────────────────────── */
         if (strcmp(step->middleware, "pipeline") == 0) {
-            // Look up pipeline variable
-            json_t *pipeline_var = json_object_get(runtime->variables, step->value);
-            if (!pipeline_var) {
+            json_t *var = json_object_get(runtime->variables, step->value);
+            if (!var) {
                 fprintf(stderr, "Pipeline variable not found: %s\n", step->value);
                 return -1;
             }
-            
-            // Check if it's a pipeline definition
-            json_t *type_field = json_object_get(pipeline_var, "_type");
-            if (!type_field || !json_is_string(type_field) || 
+
+            json_t *type_field = json_object_get(var, "_type");
+            if (!json_is_string(type_field) ||
                 strcmp(json_string_value(type_field), "pipeline") != 0) {
                 fprintf(stderr, "Variable '%s' is not a pipeline definition\n", step->value);
                 return -1;
             }
-            
-            // Get the pipeline definition AST node
-            json_t *def_field = json_object_get(pipeline_var, "_definition");
-            if (!def_field || !json_is_integer(def_field)) {
-                fprintf(stderr, "Invalid pipeline definition for '%s'\n", step->value);
-                return -1;
-            }
-            
-            ASTNode *pipeline_node = (ASTNode*)(uintptr_t)json_integer_value(def_field);
-            if (!pipeline_node || pipeline_node->type != AST_PIPELINE_DEFINITION) {
+
+            ASTNode *pnode = (ASTNode *)(uintptr_t)
+                             json_integer_value(json_object_get(var, "_definition"));
+            if (!pnode || pnode->type != AST_PIPELINE_DEFINITION) {
                 fprintf(stderr, "Corrupted pipeline definition for '%s'\n", step->value);
                 return -1;
             }
-            
-            // Execute the pipeline steps inline
-            PipelineStep *pipeline_steps = pipeline_node->data.pipeline_def.pipeline;
-            if (pipeline_steps) {
-                json_t *pipeline_result = NULL;
-                int temp_code;
-                char *temp_content_type = NULL;
-                int result = execute_pipeline_with_result(pipeline_steps, current, arena, 
-                                                        &pipeline_result, &temp_code, &temp_content_type);
-                // Ensure arena context is still set after recursive execution
-                set_current_arena(arena);
-                if (result != 0 || !pipeline_result) {
-                    fprintf(stderr, "Pipeline '%s' execution failed\n", step->value);
-                    return -1;
-                }
-                
-                // Update current with pipeline result
-                current = pipeline_result;
-                
-                // Update content type if pipeline changed it
-                if (temp_content_type && strcmp(temp_content_type, "application/json") != 0) {
-                    *content_type = temp_content_type;
-                }
+
+            json_t *tmp       = NULL;
+            char   *tmp_ctype = NULL;
+            int     tmp_code;
+            int ok = execute_pipeline_with_result(pnode->data.pipeline_def.pipeline, current,
+                                                  arena, &tmp, &tmp_code, &tmp_ctype);
+            set_current_arena(arena);
+            if (ok != 0) return ok;
+
+            current = tmp;
+            if (tmp_ctype && strcmp(tmp_ctype, *content_type) != 0) {
+                *content_type = tmp_ctype;
             }
-            
-            // Continue with next step
-            step = step->next;
-            continue;
+            continue;                  /* proceed to next step             */
         }
-        
-        Middleware *middleware = find_middleware(step->middleware);
-        if (!middleware) {
+
+        /* ─── generic middleware ───────────────────────────────────────── */
+        Middleware *mw = find_middleware(step->middleware);
+        if (!mw) {
             fprintf(stderr, "Middleware not found: %s\n", step->middleware);
             return -1;
         }
-        
-        const char *config = step->value;
+
+        const char *conf = step->value;
         if (step->is_variable) {
-            // Look up variable value
-            json_t *var_value = json_object_get(runtime->variables, step->value);
-            if (var_value && json_is_string(var_value)) {
-                config = json_string_value(var_value);
-            }
+            json_t *v = json_object_get(runtime->variables, step->value);
+            if (v && json_is_string(v)) conf = json_string_value(v);
         }
-        
-        // Ensure arena context is set before middleware execution
-        set_current_arena(arena);
-        json_t *middleware_config = get_middleware_config(middleware->name);
-        json_t *result = middleware->execute(current, arena, arena_alloc_wrapper, arena_free_wrapper, config, middleware_config, content_type, runtime->variables);
-        // Ensure arena context is still set after middleware execution
+
+        json_t *mw_cfg = get_middleware_config(mw->name);
+        json_t *result = mw->execute(current, arena,
+                                     arena_alloc_wrapper, arena_free_wrapper,
+                                     conf, mw_cfg, content_type, runtime->variables);
         set_current_arena(arena);
         if (!result) {
             fprintf(stderr, "Middleware %s failed\n", step->middleware);
             return -1;
         }
-        
-        // Ensure the result has originalRequest and setCookies for the next middleware step
-        if (json_is_object(result) && original_request) {
-            // Always set the clean original request, not a nested one
-            json_object_set(result, "originalRequest", original_request);
-            
-            // Preserve setCookies from current request to result (if result doesn't already have it)
-            json_t *result_set_cookies = json_object_get(result, "setCookies");
-            if (!result_set_cookies) {
-                json_t *current_set_cookies = json_object_get(current, "setCookies");
-                if (current_set_cookies) {
-                    json_object_set(result, "setCookies", current_set_cookies);
-                }
-            }
-        }
-        
-        // Check for errors after each step and jump to result block if found
+
+        attach_request_meta(result, original_req);
+
+        /* ─── early‑exit on error ─────────────────────────────────────── */
         if (has_errors(result)) {
-            // Find the result step in the remaining pipeline
-            PipelineStep *remaining_step = step->next;
-            while (remaining_step) {
-                if (strcmp(remaining_step->middleware, "result") == 0) {
-                    // Execute result step with error
-                    ASTNode *result_node = (ASTNode*)(uintptr_t)remaining_step->value;
-                    
-                    ResultCondition *condition = result_node->data.result_step.conditions;
-                    ResultCondition *selected_condition = NULL;
-                    
-                    const char *error_type = get_first_error_type(result);
-                    if (error_type) {
-                        // Look for matching error condition
-                        while (condition) {
-                            if (strcmp(condition->condition_name, error_type) == 0) {
-                                selected_condition = condition;
-                                break;
-                            }
-                            condition = condition->next;
-                        }
-                        
-                        // If no specific error condition found, look for "default" condition
-                        if (!selected_condition) {
-                            condition = result_node->data.result_step.conditions;
-                            while (condition) {
-                                if (strcmp(condition->condition_name, "default") == 0) {
-                                    selected_condition = condition;
-                                    break;
-                                }
-                                condition = condition->next;
-                            }
-                        }
-                    }
-                    
-                    if (selected_condition) {
-                        *response_code = selected_condition->status_code;
-                        
-                        // Execute the selected condition's pipeline
-                        if (selected_condition->pipeline) {
-                            json_t *condition_result = NULL;
-                            int temp_code;
-                            int exec_result = execute_pipeline_with_result(selected_condition->pipeline, 
-                                                                    result, arena, &condition_result, &temp_code, content_type);
-                            // Ensure arena context is still set after recursive execution
-                            set_current_arena(arena);
-                            if (exec_result == 0 && condition_result) {
-                                current = condition_result;
-                            }
-                        } else {
-                            current = result;
-                        }
-                    }
-                    
-                    *final_response = current;
-                    return 0;
+            for (PipelineStep *r = step->next; r; r = r->next) {
+                if (strcmp(r->middleware, "result") == 0) {
+                    return dispatch_result((ASTNode *)(uintptr_t)r->value, result,
+                                           arena, final_response, response_code, content_type);
                 }
-                remaining_step = remaining_step->next;
             }
         }
-        
-        current = result;
-        step = step->next;
+
+        current = result;              /* advance state                    */
     }
 
-    // remove originalRequest from the final response
+    /* ─── end of pipeline ──────────────────────────────────────────────── */
     json_object_del(current, "originalRequest");
-    
     *final_response = current;
     return 0;
 }
