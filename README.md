@@ -277,6 +277,137 @@ config cache {
 }
 ```
 
+### Auth Middleware
+Provides comprehensive user authentication and session management with secure password hashing, database-backed user storage, and flexible authorization controls.
+
+```wp
+# User Login
+POST /login
+  |> validate: `{
+    login: string(3..50),
+    password: string(6..100)
+  }`
+  |> auth: "login"
+  |> result
+    ok(200):
+      |> jq: `{
+        success: true,
+        message: "Login successful", 
+        user: .user
+      }`
+    authError(401):
+      |> jq: `{
+        error: "Login failed",
+        message: .errors[0].message
+      }`
+
+# User Registration
+POST /register
+  |> validate: `{
+    login: string(3..50),
+    email: email,
+    password: string(8..100)
+  }`
+  |> auth: "register"
+  |> result
+    ok(201):
+      |> jq: `{
+        success: true,
+        message: "Registration successful",
+        user: .user
+      }`
+    authError(409):
+      |> jq: `{
+        error: "Registration failed", 
+        message: .errors[0].message
+      }`
+
+# Protected Route (Required Authentication)
+GET /dashboard
+  |> auth: "required"
+  |> jq: `{
+    message: "Welcome to your dashboard",
+    user: .user,
+    timestamp: now
+  }`
+
+# Optional Authentication 
+GET /public-content
+  |> auth: "optional"
+  |> jq: `{
+    content: "Public information",
+    authenticated: (.user != null),
+    user: .user
+  }`
+
+# User Logout
+POST /logout
+  |> auth: "logout"
+  |> result
+    ok(200):
+      |> jq: `{
+        success: true,
+        message: "Logged out successfully"
+      }`
+```
+
+**Authentication Features:**
+- **Secure Password Hashing**: Uses Argon2id with configurable parameters for maximum security
+- **Session Management**: Database-backed sessions with configurable TTL and secure cookies
+- **Multi-Database Support**: Compatible with PostgreSQL, MySQL, and SQLite with automatic SQL dialect detection
+- **Cookie Security**: Configurable HttpOnly, Secure, SameSite, and Path attributes
+- **Registration & Login**: Complete user lifecycle with validation and error handling
+
+**Authentication Types:**
+- `auth: "login"` - Authenticate user credentials and create session
+- `auth: "register"` - Create new user account with password hashing  
+- `auth: "required"` - Enforce authentication, return 401 if not authenticated
+- `auth: "optional"` - Add user info if authenticated, continue if not
+- `auth: "logout"` - Destroy session and clear cookies
+
+**Global Auth Configuration:**
+```wp
+config auth {
+  sessionTtl: 604800        # 7 days in seconds
+  cookieName: "wp_session"   # Session cookie name
+  cookieSecure: false        # HTTPS-only cookies
+  cookieHttpOnly: true       # Prevent JavaScript access
+  cookieSameSite: "Lax"      # CSRF protection
+  cookiePath: "/"            # Cookie path scope
+}
+```
+
+**Database Schema Requirements:**
+The auth middleware expects these database tables:
+
+```sql
+-- Users table
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  login VARCHAR(50) UNIQUE NOT NULL,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  type VARCHAR(50) DEFAULT 'local',
+  status VARCHAR(20) DEFAULT 'active',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Sessions table  
+CREATE TABLE sessions (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  token VARCHAR(64) UNIQUE NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Error Handling:**
+Authentication errors follow the standard WebPipe error format with specific error types:
+- `authError`: Authentication failures (invalid credentials, expired sessions)  
+- `validationError`: Input validation failures
+- `sqlError`: Database operation failures
+
 ### Mustache Middleware
 Renders HTML templates using mustache syntax with JSON data.
 
