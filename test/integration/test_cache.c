@@ -80,13 +80,9 @@ static void unload_cache_middleware(void) {
 }
 
 void setUp(void) {
-    printf("[DEBUG] setUp: Starting cache middleware setup\n");
-    fflush(stdout);
     if (load_cache_middleware() != 0) {
         TEST_FAIL_MESSAGE("Failed to load cache middleware");
     }
-    printf("[DEBUG] setUp: Cache middleware loaded\n");
-    fflush(stdout);
     
     // Initialize cache middleware with test configuration
     json_t *config = json_object();
@@ -94,35 +90,19 @@ void setUp(void) {
     json_object_set_new(config, "defaultTtl", json_integer(60));
     json_object_set_new(config, "maxCacheSize", json_integer(1024 * 1024));
     
-    printf("[DEBUG] setUp: About to initialize cache middleware\n");
-    fflush(stdout);
     if (cache_middleware_init(config) != 0) {
         json_decref(config);
         TEST_FAIL_MESSAGE("Failed to initialize cache middleware");
     }
-    printf("[DEBUG] setUp: Cache middleware initialized\n");
-    fflush(stdout);
     json_decref(config);
-    printf("[DEBUG] setUp: Setup completed\n");
-    fflush(stdout);
 }
 
 void tearDown(void) {
-    printf("[DEBUG] tearDown: Starting cache cleanup\n");
-    fflush(stdout);
     // Clean up all cache entries before unloading
     if (cache_cleanup) {
-        printf("[DEBUG] tearDown: Calling cache_cleanup\n");
-        fflush(stdout);
         cache_cleanup();
-        printf("[DEBUG] tearDown: cache_cleanup completed\n");
-        fflush(stdout);
     }
-    printf("[DEBUG] tearDown: About to unload cache middleware\n");
-    fflush(stdout);
     unload_cache_middleware();
-    printf("[DEBUG] tearDown: Cache middleware unloaded, tearDown completed\n");
-    fflush(stdout);
 }
 
 static void test_cache_middleware_basic_passthrough(void) {
@@ -339,116 +319,50 @@ static void test_cache_middleware_configuration_parsing(void) {
 }
 
 static void test_cache_middleware_post_execute_storage(void) {
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Starting test\n");
-    fflush(stdout);
-    
     MemoryArena *arena = create_test_arena(1024);
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Created arena=%p\n", arena);
-    fflush(stdout);
     
     // Create a response to cache
     json_t *final_response = json_object();
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Created final_response=%p\n", final_response);
-    fflush(stdout);
-    
     json_object_set_new(final_response, "message", json_string("test response"));
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Set message\n");
-    fflush(stdout);
-    
     json_object_set_new(final_response, "timestamp", json_integer(time(NULL)));
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Set timestamp\n");
-    fflush(stdout);
     
     // Add cache metadata
     json_t *cache_metadata = json_object();
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Created cache_metadata=%p\n", cache_metadata);
-    fflush(stdout);
-    
     json_object_set_new(cache_metadata, "cache_key", json_string("test_post_execute"));
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Set cache_key\n");
-    fflush(stdout);
-    
     json_object_set_new(cache_metadata, "cache_ttl", json_integer(60));
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Set cache_ttl\n");
-    fflush(stdout);
-    
     json_object_set_new(cache_metadata, "cache_enabled", json_boolean(1));
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Set cache_enabled\n");
-    fflush(stdout);
     
     json_t *metadata = json_object();
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Created metadata=%p\n", metadata);
-    fflush(stdout);
-    
     json_object_set_new(metadata, "cache", cache_metadata);
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Set cache in metadata\n");
-    fflush(stdout);
-    
     json_object_set_new(final_response, "_metadata", metadata);
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Set _metadata in final_response\n");
-    fflush(stdout);
     
     // Call post execute
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: About to call cache_middleware_post_execute\n");
-    fflush(stdout);
     cache_middleware_post_execute(final_response, arena, get_arena_alloc_wrapper(), NULL);
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: cache_middleware_post_execute completed\n");
-    fflush(stdout);
     
     // Verify the response was cached by trying to retrieve it
     // This is an indirect test since we don't have direct access to cache_get
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Creating test_request\n");
-    fflush(stdout);
     json_t *test_request = create_test_request("GET", "/test");
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Created test_request=%p\n", test_request);
-    fflush(stdout);
-    
     json_object_set_new(test_request, "url", json_string("test_post_execute")); // Match the cache key pattern
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Set url in test_request\n");
-    fflush(stdout);
     
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: About to decref final_response\n");
-    fflush(stdout);
     json_decref(final_response);
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: About to decref test_request\n");
-    fflush(stdout);
     json_decref(test_request);
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: About to destroy arena\n");
-    fflush(stdout);
     destroy_test_arena(arena);
-    printf("[DEBUG] test_cache_middleware_post_execute_storage: Test completed successfully\n");
-    fflush(stdout);
 }
 
 static void test_cache_middleware_null_input_handling(void) {
-    printf("[DEBUG] test_cache_middleware_null_input_handling: Starting test\n");
-    fflush(stdout);
-    
     MemoryArena *arena = create_test_arena(1024);
-    printf("[DEBUG] test_cache_middleware_null_input_handling: Created arena=%p\n", arena);
-    fflush(stdout);
     
     const char *config = "enabled: true\nttl: 30\n";
     char *content_type = NULL;
     
-    printf("[DEBUG] test_cache_middleware_null_input_handling: About to call cache_middleware_execute with NULL input\n");
-    fflush(stdout);
     // Cache middleware should handle null input gracefully
     json_t *output = cache_middleware_execute(NULL, arena, get_arena_alloc_wrapper(), NULL,
                                              config, NULL, &content_type, NULL);
-    printf("[DEBUG] test_cache_middleware_null_input_handling: cache_middleware_execute returned output=%p\n", output);
-    fflush(stdout);
     
     // Should return null for null input
     TEST_ASSERT_NULL(output);
-    printf("[DEBUG] test_cache_middleware_null_input_handling: Assertion passed\n");
-    fflush(stdout);
     
-    printf("[DEBUG] test_cache_middleware_null_input_handling: About to destroy arena\n");
-    fflush(stdout);
     destroy_test_arena(arena);
-    printf("[DEBUG] test_cache_middleware_null_input_handling: Test completed\n");
-    fflush(stdout);
 }
 
 static void test_cache_middleware_null_config_handling(void) {

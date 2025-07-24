@@ -124,29 +124,14 @@ void *arena_alloc(MemoryArena *arena, size_t size) {
 }
 
 void arena_free(MemoryArena *arena) {
-    printf("[DEBUG] arena_free: Starting, arena=%p\n", arena);
-    fflush(stdout);
     if (!arena) {
-        printf("[DEBUG] arena_free: arena is NULL, returning\n");
-        fflush(stdout);
         return;
     }
-    printf("[DEBUG] arena_free: arena->memory=%p, arena->size=%zu, arena->used=%zu\n", 
-           arena->memory, arena->size, arena->used);
-    fflush(stdout);
     if (arena->memory) {
-        printf("[DEBUG] arena_free: About to free arena->memory\n");
-        fflush(stdout);
         free(arena->memory);
         arena->memory = NULL; // Mark as freed
-        printf("[DEBUG] arena_free: Freed arena->memory\n");
-        fflush(stdout);
     }
-    printf("[DEBUG] arena_free: About to free arena\n");
-    fflush(stdout);
     free(arena);
-    printf("[DEBUG] arena_free: Freed arena, completed\n");
-    fflush(stdout);
 }
 
 // Arena string allocation functions
@@ -842,62 +827,39 @@ static ResultCondition *select_result_condition(ResultCondition *conds, json_t *
 
 // Merge metadata from previous pipeline step with current step's metadata
 static void merge_pipeline_metadata(json_t *result, json_t *previous_step) {
-    printf("[DEBUG] merge_pipeline_metadata: result=%p, previous_step=%p\n", result, previous_step);
-    
-    if (!result) {
-        printf("[DEBUG] merge_pipeline_metadata: result is NULL, returning\n");
-        return;
-    }
-    if (!previous_step) {
-        printf("[DEBUG] merge_pipeline_metadata: previous_step is NULL, returning\n");
+    if (!result || !previous_step) {
         return;
     }
     
-    if (!json_is_object(result)) {
-        printf("[DEBUG] merge_pipeline_metadata: result is not an object (type=%d), returning\n", json_typeof(result));
-        return;
-    }
-    if (!json_is_object(previous_step)) {
-        printf("[DEBUG] merge_pipeline_metadata: previous_step is not an object (type=%d), returning\n", json_typeof(previous_step));
+    if (!json_is_object(result) || !json_is_object(previous_step)) {
         return;
     }
     
     json_t *previous_metadata = json_object_get(previous_step, "_metadata");
-    printf("[DEBUG] merge_pipeline_metadata: previous_metadata=%p\n", previous_metadata);
     if (!previous_metadata) {
-        printf("[DEBUG] merge_pipeline_metadata: no previous metadata to merge\n");
         return; // No metadata to merge
     }
     
     json_t *current_metadata = json_object_get(result, "_metadata");
-    printf("[DEBUG] merge_pipeline_metadata: current_metadata=%p\n", current_metadata);
     if (!current_metadata) {
         // Result has no metadata, just copy the previous metadata
-        printf("[DEBUG] merge_pipeline_metadata: creating deep copy of previous metadata\n");
         json_t *metadata_copy = json_deep_copy(previous_metadata);
-        printf("[DEBUG] merge_pipeline_metadata: metadata_copy=%p\n", metadata_copy);
         if (metadata_copy) {
-            int set_result = json_object_set(result, "_metadata", metadata_copy);
-            printf("[DEBUG] merge_pipeline_metadata: json_object_set returned %d\n", set_result);
+            json_object_set(result, "_metadata", metadata_copy);
         }
         return;
     }
     
     // Both have metadata, merge them (current step's metadata takes precedence)
-    printf("[DEBUG] merge_pipeline_metadata: merging metadata objects\n");
     const char *key;
     json_t *value;
     json_object_foreach(previous_metadata, key, value) {
-        printf("[DEBUG] merge_pipeline_metadata: checking key '%s'\n", key ? key : "NULL");
         if (key && !json_object_get(current_metadata, key)) {
             // Key doesn't exist in current metadata, add it
-            printf("[DEBUG] merge_pipeline_metadata: adding key '%s' to current metadata\n", key);
-            int set_result = json_object_set(current_metadata, key, value);
-            printf("[DEBUG] merge_pipeline_metadata: json_object_set for key '%s' returned %d\n", key, set_result);
+            json_object_set(current_metadata, key, value);
         }
         // If key exists in current metadata, keep current value (precedence)
     }
-    printf("[DEBUG] merge_pipeline_metadata: completed successfully\n");
 }
 
 static inline void attach_request_meta(json_t *dst, json_t *orig) {
@@ -1060,9 +1022,6 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         attach_request_meta(result, original_req);
         
         // Merge metadata from the previous pipeline step
-        printf("[DEBUG] About to call merge_pipeline_metadata: result=%p (%s), current=%p (%s)\n", 
-               result, json_is_object(result) ? "object" : "not-object",
-               current, json_is_object(current) ? "object" : "not-object");
         merge_pipeline_metadata(result, current);
 
         /* ─── register post-execute hooks for middleware that have them ─── */
