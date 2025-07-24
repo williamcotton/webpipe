@@ -962,8 +962,15 @@ json_t *middleware_execute(json_t *input, void *arena,
     json_object_set_new(cache_metadata, "cache_ttl", json_integer(ttl));
     json_object_set_new(cache_metadata, "cache_enabled", json_boolean(true));
     
-    // Add cache metadata to the request object
-    json_object_set_new(input, "_cache_metadata", cache_metadata);
+    // Get or create generic metadata object
+    json_t *metadata = json_object_get(input, "_metadata");
+    if (!metadata) {
+        metadata = json_object();
+        json_object_set_new(input, "_metadata", metadata);
+    }
+    
+    // Add cache metadata to the generic metadata object
+    json_object_set_new(metadata, "cache", cache_metadata);
     
     return input; // Continue pipeline
 }
@@ -980,8 +987,15 @@ void middleware_post_execute(json_t *final_response, void *arena,
         return;
     }
     
-    // Look for cache metadata in the final response
-    json_t *cache_metadata = json_object_get(final_response, "_cache_metadata");
+    // Look for metadata in the final response
+    json_t *metadata = json_object_get(final_response, "_metadata");
+    if (!metadata) {
+        // No metadata, nothing to cache
+        return;
+    }
+    
+    // Look for cache metadata specifically
+    json_t *cache_metadata = json_object_get(metadata, "cache");
     if (!cache_metadata) {
         // No cache metadata, nothing to cache
         return;
@@ -1023,7 +1037,8 @@ void middleware_post_execute(json_t *final_response, void *arena,
         free(key_copy);
         return;
     }
-    json_object_del(clean_response, "_cache_metadata");
+    // Remove the entire metadata object to keep cached responses clean
+    json_object_del(clean_response, "_metadata");
     
     // Store response in cache (cache_set will make its own deep copy)
     cache_set(key_copy, clean_response, ttl);

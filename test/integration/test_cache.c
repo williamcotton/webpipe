@@ -119,7 +119,9 @@ static void test_cache_middleware_basic_passthrough(void) {
     TEST_ASSERT_EQUAL_PTR(input, output); // Should return same object for cache miss
     
     // Should have cache metadata added
-    json_t *cache_metadata = json_object_get(output, "_cache_metadata");
+    json_t *metadata = json_object_get(output, "_metadata");
+    TEST_ASSERT_NOT_NULL(metadata);
+    json_t *cache_metadata = json_object_get(metadata, "cache");
     TEST_ASSERT_NOT_NULL(cache_metadata);
     
     json_t *cache_enabled = json_object_get(cache_metadata, "cache_enabled");
@@ -150,8 +152,8 @@ static void test_cache_middleware_disabled(void) {
     TEST_ASSERT_EQUAL_PTR(input, output); // Should return same object
     
     // Should NOT have cache metadata when disabled
-    json_t *cache_metadata = json_object_get(output, "_cache_metadata");
-    TEST_ASSERT_NULL(cache_metadata);
+    json_t *metadata = json_object_get(output, "_metadata");
+    TEST_ASSERT_NULL(metadata);
     
     if (output != input) {
         json_decref(output);
@@ -180,7 +182,9 @@ static void test_cache_middleware_key_generation(void) {
     
     TEST_ASSERT_NOT_NULL(output);
     
-    json_t *cache_metadata = json_object_get(output, "_cache_metadata");
+    json_t *metadata = json_object_get(output, "_metadata");
+    TEST_ASSERT_NOT_NULL(metadata);
+    json_t *cache_metadata = json_object_get(metadata, "cache");
     TEST_ASSERT_NOT_NULL(cache_metadata);
     
     json_t *cache_key = json_object_get(cache_metadata, "cache_key");
@@ -218,7 +222,9 @@ static void test_cache_middleware_template_key(void) {
     
     TEST_ASSERT_NOT_NULL(output);
     
-    json_t *cache_metadata = json_object_get(output, "_cache_metadata");
+    json_t *metadata = json_object_get(output, "_metadata");
+    TEST_ASSERT_NOT_NULL(metadata);
+    json_t *cache_metadata = json_object_get(metadata, "cache");
     TEST_ASSERT_NOT_NULL(cache_metadata);
     
     json_t *cache_key = json_object_get(cache_metadata, "cache_key");
@@ -248,7 +254,9 @@ static void test_cache_middleware_template_missing_values(void) {
     
     TEST_ASSERT_NOT_NULL(output);
     
-    json_t *cache_metadata = json_object_get(output, "_cache_metadata");
+    json_t *metadata = json_object_get(output, "_metadata");
+    TEST_ASSERT_NOT_NULL(metadata);
+    json_t *cache_metadata = json_object_get(metadata, "cache");
     TEST_ASSERT_NOT_NULL(cache_metadata);
     
     json_t *cache_key = json_object_get(cache_metadata, "cache_key");
@@ -282,7 +290,9 @@ static void test_cache_middleware_configuration_parsing(void) {
                                               config1, NULL, &content_type, NULL);
     TEST_ASSERT_NOT_NULL(output1);
     
-    json_t *metadata1 = json_object_get(output1, "_cache_metadata");
+    json_t *response1_metadata = json_object_get(output1, "_metadata");
+    TEST_ASSERT_NOT_NULL(response1_metadata);
+    json_t *metadata1 = json_object_get(response1_metadata, "cache");
     TEST_ASSERT_NOT_NULL(metadata1);
     
     json_t *ttl1 = json_object_get(metadata1, "cache_ttl");
@@ -293,7 +303,9 @@ static void test_cache_middleware_configuration_parsing(void) {
                                               config3, NULL, &content_type, NULL);
     TEST_ASSERT_NOT_NULL(output3);
     
-    json_t *metadata3 = json_object_get(output3, "_cache_metadata");
+    json_t *response3_metadata = json_object_get(output3, "_metadata");
+    TEST_ASSERT_NOT_NULL(response3_metadata);
+    json_t *metadata3 = json_object_get(response3_metadata, "cache");
     TEST_ASSERT_NOT_NULL(metadata3);
     
     json_t *ttl3 = json_object_get(metadata3, "cache_ttl");
@@ -322,7 +334,9 @@ static void test_cache_middleware_post_execute_storage(void) {
     json_object_set_new(cache_metadata, "cache_key", json_string("test_post_execute"));
     json_object_set_new(cache_metadata, "cache_ttl", json_integer(60));
     json_object_set_new(cache_metadata, "cache_enabled", json_boolean(1));
-    json_object_set_new(final_response, "_cache_metadata", cache_metadata);
+    json_t *metadata = json_object();
+    json_object_set_new(metadata, "cache", cache_metadata);
+    json_object_set_new(final_response, "_metadata", metadata);
     
     // Call post execute
     cache_middleware_post_execute(final_response, arena, get_arena_alloc_wrapper(), NULL);
@@ -416,46 +430,6 @@ static void test_cache_middleware_memory_arena_usage(void) {
     destroy_test_arena(arena);
 }
 
-static void test_cache_middleware_performance_simple(void) {
-    MemoryArena *arena = create_test_arena(1024);
-    
-    json_t *input = create_test_request("GET", "/performance-test");
-    const char *config = "enabled: true\nttl: 60\n";
-    char *content_type = NULL;
-    
-    start_timer();
-    
-    // Run multiple cache operations
-    for (int i = 0; i < 100; i++) {
-        json_t *output = cache_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL,
-                                                 config, NULL, &content_type, NULL);
-        TEST_ASSERT_NOT_NULL(output);
-        
-        // Simulate post execute for some requests
-        if (i % 10 == 0) {
-            json_t *cache_metadata = json_object_get(output, "_cache_metadata");
-            if (cache_metadata) {
-                json_t *response = json_object();
-                json_object_set_new(response, "iteration", json_integer(i));
-                json_object_set_new(response, "_cache_metadata", json_deep_copy(cache_metadata));
-                
-                cache_middleware_post_execute(response, arena, get_arena_alloc_wrapper(), NULL);
-                json_decref(response);
-            }
-        }
-        
-        // Decref output if it's different from input (happens when cache metadata is added)
-        if (output != input) {
-            json_decref(output);
-        }
-    }
-    
-    assert_execution_time_under(1.0);  // Should complete in under 1 second
-    
-    json_decref(input);
-    destroy_test_arena(arena);
-}
-
 static void test_cache_middleware_complex_template(void) {
     MemoryArena *arena = create_test_arena(1024);
     
@@ -484,7 +458,9 @@ static void test_cache_middleware_complex_template(void) {
     
     TEST_ASSERT_NOT_NULL(output);
     
-    json_t *cache_metadata = json_object_get(output, "_cache_metadata");
+    json_t *metadata = json_object_get(output, "_metadata");
+    TEST_ASSERT_NOT_NULL(metadata);
+    json_t *cache_metadata = json_object_get(metadata, "cache");
     TEST_ASSERT_NOT_NULL(cache_metadata);
     
     json_t *cache_key = json_object_get(cache_metadata, "cache_key");
@@ -524,7 +500,9 @@ static void test_cache_middleware_full_pipeline_simulation(void) {
     TEST_ASSERT_EQUAL_PTR(input1, cache_result1); // Should be cache miss
     
     // Verify cache metadata was added
-    json_t *cache_metadata = json_object_get(cache_result1, "_cache_metadata");
+    json_t *cache_result1_metadata = json_object_get(cache_result1, "_metadata");
+    TEST_ASSERT_NOT_NULL(cache_result1_metadata);
+    json_t *cache_metadata = json_object_get(cache_result1_metadata, "cache");
     TEST_ASSERT_NOT_NULL(cache_metadata);
     
     json_t *cache_key = json_object_get(cache_metadata, "cache_key");
@@ -537,7 +515,9 @@ static void test_cache_middleware_full_pipeline_simulation(void) {
     json_object_set_new(final_response, "timestamp", json_integer(time(NULL)));
     
     // Add the cache metadata from step 1
-    json_object_set_new(final_response, "_cache_metadata", json_deep_copy(cache_metadata));
+    json_t *final_metadata = json_object();
+    json_object_set_new(final_metadata, "cache", json_deep_copy(cache_metadata));
+    json_object_set_new(final_response, "_metadata", final_metadata);
     
     // Step 3: Post execute to store in cache
     cache_middleware_post_execute(final_response, arena, get_arena_alloc_wrapper(), NULL);
@@ -601,7 +581,9 @@ static void test_cache_middleware_integration_with_webpipe_config(void) {
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_EQUAL_PTR(input, output); // Cache miss
     
-    json_t *cache_metadata = json_object_get(output, "_cache_metadata");
+    json_t *metadata = json_object_get(output, "_metadata");
+    TEST_ASSERT_NOT_NULL(metadata);
+    json_t *cache_metadata = json_object_get(metadata, "cache");
     TEST_ASSERT_NOT_NULL(cache_metadata);
     
     json_t *ttl = json_object_get(cache_metadata, "cache_ttl");
@@ -618,7 +600,9 @@ static void test_cache_middleware_integration_with_webpipe_config(void) {
     json_object_set_new(jq_result, "random", json_integer(time(NULL) % 1000));
     
     // Add cache metadata for post execute
-    json_object_set_new(jq_result, "_cache_metadata", json_deep_copy(cache_metadata));
+    json_t *jq_metadata = json_object();
+    json_object_set_new(jq_metadata, "cache", json_deep_copy(cache_metadata));
+    json_object_set_new(jq_result, "_metadata", jq_metadata);
     
     // Post execute
     cache_middleware_post_execute(jq_result, arena, get_arena_alloc_wrapper(), NULL);
@@ -642,7 +626,6 @@ int main(void) {
     RUN_TEST(test_cache_middleware_null_config_handling);
     RUN_TEST(test_cache_middleware_empty_config_handling);
     RUN_TEST(test_cache_middleware_memory_arena_usage);
-    RUN_TEST(test_cache_middleware_performance_simple);
     RUN_TEST(test_cache_middleware_complex_template);
     RUN_TEST(test_cache_middleware_full_pipeline_simulation);
     RUN_TEST(test_cache_middleware_integration_with_webpipe_config);

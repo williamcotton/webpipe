@@ -825,6 +825,36 @@ static ResultCondition *select_result_condition(ResultCondition *conds, json_t *
 }
 
 
+// Merge metadata from previous pipeline step with current step's metadata
+static void merge_pipeline_metadata(json_t *result, json_t *previous_step) {
+    if (!json_is_object(result) || !json_is_object(previous_step)) {
+        return;
+    }
+    
+    json_t *previous_metadata = json_object_get(previous_step, "_metadata");
+    if (!previous_metadata) {
+        return; // No metadata to merge
+    }
+    
+    json_t *current_metadata = json_object_get(result, "_metadata");
+    if (!current_metadata) {
+        // Result has no metadata, just copy the previous metadata
+        json_object_set(result, "_metadata", json_deep_copy(previous_metadata));
+        return;
+    }
+    
+    // Both have metadata, merge them (current step's metadata takes precedence)
+    const char *key;
+    json_t *value;
+    json_object_foreach(previous_metadata, key, value) {
+        if (!json_object_get(current_metadata, key)) {
+            // Key doesn't exist in current metadata, add it
+            json_object_set(current_metadata, key, value);
+        }
+        // If key exists in current metadata, keep current value (precedence)
+    }
+}
+
 static inline void attach_request_meta(json_t *dst, json_t *orig) {
     if (!json_is_object(dst) || !orig) return;
 
@@ -835,10 +865,10 @@ static inline void attach_request_meta(json_t *dst, json_t *orig) {
         if (sc) json_object_set(dst, "setCookies", sc);
     }
     
-    // Preserve cache metadata if present
-    if (!json_object_get(dst, "_cache_metadata")) {
-        json_t *cache_meta = json_object_get(orig, "_cache_metadata");
-        if (cache_meta) json_object_set(dst, "_cache_metadata", cache_meta);
+    // Preserve generic metadata if present
+    if (!json_object_get(dst, "_metadata")) {
+        json_t *metadata = json_object_get(orig, "_metadata");
+        if (metadata) json_object_set(dst, "_metadata", metadata);
     }
 }
 
@@ -984,13 +1014,8 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
 
         attach_request_meta(result, original_req);
         
-        // Also preserve cache metadata from current request step (if different from original)
-        if (current != original_req) {
-            json_t *current_cache_meta = json_object_get(current, "_cache_metadata");
-            if (current_cache_meta && !json_object_get(result, "_cache_metadata")) {
-                json_object_set(result, "_cache_metadata", current_cache_meta);
-            }
-        }
+        // Merge metadata from the previous pipeline step
+        merge_pipeline_metadata(result, current);
 
         /* ─── register post-execute hooks for middleware that have them ─── */
         if (mw->post_execute) {
