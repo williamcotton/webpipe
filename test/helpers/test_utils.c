@@ -65,7 +65,18 @@ MemoryArena *create_test_arena(size_t size) {
 }
 
 void destroy_test_arena(MemoryArena *arena) {
+    printf("[DEBUG] destroy_test_arena: Starting, arena=%p\n", arena);
+    fflush(stdout);
+    if (!arena) {
+        printf("[DEBUG] destroy_test_arena: arena is NULL, returning\n");
+        fflush(stdout);
+        return;
+    }
+    printf("[DEBUG] destroy_test_arena: About to call arena_free\n");
+    fflush(stdout);
     arena_free(arena);
+    printf("[DEBUG] destroy_test_arena: arena_free completed\n");
+    fflush(stdout);
 }
 
 void assert_arena_empty(MemoryArena *arena) {

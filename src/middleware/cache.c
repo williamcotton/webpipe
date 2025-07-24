@@ -901,6 +901,11 @@ json_t *middleware_execute(json_t *input, void *arena,
     (void)variables;    // Not used in basic implementation
     (void)middleware_config; // Global config not used for step-specific logic
     
+    // Handle NULL input gracefully
+    if (!input) {
+        return NULL; // Cannot cache NULL input
+    }
+    
     // Check if caching is globally disabled
     if (!cache_config.enabled) {
         return input; // Continue pipeline
@@ -979,70 +984,121 @@ json_t *middleware_execute(json_t *input, void *arena,
 void middleware_post_execute(json_t *final_response, void *arena,
                            arena_alloc_func alloc_func,
                            json_t *middleware_config) {
+    printf("[DEBUG] cache_middleware_post_execute: Starting, final_response=%p\n", final_response);
+    fflush(stdout);
+    
     (void)arena;          // Not used in cache storage
     (void)alloc_func;     // Not used in cache storage
     (void)middleware_config; // Not needed with our metadata approach
     
     if (!cache_config.enabled) {
+        printf("[DEBUG] cache_middleware_post_execute: Cache not enabled, returning\n");
+        fflush(stdout);
         return;
     }
     
+    printf("[DEBUG] cache_middleware_post_execute: Cache is enabled\n");
+    fflush(stdout);
+    
     // Look for metadata in the final response
     json_t *metadata = json_object_get(final_response, "_metadata");
+    printf("[DEBUG] cache_middleware_post_execute: metadata=%p\n", metadata);
+    fflush(stdout);
     if (!metadata) {
         // No metadata, nothing to cache
+        printf("[DEBUG] cache_middleware_post_execute: No metadata, returning\n");
+        fflush(stdout);
         return;
     }
     
     // Look for cache metadata specifically
     json_t *cache_metadata = json_object_get(metadata, "cache");
+    printf("[DEBUG] cache_middleware_post_execute: cache_metadata=%p\n", cache_metadata);
+    fflush(stdout);
     if (!cache_metadata) {
         // No cache metadata, nothing to cache
+        printf("[DEBUG] cache_middleware_post_execute: No cache metadata, returning\n");
+        fflush(stdout);
         return;
     }
     
     // Check if caching is enabled for this request
     json_t *cache_enabled = json_object_get(cache_metadata, "cache_enabled");
+    printf("[DEBUG] cache_middleware_post_execute: cache_enabled=%p\n", cache_enabled);
+    fflush(stdout);
     if (!cache_enabled || !json_is_boolean(cache_enabled) || !json_boolean_value(cache_enabled)) {
+        printf("[DEBUG] cache_middleware_post_execute: Caching not enabled for this request, returning\n");
+        fflush(stdout);
         return;
     }
+    
+    printf("[DEBUG] cache_middleware_post_execute: Caching enabled for this request\n");
+    fflush(stdout);
     
     // Extract cache key and TTL from metadata
     json_t *cache_key_json = json_object_get(cache_metadata, "cache_key");
     json_t *cache_ttl_json = json_object_get(cache_metadata, "cache_ttl");
     
+    printf("[DEBUG] cache_middleware_post_execute: cache_key_json=%p, cache_ttl_json=%p\n", cache_key_json, cache_ttl_json);
+    fflush(stdout);
+    
     if (!cache_key_json || !json_is_string(cache_key_json)) {
         printf("Cache metadata missing or invalid cache_key\n");
+        fflush(stdout);
         return;
     }
     
     const char *key_str = json_string_value(cache_key_json);
+    printf("[DEBUG] cache_middleware_post_execute: key_str='%s'\n", key_str ? key_str : "NULL");
+    fflush(stdout);
+    
     int ttl = cache_config.default_ttl;
     
     if (cache_ttl_json && json_is_integer(cache_ttl_json)) {
         ttl = (int)json_integer_value(cache_ttl_json);
     }
     
+    printf("[DEBUG] cache_middleware_post_execute: ttl=%d\n", ttl);
+    fflush(stdout);
+    
     // Make a copy of the key string before deleting metadata
     size_t key_len = strlen(key_str);
     char *key_copy = malloc(key_len + 1);
+    printf("[DEBUG] cache_middleware_post_execute: Allocated key_copy=%p, key_len=%zu\n", key_copy, key_len);
+    fflush(stdout);
     if (!key_copy) {
+        printf("[DEBUG] cache_middleware_post_execute: Failed to allocate key_copy, returning\n");
+        fflush(stdout);
         return;
     }
     memcpy(key_copy, key_str, key_len + 1);
+    printf("[DEBUG] cache_middleware_post_execute: Copied key, key_copy='%s'\n", key_copy);
+    fflush(stdout);
     
     // Remove cache metadata from response before storing
     json_t *clean_response = final_response;
     if (!clean_response) {
+        printf("[DEBUG] cache_middleware_post_execute: clean_response is NULL, freeing key_copy and returning\n");
+        fflush(stdout);
         free(key_copy);
         return;
     }
+    printf("[DEBUG] cache_middleware_post_execute: About to delete _metadata\n");
+    fflush(stdout);
     // Remove the entire metadata object to keep cached responses clean
     json_object_del(clean_response, "_metadata");
+    printf("[DEBUG] cache_middleware_post_execute: Deleted _metadata\n");
+    fflush(stdout);
     
     // Store response in cache (cache_set will make its own deep copy)
+    printf("[DEBUG] cache_middleware_post_execute: About to call cache_set\n");
+    fflush(stdout);
     cache_set(key_copy, clean_response, ttl);
+    printf("[DEBUG] cache_middleware_post_execute: cache_set completed\n");
+    fflush(stdout);
     free(key_copy);
+    printf("[DEBUG] cache_middleware_post_execute: Freed key_copy\n");
+    fflush(stdout);
     // if (result) {
     //     printf("Cached response for key: %s (ttl: %d)\n", key, ttl);
     // } else {
@@ -1051,6 +1107,8 @@ void middleware_post_execute(json_t *final_response, void *arena,
     
     // Clean up our working copy
     // json_decref(clean_response);
+    printf("[DEBUG] cache_middleware_post_execute: Completed successfully\n");
+    fflush(stdout);
 }
 
 // Clean up the entire cache - free all entries and reset cache state
