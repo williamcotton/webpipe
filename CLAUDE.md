@@ -66,6 +66,7 @@ config pg {
 - **mustache**: HTML template rendering with partials support
 - **auth**: User authentication with session management, password hashing
 - **cache**: Response caching with TTL, LRU eviction, template-based keys
+- **log**: Request/response logging with configurable output, format, and level
 
 ## Middleware Development
 
