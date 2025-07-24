@@ -65,6 +65,9 @@ MemoryArena *create_test_arena(size_t size) {
 }
 
 void destroy_test_arena(MemoryArena *arena) {
+    if (!arena) {
+        return;
+    }
     arena_free(arena);
 }
 

@@ -901,6 +901,11 @@ json_t *middleware_execute(json_t *input, void *arena,
     (void)variables;    // Not used in basic implementation
     (void)middleware_config; // Global config not used for step-specific logic
     
+    // Handle NULL input gracefully
+    if (!input) {
+        return NULL; // Cannot cache NULL input
+    }
+    
     // Check if caching is globally disabled
     if (!cache_config.enabled) {
         return input; // Continue pipeline
@@ -936,7 +941,7 @@ json_t *middleware_execute(json_t *input, void *arena,
         fprintf(stderr, "Cache middleware: Failed to generate cache key\n");
         return input; // Continue pipeline on error
     }
-    
+
     // Check for cache hit
     CacheEntry *entry = cache_get(cache_key);
     if (entry) {
@@ -962,8 +967,15 @@ json_t *middleware_execute(json_t *input, void *arena,
     json_object_set_new(cache_metadata, "cache_ttl", json_integer(ttl));
     json_object_set_new(cache_metadata, "cache_enabled", json_boolean(true));
     
-    // Add cache metadata to the request object
-    json_object_set_new(input, "_cache_metadata", cache_metadata);
+    // Get or create generic metadata object
+    json_t *metadata = json_object_get(input, "_metadata");
+    if (!metadata) {
+        metadata = json_object();
+        json_object_set_new(input, "_metadata", metadata);
+    }
+    
+    // Add cache metadata to the generic metadata object
+    json_object_set_new(metadata, "cache", cache_metadata);
     
     return input; // Continue pipeline
 }
@@ -980,8 +992,15 @@ void middleware_post_execute(json_t *final_response, void *arena,
         return;
     }
     
-    // Look for cache metadata in the final response
-    json_t *cache_metadata = json_object_get(final_response, "_cache_metadata");
+    // Look for metadata in the final response
+    json_t *metadata = json_object_get(final_response, "_metadata");
+    if (!metadata) {
+        // No metadata, nothing to cache
+        return;
+    }
+    
+    // Look for cache metadata specifically
+    json_t *cache_metadata = json_object_get(metadata, "cache");
     if (!cache_metadata) {
         // No cache metadata, nothing to cache
         return;
@@ -1003,6 +1022,7 @@ void middleware_post_execute(json_t *final_response, void *arena,
     }
     
     const char *key_str = json_string_value(cache_key_json);
+    
     int ttl = cache_config.default_ttl;
     
     if (cache_ttl_json && json_is_integer(cache_ttl_json)) {
@@ -1017,25 +1037,16 @@ void middleware_post_execute(json_t *final_response, void *arena,
     }
     memcpy(key_copy, key_str, key_len + 1);
     
-    // Remove cache metadata from response before storing
-    json_t *clean_response = final_response;
-    if (!clean_response) {
-        free(key_copy);
-        return;
+    // Remove only cache metadata from response before storing (not the entire _metadata object)
+    // Other middleware may still need their metadata for their post_execute functions
+    json_t *response_metadata = json_object_get(final_response, "_metadata");
+    if (response_metadata) {
+        json_object_del(response_metadata, "cache");
     }
-    json_object_del(clean_response, "_cache_metadata");
     
     // Store response in cache (cache_set will make its own deep copy)
-    cache_set(key_copy, clean_response, ttl);
+    cache_set(key_copy, final_response, ttl);
     free(key_copy);
-    // if (result) {
-    //     printf("Cached response for key: %s (ttl: %d)\n", key, ttl);
-    // } else {
-    //     printf("Failed to cache response for key: %s\n", key);
-    // }
-    
-    // Clean up our working copy
-    // json_decref(clean_response);
 }
 
 // Clean up the entire cache - free all entries and reset cache state

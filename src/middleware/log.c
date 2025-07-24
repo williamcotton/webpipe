@@ -581,8 +581,7 @@ static void log_request_response(json_t *request, json_t *response, double durat
                 // Remove internal fields before logging
                 json_t *clean_response = json_deep_copy(response);
                 if (clean_response) {
-                    json_object_del(clean_response, "_log_metadata");
-                    json_object_del(clean_response, "_cache_metadata");
+                    json_object_del(clean_response, "_metadata");
                     json_object_del(clean_response, "originalRequest");
                     json_object_del(clean_response, "setCookies");
                     
@@ -748,8 +747,15 @@ json_t *middleware_execute(json_t *input, void *arena,
     json_object_set_new(log_metadata, "include_headers", json_boolean(step_config.include_headers));
     json_object_set_new(log_metadata, "enabled", json_boolean(true));
     
-    // Add log metadata to the request object
-    json_object_set_new(input, "_log_metadata", log_metadata);
+    // Get or create generic metadata object
+    json_t *metadata = json_object_get(input, "_metadata");
+    if (!metadata) {
+        metadata = json_object();
+        json_object_set_new(input, "_metadata", metadata);
+    }
+    
+    // Add log metadata to the generic metadata object
+    json_object_set_new(metadata, "log", log_metadata);
     
     return input; // Continue pipeline
 }
@@ -765,9 +771,16 @@ void middleware_post_execute(json_t *final_response, void *arena,
     if (!global_config.enabled) {
         return;
     }
+
+    // Look for metadata in the final response
+    json_t *metadata = json_object_get(final_response, "_metadata");
+    if (!metadata) {
+        // No metadata, nothing to log
+        return;
+    }
     
-    // Look for log metadata in the final response
-    json_t *log_metadata = json_object_get(final_response, "_log_metadata");
+    // Look for log metadata specifically
+    json_t *log_metadata = json_object_get(metadata, "log");
     if (!log_metadata) {
         // No log metadata, nothing to log
         return;
@@ -818,8 +831,11 @@ void middleware_post_execute(json_t *final_response, void *arena,
     // Log the request and response
     log_request_response(original_request, final_response, duration_ms, step_config);
     
-    // Clean up - remove log metadata from response
-    json_object_del(final_response, "_log_metadata");
+    // Clean up - remove log metadata from response metadata
+    json_t *response_metadata = json_object_get(final_response, "_metadata");
+    if (response_metadata) {
+        json_object_del(response_metadata, "log");
+    }
 }
 
 // Optional cleanup function (called on shutdown)

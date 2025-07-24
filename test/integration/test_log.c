@@ -153,7 +153,9 @@ static void test_log_middleware_basic_passthrough(void) {
     TEST_ASSERT_EQUAL_PTR(input, output); // Should return same object (passthrough)
     
     // Should have log metadata added
-    json_t *log_metadata = json_object_get(output, "_log_metadata");
+    json_t *metadata = json_object_get(output, "_metadata");
+    TEST_ASSERT_NOT_NULL(metadata);
+    json_t *log_metadata = json_object_get(metadata, "log");
     TEST_ASSERT_NOT_NULL(log_metadata);
     
     json_t *log_enabled = json_object_get(log_metadata, "enabled");
@@ -184,9 +186,9 @@ static void test_log_middleware_disabled(void) {
     TEST_ASSERT_NOT_NULL(output);
     TEST_ASSERT_EQUAL_PTR(input, output); // Should return same object
     
-    // Should NOT have log metadata when disabled
-    json_t *log_metadata = json_object_get(output, "_log_metadata");
-    TEST_ASSERT_NULL(log_metadata);
+    // Should NOT have any metadata when disabled
+    json_t *metadata = json_object_get(output, "_metadata");
+    TEST_ASSERT_NULL(metadata);
     
     if (output != input) {
         json_decref(output);
@@ -211,7 +213,9 @@ static void test_log_middleware_configuration_parsing(void) {
                                               config1, NULL, &content_type, NULL);
     TEST_ASSERT_NOT_NULL(output1);
     
-    json_t *metadata1 = json_object_get(output1, "_log_metadata");
+    json_t *output1_metadata = json_object_get(output1, "_metadata");
+    TEST_ASSERT_NOT_NULL(output1_metadata);
+    json_t *metadata1 = json_object_get(output1_metadata, "log");
     TEST_ASSERT_NOT_NULL(metadata1);
     
     json_t *level1 = json_object_get(metadata1, "level");
@@ -225,7 +229,9 @@ static void test_log_middleware_configuration_parsing(void) {
                                               config3, NULL, &content_type, NULL);
     TEST_ASSERT_NOT_NULL(output3);
     
-    json_t *metadata3 = json_object_get(output3, "_log_metadata");
+    json_t *output3_metadata = json_object_get(output3, "_metadata");
+    TEST_ASSERT_NOT_NULL(output3_metadata);
+    json_t *metadata3 = json_object_get(output3_metadata, "log");
     TEST_ASSERT_NOT_NULL(metadata3);
     
     json_t *level3 = json_object_get(metadata3, "level");
@@ -263,13 +269,19 @@ static void test_log_middleware_post_execute_logging(void) {
     json_object_set_new(log_metadata, "include_body", json_boolean(0));
     json_object_set_new(log_metadata, "include_headers", json_boolean(1));
     json_object_set_new(log_metadata, "enabled", json_boolean(1));
-    json_object_set_new(final_response, "_log_metadata", log_metadata);
+    json_t *metadata = json_object();
+    json_object_set_new(metadata, "log", log_metadata);
+    json_object_set_new(final_response, "_metadata", metadata);
     
     // Call post execute (this should output log to stdout)
     log_middleware_post_execute(final_response, arena, get_arena_alloc_wrapper(), NULL);
     
     // Verify the log metadata was removed from response
-    json_t *remaining_metadata = json_object_get(final_response, "_log_metadata");
+    json_t *response_metadata = json_object_get(final_response, "_metadata");
+    json_t *remaining_metadata = NULL;
+    if (response_metadata) {
+        remaining_metadata = json_object_get(response_metadata, "log");
+    }
     TEST_ASSERT_NULL(remaining_metadata);
     
     json_decref(final_response);
@@ -376,7 +388,9 @@ static void test_log_middleware_full_pipeline_simulation(void) {
     TEST_ASSERT_EQUAL_PTR(input, log_result); // Should be passthrough
     
     // Verify log metadata was added
-    json_t *log_metadata = json_object_get(log_result, "_log_metadata");
+    json_t *log_result_metadata = json_object_get(log_result, "_metadata");
+    TEST_ASSERT_NOT_NULL(log_result_metadata);
+    json_t *log_metadata = json_object_get(log_result_metadata, "log");
     TEST_ASSERT_NOT_NULL(log_metadata);
     
     // Step 2: Simulate pipeline execution (jq middleware would do this)
@@ -387,13 +401,19 @@ static void test_log_middleware_full_pipeline_simulation(void) {
     
     // Add the original request and log metadata from step 1
     json_object_set_new(final_response, "originalRequest", json_deep_copy(input));
-    json_object_set_new(final_response, "_log_metadata", json_deep_copy(log_metadata));
+    json_t *final_metadata = json_object();
+    json_object_set_new(final_metadata, "log", json_deep_copy(log_metadata));
+    json_object_set_new(final_response, "_metadata", final_metadata);
     
     // Step 3: Post execute to log the response
     log_middleware_post_execute(final_response, arena, get_arena_alloc_wrapper(), NULL);
     
     // Step 4: Verify cleanup - log metadata should be removed
-    json_t *remaining_metadata = json_object_get(final_response, "_log_metadata");
+    json_t *response_metadata = json_object_get(final_response, "_metadata");
+    json_t *remaining_metadata = NULL;
+    if (response_metadata) {
+        remaining_metadata = json_object_get(response_metadata, "log");
+    }
     TEST_ASSERT_NULL(remaining_metadata);
     
     json_decref(input);
@@ -419,7 +439,11 @@ static void test_log_middleware_different_log_levels(void) {
         
         TEST_ASSERT_NOT_NULL(output);
         
-        json_t *metadata = json_object_get(output, "_log_metadata");
+        json_t *output_metadata = json_object_get(output, "_metadata");
+        json_t *metadata = NULL;
+        if (output_metadata) {
+            metadata = json_object_get(output_metadata, "log");
+        }
         TEST_ASSERT_NOT_NULL(metadata);
         
         json_t *level = json_object_get(metadata, "level");
@@ -456,7 +480,9 @@ static void test_log_middleware_body_and_header_flags(void) {
     
     TEST_ASSERT_NOT_NULL(output1);
     
-    json_t *metadata1 = json_object_get(output1, "_log_metadata");
+    json_t *output1_metadata = json_object_get(output1, "_metadata");
+    TEST_ASSERT_NOT_NULL(output1_metadata);
+    json_t *metadata1 = json_object_get(output1_metadata, "log");
     TEST_ASSERT_NOT_NULL(metadata1);
     
     json_t *include_body1 = json_object_get(metadata1, "include_body");
@@ -472,7 +498,9 @@ static void test_log_middleware_body_and_header_flags(void) {
     
     TEST_ASSERT_NOT_NULL(output2);
     
-    json_t *metadata2 = json_object_get(output2, "_log_metadata");
+    json_t *output2_metadata = json_object_get(output2, "_metadata");
+    TEST_ASSERT_NOT_NULL(output2_metadata);
+    json_t *metadata2 = json_object_get(output2_metadata, "log");
     TEST_ASSERT_NOT_NULL(metadata2);
     
     json_t *include_body2 = json_object_get(metadata2, "include_body");
