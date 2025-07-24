@@ -431,6 +431,7 @@ GET /user/:id/profile
   }`
 
 GET /api/search
+  |> log: `level: debug, includeBody: true, includeHeaders: true`
   |> cache: `
     keyTemplate: search-{query.q}-{query.category}
     ttl: 15
