@@ -451,6 +451,22 @@ GET /api/search
     note: "Cache key varies by search term and category query parameters"
   }`
 
+config log {
+  enabled: true
+  output: "stdout"
+  format: "json"
+  level: "debug"
+  includeBody: false
+  includeHeaders: true
+  maxBodySize: 1024
+  timestamp: true
+}
+
+  
+GET /api/users/:id
+  |> log: `level: debug, includeBody: true, includeHeaders: true`
+  |> pg: `SELECT * FROM users WHERE id = $1`
+
 ## Todos App
 
 mustache baseLayout = `

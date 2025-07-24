@@ -84,6 +84,7 @@ json_t *middleware_execute(json_t *input, void *arena,
 ```c
 int middleware_init(json_t *config);  // Called at startup
 json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func);  // Database providers
+void middleware_post_execute(json_t *final_response, void *arena, arena_alloc_func alloc_func, json_t *middleware_config); // Called after all middleware has executed
 ```
 
 ### Key Points
