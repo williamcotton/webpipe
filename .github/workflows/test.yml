@@ -2,7 +2,7 @@ name: Test Suite
 
 on:
   push:
-    branches: [ "main", "cache" ]
+    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
 
