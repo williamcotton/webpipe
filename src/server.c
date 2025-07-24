@@ -970,7 +970,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             if (ok != 0) return ok;
 
             current = tmp;
-            if (tmp_ctype && strcmp(tmp_ctype, *content_type) != 0) {
+            if (tmp_ctype && *content_type && strcmp(tmp_ctype, *content_type) != 0) {
                 *content_type = tmp_ctype;
             }
             continue;                  /* proceed to next step             */
@@ -1007,6 +1007,9 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
                 // Early termination - extract value and execute post hooks
                 json_t *value = json_object_get(result, "value");
                 if (value) {
+                    // Merge metadata from the current state (which has log start_time)
+                    // into the cached value before executing post hooks.
+                    merge_pipeline_metadata(value, current);
                     attach_request_meta(value, original_req);
                     execute_post_hooks(value, arena);
                     json_object_del(value, "originalRequest");
@@ -1020,7 +1023,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         }
 
         attach_request_meta(result, original_req);
-        
+
         // Merge metadata from the previous pipeline step
         merge_pipeline_metadata(result, current);
 
@@ -1046,7 +1049,7 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
     /* ─── end of pipeline ──────────────────────────────────────────────── */
     // Execute any registered post-execute hooks
     execute_post_hooks(current, arena);
-    
+
     json_object_del(current, "originalRequest");
     *final_response = current;
     return 0;

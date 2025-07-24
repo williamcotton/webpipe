@@ -987,48 +987,48 @@ void middleware_post_execute(json_t *final_response, void *arena,
     (void)arena;          // Not used in cache storage
     (void)alloc_func;     // Not used in cache storage
     (void)middleware_config; // Not needed with our metadata approach
-    
+
     if (!cache_config.enabled) {
         return;
     }
-    
+
     // Look for metadata in the final response
     json_t *metadata = json_object_get(final_response, "_metadata");
     if (!metadata) {
         // No metadata, nothing to cache
         return;
     }
-    
+
     // Look for cache metadata specifically
     json_t *cache_metadata = json_object_get(metadata, "cache");
     if (!cache_metadata) {
         // No cache metadata, nothing to cache
         return;
     }
-    
+
     // Check if caching is enabled for this request
     json_t *cache_enabled = json_object_get(cache_metadata, "cache_enabled");
     if (!cache_enabled || !json_is_boolean(cache_enabled) || !json_boolean_value(cache_enabled)) {
         return;
     }
-    
+
     // Extract cache key and TTL from metadata
     json_t *cache_key_json = json_object_get(cache_metadata, "cache_key");
     json_t *cache_ttl_json = json_object_get(cache_metadata, "cache_ttl");
-    
+
     if (!cache_key_json || !json_is_string(cache_key_json)) {
         printf("Cache metadata missing or invalid cache_key\n");
         return;
     }
-    
+
     const char *key_str = json_string_value(cache_key_json);
-    
+
     int ttl = cache_config.default_ttl;
-    
+
     if (cache_ttl_json && json_is_integer(cache_ttl_json)) {
         ttl = (int)json_integer_value(cache_ttl_json);
     }
-    
+
     // Make a copy of the key string before deleting metadata
     size_t key_len = strlen(key_str);
     char *key_copy = malloc(key_len + 1);
@@ -1036,16 +1036,28 @@ void middleware_post_execute(json_t *final_response, void *arena,
         return;
     }
     memcpy(key_copy, key_str, key_len + 1);
-    
+
+    // Create a clean copy of the response to cache, without any metadata
+    json_t *response_to_cache = json_deep_copy(final_response);
+    if (response_to_cache) {
+        json_object_del(response_to_cache, "_metadata");
+        json_object_del(response_to_cache, "originalRequest"); // Also remove original request
+
+        // Store the clean response in cache
+        cache_set(key_copy, response_to_cache, ttl);
+
+        // The cached object was deep copied again in cache_set, so we can free this one
+        json_decref(response_to_cache);
+    }
+
+
     // Remove only cache metadata from response before storing (not the entire _metadata object)
     // Other middleware may still need their metadata for their post_execute functions
     json_t *response_metadata = json_object_get(final_response, "_metadata");
     if (response_metadata) {
         json_object_del(response_metadata, "cache");
     }
-    
-    // Store response in cache (cache_set will make its own deep copy)
-    cache_set(key_copy, final_response, ttl);
+
     free(key_copy);
 }
 
