@@ -941,7 +941,7 @@ json_t *middleware_execute(json_t *input, void *arena,
         fprintf(stderr, "Cache middleware: Failed to generate cache key\n");
         return input; // Continue pipeline on error
     }
-    
+
     // Check for cache hit
     CacheEntry *entry = cache_get(cache_key);
     if (entry) {
@@ -1037,17 +1037,15 @@ void middleware_post_execute(json_t *final_response, void *arena,
     }
     memcpy(key_copy, key_str, key_len + 1);
     
-    // Remove cache metadata from response before storing
-    json_t *clean_response = final_response;
-    if (!clean_response) {
-        free(key_copy);
-        return;
+    // Remove only cache metadata from response before storing (not the entire _metadata object)
+    // Other middleware may still need their metadata for their post_execute functions
+    json_t *response_metadata = json_object_get(final_response, "_metadata");
+    if (response_metadata) {
+        json_object_del(response_metadata, "cache");
     }
-    // Remove the entire metadata object to keep cached responses clean
-    json_object_del(clean_response, "_metadata");
     
     // Store response in cache (cache_set will make its own deep copy)
-    cache_set(key_copy, clean_response, ttl);
+    cache_set(key_copy, final_response, ttl);
     free(key_copy);
 }
 

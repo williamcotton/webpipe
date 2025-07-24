@@ -771,7 +771,7 @@ void middleware_post_execute(json_t *final_response, void *arena,
     if (!global_config.enabled) {
         return;
     }
-    
+
     // Look for metadata in the final response
     json_t *metadata = json_object_get(final_response, "_metadata");
     if (!metadata) {
@@ -835,10 +835,6 @@ void middleware_post_execute(json_t *final_response, void *arena,
     json_t *response_metadata = json_object_get(final_response, "_metadata");
     if (response_metadata) {
         json_object_del(response_metadata, "log");
-        // If metadata object is now empty, remove it entirely
-        if (json_object_size(response_metadata) == 0) {
-            json_object_del(final_response, "_metadata");
-        }
     }
 }
 
