@@ -187,6 +187,181 @@ static void test_pg_middleware_sql_error_handling(void) {
     destroy_test_arena(arena);
 }
 
+static void test_pg_with_resultName(void) {
+    MemoryArena *arena = create_test_arena(1024 * 1024);
+    
+    // Set arena context for JSON allocation
+    set_current_arena(arena);
+    
+    // Set up arena-based jansson allocators to match runtime behavior
+    json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
+    
+    json_t *input = json_object();
+    json_object_set_new(input, "method", json_string("GET"));
+    json_object_set_new(input, "path", json_string("/test"));
+    json_object_set_new(input, "resultName", json_string("testQuery"));
+    
+    json_t *sqlParams = json_array();
+    json_object_set_new(input, "sqlParams", sqlParams);
+    
+    const char *config = "SELECT 1 as test_value";
+    
+    // Create a simple middleware config for testing
+    json_t *middleware_config = json_object();
+    json_object_set_new(middleware_config, "host", json_string("localhost"));
+    json_object_set_new(middleware_config, "port", json_string("5432"));
+    json_object_set_new(middleware_config, "database", json_string("wp-test"));
+    json_object_set_new(middleware_config, "user", json_string("postgres"));
+    json_object_set_new(middleware_config, "password", json_string("postgres"));
+    json_object_set_new(middleware_config, "ssl", json_boolean(false));
+    
+    char *contentType = NULL;
+    json_t *variables = json_object();
+    
+    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config, middleware_config, &contentType, variables);
+    
+    TEST_ASSERT_NOT_NULL(output);
+    
+    // Should preserve original fields
+    json_t *method = json_object_get(output, "method");
+    json_t *path = json_object_get(output, "path");
+    TEST_ASSERT_NOT_NULL(method);
+    TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_STRING_EQUAL("GET", json_string_value(method));
+    TEST_ASSERT_STRING_EQUAL("/test", json_string_value(path));
+    
+    // Should have data object with named result
+    json_t *data = json_object_get(output, "data");
+    TEST_ASSERT_NOT_NULL(data);
+    
+    json_t *testQuery = json_object_get(data, "testQuery");
+    TEST_ASSERT_NOT_NULL(testQuery);
+    
+    json_t *rows = json_object_get(testQuery, "rows");
+    TEST_ASSERT_NOT_NULL(rows);
+    TEST_ASSERT_TRUE(json_is_array(rows));
+    
+    // Restore default jansson allocators
+    json_set_alloc_funcs(malloc, free);
+    
+    // Clear arena context before cleanup
+    set_current_arena(NULL);
+    destroy_test_arena(arena);
+}
+
+static void test_pg_without_naming_legacy(void) {
+    MemoryArena *arena = create_test_arena(1024 * 1024);
+    
+    // Set arena context for JSON allocation
+    set_current_arena(arena);
+    
+    // Set up arena-based jansson allocators to match runtime behavior
+    json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
+    
+    json_t *input = json_object();
+    json_object_set_new(input, "method", json_string("GET"));
+    json_object_set_new(input, "path", json_string("/test"));
+    // No resultName field - should use legacy behavior
+    
+    json_t *sqlParams = json_array();
+    json_object_set_new(input, "sqlParams", sqlParams);
+    
+    const char *config = "SELECT 1 as test_value";
+    
+    // Create a simple middleware config for testing
+    json_t *middleware_config = json_object();
+    json_object_set_new(middleware_config, "host", json_string("localhost"));
+    json_object_set_new(middleware_config, "port", json_string("5432"));
+    json_object_set_new(middleware_config, "database", json_string("wp-test"));
+    json_object_set_new(middleware_config, "user", json_string("postgres"));
+    json_object_set_new(middleware_config, "password", json_string("postgres"));
+    json_object_set_new(middleware_config, "ssl", json_boolean(false));
+    
+    char *contentType = NULL;
+    json_t *variables = json_object();
+    
+    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config, middleware_config, &contentType, variables);
+    
+    TEST_ASSERT_NOT_NULL(output);
+    
+    // Should preserve original fields
+    json_t *method = json_object_get(output, "method");
+    json_t *path = json_object_get(output, "path");
+    TEST_ASSERT_NOT_NULL(method);
+    TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_STRING_EQUAL("GET", json_string_value(method));
+    TEST_ASSERT_STRING_EQUAL("/test", json_string_value(path));
+    
+    // Should have data object with direct result (legacy behavior)
+    json_t *data = json_object_get(output, "data");
+    TEST_ASSERT_NOT_NULL(data);
+    
+    json_t *rows = json_object_get(data, "rows");
+    TEST_ASSERT_NOT_NULL(rows);
+    TEST_ASSERT_TRUE(json_is_array(rows));
+    
+    // Restore default jansson allocators
+    json_set_alloc_funcs(malloc, free);
+    
+    // Clear arena context before cleanup
+    set_current_arena(NULL);
+    destroy_test_arena(arena);
+}
+
+static void test_pg_naming_priority_explicit_over_auto(void) {
+    MemoryArena *arena = create_test_arena(1024 * 1024);
+    
+    // Set arena context for JSON allocation
+    set_current_arena(arena);
+    
+    // Set up arena-based jansson allocators to match runtime behavior
+    json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
+    
+    json_t *input = json_object();
+    json_object_set_new(input, "method", json_string("GET"));
+    json_object_set_new(input, "path", json_string("/test"));
+    json_object_set_new(input, "resultName", json_string("explicitName"));
+    
+    json_t *sqlParams = json_array();
+    json_object_set_new(input, "sqlParams", sqlParams);
+    
+    const char *config = "SELECT 1 as test_value";
+    
+    // Create a simple middleware config for testing
+    json_t *middleware_config = json_object();
+    json_object_set_new(middleware_config, "host", json_string("localhost"));
+    json_object_set_new(middleware_config, "port", json_string("5432"));
+    json_object_set_new(middleware_config, "database", json_string("wp-test"));
+    json_object_set_new(middleware_config, "user", json_string("postgres"));
+    json_object_set_new(middleware_config, "password", json_string("postgres"));
+    json_object_set_new(middleware_config, "ssl", json_boolean(false));
+    
+    char *contentType = NULL;
+    json_t *variables = json_object();
+    
+    json_t *output = pg_middleware_execute(input, arena, get_arena_alloc_wrapper(), NULL, config, middleware_config, &contentType, variables);
+    
+    TEST_ASSERT_NOT_NULL(output);
+    
+    // Should have data object with explicitly named result
+    json_t *data = json_object_get(output, "data");
+    TEST_ASSERT_NOT_NULL(data);
+    
+    json_t *explicitName = json_object_get(data, "explicitName");
+    TEST_ASSERT_NOT_NULL(explicitName);
+    
+    json_t *rows = json_object_get(explicitName, "rows");
+    TEST_ASSERT_NOT_NULL(rows);
+    TEST_ASSERT_TRUE(json_is_array(rows));
+    
+    // Restore default jansson allocators
+    json_set_alloc_funcs(malloc, free);
+    
+    // Clear arena context before cleanup
+    set_current_arena(NULL);
+    destroy_test_arena(arena);
+}
+
 
 
 int main(void) {
@@ -195,6 +370,9 @@ int main(void) {
     RUN_TEST(test_pg_middleware_simple_select);
     RUN_TEST(test_pg_middleware_parameterized_query);
     RUN_TEST(test_pg_middleware_sql_error_handling);
+    RUN_TEST(test_pg_with_resultName);
+    RUN_TEST(test_pg_without_naming_legacy);
+    RUN_TEST(test_pg_naming_priority_explicit_over_auto);
     
     return UNITY_END();
 }

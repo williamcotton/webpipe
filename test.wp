@@ -914,3 +914,40 @@ mustache todoItemPartial = `
     </div>
   </li>
 `
+
+## Test routes for new resultName functionality
+
+# Test explicit resultName functionality
+GET /test/named-query/:id
+  |> jq: `{ resultName: "userProfile" }`
+  |> pg: `SELECT 1 as id, 'Test User' as name, 'test@example.com' as email`
+  |> jq: `{ user: .data.userProfile }`
+
+# Test multiple named results
+GET /test/multiple/:id
+  |> jq: `{ resultName: "userInfo" }`
+  |> pg: `SELECT 1 as id, 'Test User' as name`
+  |> jq: `{ resultName: "userTeams" }`
+  |> pg: `SELECT 1 as id, 'Engineering' as name UNION SELECT 2 as id, 'Product' as name`
+  |> jq: `{ 
+      profile: .data.userInfo,
+      teams: .data.userTeams
+    }`
+
+# Test auto-naming with variables (should now use variable name as result key)
+pg getUserQuery = `SELECT 1 as id, 'Auto Named User' as name`
+pg getTeamsQuery = `SELECT 1 as id, 'Auto Team' as name`
+
+GET /test/auto-naming/:id
+  |> pg: getUserQuery
+  |> pg: getTeamsQuery
+  |> jq: `{ 
+      user: .data.getUserQuery,
+      teams: .data.getTeamsQuery,
+      hasUserData: (.data.getUserQuery != null),
+      hasTeamsData: (.data.getTeamsQuery != null)
+    }`
+
+# Test that legacy behavior is preserved (no resultName, no variable)
+GET /test/legacy/:id
+  |> pg: `SELECT 1 as id, 'Legacy User' as name`

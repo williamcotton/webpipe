@@ -308,9 +308,16 @@ static void test_e2e_variable_usage(void) {
     json_t *data = json_object_get(response, "data");
     TEST_ASSERT_NOT_NULL(data);
     
-    json_t *rows = json_object_get(data, "rows");
+    json_t *teamsQuery = json_object_get(data, "teamsQuery");
+    TEST_ASSERT_NOT_NULL(teamsQuery);
+    TEST_ASSERT_TRUE(json_is_object(teamsQuery));
+
+    json_t *rows = json_object_get(teamsQuery, "rows");
     TEST_ASSERT_NOT_NULL(rows);
     TEST_ASSERT_TRUE(json_is_array(rows));
+
+    json_t *row = json_array_get(rows, 0);
+    TEST_ASSERT_NOT_NULL(row);
     
     json_decref(response);
 }
