@@ -2,7 +2,7 @@ name: Test Suite
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "pipeline-data" ]
   pull_request:
     branches: [ "main" ]
 
