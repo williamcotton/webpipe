@@ -8,6 +8,8 @@ config pg {
   user: $WP_PG_USER || "postgres"
   password: $WP_PG_PASSWORD || "postgres"
   ssl: false
+  initialPoolSize: 10
+  maxPoolSize: 20
 }
 
 config auth {

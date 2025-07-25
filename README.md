@@ -154,7 +154,7 @@ GET /lua-db-test
 If no database middleware is registered, calls to `executeSql` will return an error.
 
 ### PostgreSQL Middleware
-Executes SQL queries with parameter binding from `sqlParams`.
+Executes SQL queries with parameter binding from `sqlParams` using a high-performance connection pool.
 
 ```wp
 GET /users/:id
@@ -162,12 +162,52 @@ GET /users/:id
   |> pg: `SELECT * FROM users WHERE id = $1`
 ```
 
-**Features:**
-- Implements `middleware_init` for database connection initialization using config blocks
-- Registers with the database registry system to provide `execute_sql` function
-- Thread-safe database operations with connection pooling
-- Automatic parameter binding with type conversion
-- Comprehensive error reporting with PostgreSQL-specific diagnostics
+**Configuration Options:**
+```wp
+config pg {
+  host: $DB_HOST || "localhost"
+  port: $DB_PORT || 5432
+  database: $DB_NAME || "myapp"
+  user: $DB_USER || "postgres"
+  password: $DB_PASSWORD
+  ssl: false
+  initialPoolSize: 2   # Initial number of connections (default: 2)
+  maxPoolSize: 10      # Maximum connections in pool (default: 10)
+}
+```
+
+**Connection Pool Configuration:**
+- `initialPoolSize`: Number of connections created at startup (default: 2, minimum: 1)
+- `maxPoolSize`: Maximum number of connections in the pool (default: 10, maximum: 50)
+- Pool sizes are validated and adjusted automatically to ensure `initialPoolSize ≤ maxPoolSize`
+
+**Performance Benefits:**
+- **Concurrent Requests**: Multiple database queries can execute simultaneously using separate pooled connections
+- **Reduced Latency**: Eliminates connection setup overhead by reusing established connections  
+- **Scalability**: Handles concurrent load by distributing queries across multiple connections
+- **Optimal for Multi-Query Routes**: Routes with multiple database operations benefit significantly from parallel execution
+
+**Example Multi-Query Route:**
+```wp
+# Define reusable queries as variables
+pg getUserQuery = `SELECT * FROM users WHERE id = $1`
+pg getPermissionsQuery = `SELECT * FROM user_permissions WHERE user_id = $1`
+
+pipeline getUserDashboard = 
+  |> jq: `{ sqlParams: [.params.id] }`
+  |> pg: getUserQuery
+  |> jq: `{ sqlParams: [.params.id] }`  
+  |> pg: getPermissionsQuery
+
+GET /user-dashboard/:id
+  |> pipeline: getUserDashboard
+  |> jq: `{
+      user: .data.getUserQuery.rows[0],
+      permissions: .data.getPermissionsQuery.rows,
+      hasUser: (.data.getUserQuery.rows | length > 0),
+      permissionCount: (.data.getPermissionsQuery.rows | length)
+    }`
+```
 
 ### Validate Middleware
 Validates request body fields using a simple DSL with built-in validation rules.

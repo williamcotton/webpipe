@@ -13,12 +13,31 @@ typedef void (*arena_free_func)(void *arena);
 // Memory arena type (forward declaration)
 typedef struct MemoryArena MemoryArena;
 
+// Connection pool constants
+#define INITIAL_POOL_SIZE 2
+#define MAX_POOL_SIZE 10
+
+// Connection pool structures
+typedef struct PooledConnection {
+    PGconn *conn;
+    int in_use;
+    struct PooledConnection *next;
+} PooledConnection;
+
+typedef struct ConnectionPool {
+    MemoryArena *arena;
+    char *conninfo;
+    PooledConnection *connections;
+    int size;
+    int max_size;
+    pthread_mutex_t lock;
+} ConnectionPool;
+
 // Function prototype for database registry
 json_t *execute_sql(const char *sql, json_t *params, void *arena, arena_alloc_func alloc_func);
 
-// Global PostgreSQL connection with mutex protection
-static PGconn *pg_connection = NULL;
-static pthread_mutex_t pg_mutex = PTHREAD_MUTEX_INITIALIZER;
+// Global PostgreSQL connection pool
+static ConnectionPool *pg_pool = NULL;
 static int connection_failed = 0;
 
 // Connection parameters from configuration block
@@ -45,6 +64,17 @@ static bool get_pg_bool_config(json_t *config, const char *key, bool default_val
   return default_value;
 }
 
+static int get_pg_int_config(json_t *config, const char *key, int default_value) {
+  if (!config) return default_value;
+  
+  json_t *value = json_object_get(config, key);
+  if (value && json_is_integer(value)) {
+    return (int)json_integer_value(value);
+  }
+  
+  return default_value;
+}
+
 // Function prototypes
 static int pg_middleware_init(json_t *config);
 static void pg_middleware_cleanup(void);
@@ -54,95 +84,225 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
 int middleware_init(json_t *config);
 static void middleware_destructor(void);
 
+// Pool management function prototypes
+static PooledConnection* create_connection(ConnectionPool *pool, json_t *config);
+static ConnectionPool* init_connection_pool(MemoryArena *arena, json_t *config);
+static PooledConnection* get_connection(ConnectionPool *pool);
+static void return_connection(ConnectionPool *pool, PooledConnection *conn);
+static void close_connection_pool(ConnectionPool *pool);
+
 // Global variable to store current middleware config for database registry
 static json_t *current_middleware_config = NULL;
 
+// Create a single connection for the pool
+static PooledConnection* create_connection(ConnectionPool *pool, json_t *config) {
+    if (!pool || !config) return NULL;
+    
+    // We need to use a global arena allocator for pool structures
+    // For now, we'll use malloc for pool structures and manage cleanup manually
+    PooledConnection *conn = malloc(sizeof(PooledConnection));
+    if (!conn) return NULL;
+    
+    // Build connection string
+    char conninfo[512];
+    const char *host = get_pg_string_config(config, "host");
+    const char *port = get_pg_string_config(config, "port");
+    const char *dbname = get_pg_string_config(config, "database");
+    const char *user = get_pg_string_config(config, "user");
+    const char *password = get_pg_string_config(config, "password");
+    bool ssl = get_pg_bool_config(config, "ssl", false);
+    
+    if (!host || !port || !dbname || !user || !password) {
+        free(conn);
+        return NULL;
+    }
+    
+    if (ssl) {
+        snprintf(conninfo, sizeof(conninfo),
+                 "host=%s port=%s dbname=%s user=%s password=%s sslmode=require gssencmode=disable", 
+                 host, port, dbname, user, password);
+    } else {
+        snprintf(conninfo, sizeof(conninfo),
+                 "host=%s port=%s dbname=%s user=%s password=%s sslmode=disable gssencmode=disable", 
+                 host, port, dbname, user, password);
+    }
+    
+    conn->conn = PQconnectdb(conninfo);
+    if (PQstatus(conn->conn) != CONNECTION_OK) {
+        fprintf(stderr, "Failed to create database connection: %s\n", 
+                PQerrorMessage(conn->conn));
+        PQfinish(conn->conn);
+        free(conn);
+        return NULL;
+    }
+    
+    conn->in_use = 0;
+    conn->next = NULL;
+    return conn;
+}
+
+// Initialize connection pool
+static ConnectionPool* init_connection_pool(MemoryArena *arena, json_t *config) {
+    if (!config) return NULL;
+    
+    ConnectionPool *pool = malloc(sizeof(ConnectionPool));
+    if (!pool) return NULL;
+    
+    pool->arena = arena;
+    pool->connections = NULL;
+    pool->size = 0;
+    
+    // Get pool size configuration
+    int initial_size = get_pg_int_config(config, "initialPoolSize", INITIAL_POOL_SIZE);
+    int max_size = get_pg_int_config(config, "maxPoolSize", MAX_POOL_SIZE);
+    
+    // Validate pool sizes
+    if (initial_size < 1) initial_size = 1;
+    if (max_size < initial_size) max_size = initial_size;
+    if (max_size > 50) max_size = 50; // Reasonable upper limit
+    
+    pool->max_size = max_size;
+    
+    if (pthread_mutex_init(&pool->lock, NULL) != 0) {
+        fprintf(stderr, "Failed to initialize pool mutex\n");
+        return NULL;
+    }
+    
+    // Create initial connections
+    for (int i = 0; i < initial_size; i++) {
+        PooledConnection *conn = create_connection(pool, config);
+        if (!conn) {
+            fprintf(stderr, "Warning: Could only create %d initial connections\n", i);
+            break;
+        }
+        
+        conn->next = pool->connections;
+        pool->connections = conn;
+        pool->size++;
+    }
+    
+    if (pool->size == 0) {
+        fprintf(stderr, "Failed to create any initial connections\n");
+        pthread_mutex_destroy(&pool->lock);
+        return NULL;
+    }
+    
+    return pool;
+}
+
+// Get available connection from pool
+static PooledConnection* get_connection(ConnectionPool *pool) {
+    if (!pool) return NULL;
+    
+    pthread_mutex_lock(&pool->lock);
+    
+    // Look for an available connection
+    PooledConnection *conn = pool->connections;
+    while (conn) {
+        if (!conn->in_use) {
+            conn->in_use = 1;
+            pthread_mutex_unlock(&pool->lock);
+            return conn;
+        }
+        conn = conn->next;
+    }
+    
+    // If we have room, create a new connection
+    if (pool->size < pool->max_size) {
+        conn = create_connection(pool, current_middleware_config);
+        if (conn) {
+            conn->in_use = 1;
+            conn->next = pool->connections;
+            pool->connections = conn;
+            pool->size++;
+            pthread_mutex_unlock(&pool->lock);
+            return conn;
+        }
+    }
+    
+    pthread_mutex_unlock(&pool->lock);
+    return NULL;  // No connections available
+}
+
+// Return connection to pool
+static void return_connection(ConnectionPool *pool, PooledConnection *conn) {
+    if (!pool || !conn) return;
+    
+    pthread_mutex_lock(&pool->lock);
+    
+    // Check connection status and reset if needed
+    if (PQstatus(conn->conn) != CONNECTION_OK) {
+        PQreset(conn->conn);
+    }
+    
+    conn->in_use = 0;
+    
+    pthread_mutex_unlock(&pool->lock);
+}
+
+// Close connection pool
+static void close_connection_pool(ConnectionPool *pool) {
+    if (!pool) return;
+    
+    pthread_mutex_lock(&pool->lock);
+    
+    PooledConnection *conn = pool->connections;
+    while (conn) {
+        PooledConnection *next = conn->next;
+        PQfinish(conn->conn);
+        free(conn);  // Free individual connections
+        conn = next;
+    }
+    
+    pthread_mutex_unlock(&pool->lock);
+    pthread_mutex_destroy(&pool->lock);
+    free(pool);  // Free the pool structure itself
+}
+
 // Initialize PostgreSQL connection (thread-safe)
 int pg_middleware_init(json_t *config) {
-  pthread_mutex_lock(&pg_mutex);
-
-  // If we already have a connection or already failed, return early
-  if (pg_connection) {
-    pthread_mutex_unlock(&pg_mutex);
+  // If we already have a pool or already failed, return early
+  if (pg_pool) {
     return 1; // Success
   }
 
   if (connection_failed) {
-    pthread_mutex_unlock(&pg_mutex);
     return 0; // Already failed
   }
 
-  // Try to connect
-  char conninfo[512];
-  
-  // Get configuration values from config block
+  // Validate required configuration
   const char *host = get_pg_string_config(config, "host");
   const char *port = get_pg_string_config(config, "port");
   const char *dbname = get_pg_string_config(config, "database");
   const char *user = get_pg_string_config(config, "user");
   const char *password = get_pg_string_config(config, "password");
   
-  // Validate required configuration
   if (!host || !port || !dbname || !user || !password) {
     fprintf(stderr, "pg: Missing required configuration. Need host, port, database, user, and password\n");
     connection_failed = 1;
-    pthread_mutex_unlock(&pg_mutex);
     return 0;
   }
-  
-  // Get optional SSL configuration
-  bool ssl = get_pg_bool_config(config, "ssl", false);
-  
-  // Estimate required buffer size (with some margin for format string)
-  size_t required_size = strlen(host) + strlen(port) + strlen(dbname) + 
-                        strlen(user) + strlen(password) + 150;  // 150 for format string + SSL
-  
-  if (required_size >= sizeof(conninfo)) {
-    fprintf(stderr, "Error: PostgreSQL connection string too long (%zu bytes, max %zu)\n", 
-            required_size, sizeof(conninfo));
-    return 0;
-  }
-  
-  if (ssl) {
-    snprintf(conninfo, sizeof(conninfo),
-             "host=%s port=%s dbname=%s user=%s password=%s sslmode=require gssencmode=disable", 
-             host, port, dbname, user, password);
-  } else {
-    snprintf(conninfo, sizeof(conninfo),
-             "host=%s port=%s dbname=%s user=%s password=%s sslmode=disable gssencmode=disable", 
-             host, port, dbname, user, password);
-  }
 
-  PGconn *new_conn = PQconnectdb(conninfo);
-
-  if (PQstatus(new_conn) != CONNECTION_OK) {
-    // Get error message before calling PQfinish
-    char error_msg[256];
-    snprintf(error_msg, sizeof(error_msg), "pg: Connection failed: %s",
-             PQerrorMessage(new_conn));
-    fprintf(stderr, "%s\n", error_msg);
-
-    PQfinish(new_conn);
+  // Initialize connection pool (using NULL for arena since we're using malloc)
+  pg_pool = init_connection_pool(NULL, config);
+  if (!pg_pool) {
+    fprintf(stderr, "pg: Failed to initialize connection pool\n");
     connection_failed = 1;
-    pthread_mutex_unlock(&pg_mutex);
     return 0; // Failed
   }
 
-  pg_connection = new_conn;
-  printf("pg: Connected to PostgreSQL database\n");
-  pthread_mutex_unlock(&pg_mutex);
+  printf("pg: Connection pool initialized with %d connections (max: %d)\n", 
+         pg_pool->size, pg_pool->max_size);
   return 1; // Success
 }
 
-// Cleanup PostgreSQL connection
+// Cleanup PostgreSQL connection pool
 void pg_middleware_cleanup() {
-  pthread_mutex_lock(&pg_mutex);
-  if (pg_connection) {
-    PQfinish(pg_connection);
-    pg_connection = NULL;
+  if (pg_pool) {
+    close_connection_pool(pg_pool);
+    pg_pool = NULL;
   }
   connection_failed = 0;
-  pthread_mutex_unlock(&pg_mutex);
 }
 
 // Convert PostgreSQL result to JSON
@@ -242,7 +402,7 @@ json_t *pg_result_to_json(PGresult *result) {
 // Execute SQL query with parameters (internal)
 static json_t *execute_sql_internal(const char *sql, json_t *params, void *arena,
                                    arena_alloc_func alloc_func, json_t *config) {
-  // Try to initialize connection if needed
+  // Try to initialize connection pool if needed
   if (!pg_middleware_init(config)) {
     json_t *error = json_object();
     json_t *errors_array = json_array();
@@ -258,10 +418,25 @@ static json_t *execute_sql_internal(const char *sql, json_t *params, void *arena
     return error;
   }
 
-  PGresult *result = NULL;
+  // Get connection from pool
+  PooledConnection *pooled_conn = get_connection(pg_pool);
+  if (!pooled_conn) {
+    json_t *error = json_object();
+    json_t *errors_array = json_array();
+    json_t *error_detail = json_object();
+    
+    json_object_set_new(error_detail, "type", json_string("sqlError"));
+    json_object_set_new(error_detail, "message", json_string("No available database connections"));
+    json_object_set_new(error_detail, "sqlstate", json_string("08004")); // Connection rejected
+    
+    json_array_append_new(errors_array, error_detail);
+    json_object_set_new(error, "errors", errors_array);
+    
+    return error;
+  }
 
-  // Lock for the duration of the query
-  pthread_mutex_lock(&pg_mutex);
+  PGresult *result = NULL;
+  PGconn *conn = pooled_conn->conn;
 
   if (params && json_is_array(params)) {
     // Parameterized query
@@ -293,14 +468,15 @@ static json_t *execute_sql_internal(const char *sql, json_t *params, void *arena
       }
     }
 
-    result = PQexecParams(pg_connection, sql, (int)param_count, NULL, param_values,
+    result = PQexecParams(conn, sql, (int)param_count, NULL, param_values,
                           NULL, NULL, 0);
   } else {
     // Simple query
-    result = PQexec(pg_connection, sql);
+    result = PQexec(conn, sql);
   }
 
-  pthread_mutex_unlock(&pg_mutex);
+  // Return connection to pool
+  return_connection(pg_pool, pooled_conn);
 
   json_t *response = pg_result_to_json(result);
   PQclear(result);
