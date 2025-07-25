@@ -2,7 +2,7 @@ name: Test Suite
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "pg-pool" ]
   pull_request:
     branches: [ "main" ]
 
