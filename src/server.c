@@ -984,13 +984,25 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         }
 
         const char *conf = step->value;
+        const char *variable_name = NULL;
         if (step->is_variable) {
+            variable_name = step->value;  // Store variable name for auto-naming
             json_t *v = json_object_get(runtime->variables, step->value);
             if (v && json_is_string(v)) conf = json_string_value(v);
         }
 
+        // Create middleware input by copying current state
+        json_t *middleware_input = json_deep_copy(current);
+        
+        // If using a variable, auto-add resultName (this will be used by the middleware)
+        // Note: We remove any existing resultName first since it was for the previous step
+        if (variable_name) {
+            json_object_del(middleware_input, "resultName");
+            json_object_set_new(middleware_input, "resultName", json_string(variable_name));
+        }
+
         json_t *mw_cfg = get_middleware_config(mw->name);
-        json_t *result = mw->execute(current, arena,
+        json_t *result = mw->execute(middleware_input, arena,
                                      arena_alloc_wrapper, arena_free_wrapper,
                                      conf, mw_cfg, content_type, runtime->variables);
         set_current_arena(arena);
@@ -1043,7 +1055,25 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             }
         }
 
-        current = result;              /* advance state                    */
+        /* ─── merge result back into current context ──────────────────── */
+        // If this is the last step, don't merge - use the result as final response
+        // Otherwise, merge to preserve context and accumulated data
+        if (step->next == NULL) {
+            // Last step: use result as final response (allows clean transformations)
+            current = result;
+        } else if (json_is_object(result) && json_is_object(current)) {
+            // Intermediate step: merge the middleware result with the current state
+            // This preserves context (method, path, params, etc.) and accumulated data
+            const char *key;
+            json_t *value;
+            json_object_foreach(result, key, value) {
+                json_object_set(current, key, value);
+            }
+            // current now contains the merged state
+        } else {
+            // Fallback to replacement if either is not an object
+            current = result;
+        }
     }
 
     /* ─── end of pipeline ──────────────────────────────────────────────── */

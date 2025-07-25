@@ -372,6 +372,126 @@ static void test_middleware_content_type_handling(void) {
     destroy_mock_middleware(middleware);
 }
 
+static void test_middleware_result_name_basic(void) {
+    // Test basic resultName functionality
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
+    MemoryArena *arena = create_test_arena(1024);
+    
+    json_t *input = json_object();
+    json_object_set_new(input, "method", json_string("GET"));
+    json_object_set_new(input, "path", json_string("/test"));
+    json_object_set_new(input, "resultName", json_string("testResult")); 
+    
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "test config", NULL, &content_type, NULL);
+    
+    TEST_ASSERT_NOT_NULL(output);
+    
+    // Should preserve original fields
+    json_t *method = json_object_get(output, "method");
+    json_t *path = json_object_get(output, "path");
+    TEST_ASSERT_NOT_NULL(method);
+    TEST_ASSERT_NOT_NULL(path);
+    TEST_ASSERT_STRING_EQUAL("GET", json_string_value(method));
+    TEST_ASSERT_STRING_EQUAL("/test", json_string_value(path));
+    
+    json_decref(input);
+    json_decref(output);
+    destroy_test_arena(arena);
+    destroy_mock_middleware(middleware);
+}
+
+static void test_middleware_data_key_assignment(void) {
+    // Test that middleware correctly uses resultName for data assignment
+    // Note: This test verifies the interface, actual data assignment logic 
+    // is tested in middleware-specific tests (e.g., pg middleware tests)
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
+    MemoryArena *arena = create_test_arena(1024);
+    
+    json_t *input = json_object();
+    json_object_set_new(input, "method", json_string("GET"));
+    json_object_set_new(input, "resultName", json_string("namedResult"));
+    json_object_set_new(input, "testData", json_string("value"));
+    
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, NULL, &content_type, NULL);
+    
+    TEST_ASSERT_NOT_NULL(output);
+    
+    // Should have resultName field passed through
+    json_t *result_name = json_object_get(output, "resultName");
+    TEST_ASSERT_NOT_NULL(result_name);
+    TEST_ASSERT_STRING_EQUAL("namedResult", json_string_value(result_name));
+    
+    json_decref(input);
+    json_decref(output);
+    destroy_test_arena(arena);
+    destroy_mock_middleware(middleware);
+}
+
+static void test_middleware_legacy_behavior_preserved(void) {
+    // Test that middleware without resultName behaves as before
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
+    MemoryArena *arena = create_test_arena(1024);
+    
+    json_t *input = json_object();
+    json_object_set_new(input, "method", json_string("POST"));
+    json_object_set_new(input, "body", json_string("test data"));
+    // No resultName field
+    
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, NULL, NULL, &content_type, NULL);
+    
+    TEST_ASSERT_NOT_NULL(output);
+    
+    // Should preserve all original fields
+    json_t *method = json_object_get(output, "method");
+    json_t *body = json_object_get(output, "body");
+    TEST_ASSERT_NOT_NULL(method);
+    TEST_ASSERT_NOT_NULL(body);
+    TEST_ASSERT_STRING_EQUAL("POST", json_string_value(method));
+    TEST_ASSERT_STRING_EQUAL("test data", json_string_value(body));
+    
+    // Should not have resultName field
+    json_t *result_name = json_object_get(output, "resultName");
+    TEST_ASSERT_NULL(result_name);
+    
+    json_decref(input);
+    json_decref(output);
+    destroy_test_arena(arena);
+    destroy_mock_middleware(middleware);
+}
+
+static void test_middleware_variable_name_passing(void) {
+    // Test that variable names can be passed through the interface
+    // Note: This tests the middleware interface capability, actual variable
+    // name auto-assignment is tested in pipeline execution tests
+    Middleware *middleware = create_mock_middleware("test", mock_middleware_passthrough);
+    MemoryArena *arena = create_test_arena(1024);
+    
+    json_t *input = json_object();
+    json_object_set_new(input, "method", json_string("GET"));
+    json_object_set_new(input, "params", json_object());
+    
+    // Variables object to pass to middleware
+    json_t *variables = json_object();
+    json_object_set_new(variables, "testVar", json_string("SELECT * FROM test"));
+    
+    char *content_type = NULL;
+    json_t *output = middleware->execute(input, arena, get_arena_alloc_wrapper(), NULL, "testVar", NULL, &content_type, variables);
+    
+    TEST_ASSERT_NOT_NULL(output);
+    
+    // Should preserve input
+    TEST_ASSERT_JSON_EQUAL(input, output);
+    
+    json_decref(input);
+    json_decref(output);
+    json_decref(variables);
+    destroy_test_arena(arena);
+    destroy_mock_middleware(middleware);
+}
+
 int main(void) {
     UNITY_BEGIN();
     
@@ -393,6 +513,10 @@ int main(void) {
     RUN_TEST(test_middleware_name_collision_handling);
     RUN_TEST(test_middleware_registry_operations);
     RUN_TEST(test_middleware_content_type_handling);
+    RUN_TEST(test_middleware_result_name_basic);
+    RUN_TEST(test_middleware_data_key_assignment);
+    RUN_TEST(test_middleware_legacy_behavior_preserved);
+    RUN_TEST(test_middleware_variable_name_passing);
     
     return UNITY_END();
 }

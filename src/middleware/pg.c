@@ -356,9 +356,29 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
     return response;
   }
 
-  // Create response by copying input and adding data
+  // Create response by copying input
   json_t *response = json_deep_copy(input);
-  json_object_set_new(response, "data", result);
+  
+  // Check for resultName field to determine how to store the result
+  json_t *result_name = json_object_get(input, "resultName");
+  
+  if (result_name && json_is_string(result_name)) {
+    // Named result: store under data.resultName
+    const char *name = json_string_value(result_name);
+    
+    // Get or create data object
+    json_t *data_obj = json_object_get(response, "data");
+    if (!data_obj || !json_is_object(data_obj)) {
+      data_obj = json_object();
+      json_object_set_new(response, "data", data_obj);
+    }
+    
+    // Store result under the named key
+    json_object_set_new(data_obj, name, result);
+  } else {
+    // Legacy behavior: store result directly in data
+    json_object_set_new(response, "data", result);
+  }
 
   return response;
 }
