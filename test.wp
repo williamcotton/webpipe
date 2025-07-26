@@ -28,7 +28,7 @@ pipeline getTeams =
   |> pg: `SELECT * FROM teams WHERE id = $1`
 
 GET /hello
-  |> jq: `{ world: ":)"}`
+  |> jq: `{ hello: "world" }`
 
 GET /page/:id
   |> pipeline: getTeams

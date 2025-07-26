@@ -4,7 +4,7 @@
 
 ```wp
 GET /hello
-  |> jq: `{ world: ":)"}`
+  |> jq: `{ hello: "world" }`
 ```
 
 # Web Pipe
@@ -46,7 +46,7 @@ The request object is maintained throughout the pipeline, with each step potenti
 GET /page/:id
   |> jq: `{ id: .params.id }`
   |> lua: `return { sqlParams: { request.id } }`
-  |> pg: `select * from items where id = $1`
+  |> pg: `select * from pages where id = $1`
 ```
 
 ### Variable Assignments
@@ -171,8 +171,8 @@ config pg {
   user: $DB_USER || "postgres"
   password: $DB_PASSWORD
   ssl: false
-  initialPoolSize: 2   # Initial number of connections (default: 2)
-  maxPoolSize: 10      # Maximum connections in pool (default: 10)
+  initialPoolSize: 2
+  maxPoolSize: 10
 }
 ```
 
