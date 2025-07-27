@@ -646,6 +646,85 @@ static void test_parser_parse_mixed_config_and_routes(void) {
     free_test_ast(ast);
 }
 
+static void test_collect_middleware_names_from_config_blocks(void) {
+    // Test that collect_middleware_names_from_ast includes config blocks
+    const char *source = 
+        "config pg {\n"
+        "  host: \"localhost\"\n"
+        "}\n"
+        "config auth {\n"
+        "  secret: \"test\"\n"
+        "}\n"
+        "GET /test\n"
+        "  |> jq: `{ message: \"hello\" }`\n";
+    
+    ASTNode *ast = parse_test_string(source);
+    TEST_ASSERT_NOT_NULL(ast);
+    assert_ast_type(ast, AST_PROGRAM);
+    
+    // Test current behavior (should collect jq from pipeline AND pg/auth from config)
+    char *middleware_names[10];
+    int middleware_count = 0;
+    collect_middleware_names_from_ast(ast, middleware_names, &middleware_count, 10);
+    
+    // Should find "pg", "auth", and "jq"
+    TEST_ASSERT_EQUAL(3, middleware_count);
+    
+    // Check that all expected middleware are present (order may vary)
+    bool found_pg = false, found_auth = false, found_jq = false;
+    for (int i = 0; i < middleware_count; i++) {
+        if (strcmp(middleware_names[i], "pg") == 0) found_pg = true;
+        else if (strcmp(middleware_names[i], "auth") == 0) found_auth = true;
+        else if (strcmp(middleware_names[i], "jq") == 0) found_jq = true;
+    }
+    TEST_ASSERT_TRUE(found_pg);
+    TEST_ASSERT_TRUE(found_auth);
+    TEST_ASSERT_TRUE(found_jq);
+    
+    // Clean up
+    for (int i = 0; i < middleware_count; i++) {
+        free(middleware_names[i]);
+    }
+    free_test_ast(ast);
+}
+
+static void test_collect_middleware_names_config_only(void) {
+    // Test with only config blocks, no pipelines
+    const char *source = 
+        "config database {\n"
+        "  host: \"localhost\"\n"
+        "}\n"
+        "config cache {\n"
+        "  enabled: true\n"
+        "}\n";
+    
+    ASTNode *ast = parse_test_string(source);
+    TEST_ASSERT_NOT_NULL(ast);
+    assert_ast_type(ast, AST_PROGRAM);
+    
+    char *middleware_names[10];
+    int middleware_count = 0;
+    collect_middleware_names_from_ast(ast, middleware_names, &middleware_count, 10);
+    
+    // Should find "database" and "cache"
+    TEST_ASSERT_EQUAL(2, middleware_count);
+    
+    // Check that all expected middleware are present (order may vary)
+    bool found_database = false, found_cache = false;
+    for (int i = 0; i < middleware_count; i++) {
+        if (strcmp(middleware_names[i], "database") == 0) found_database = true;
+        else if (strcmp(middleware_names[i], "cache") == 0) found_cache = true;
+    }
+    TEST_ASSERT_TRUE(found_database);
+    TEST_ASSERT_TRUE(found_cache);
+    
+    // Clean up
+    for (int i = 0; i < middleware_count; i++) {
+        free(middleware_names[i]);
+    }
+    free_test_ast(ast);
+}
+
 int main(void) {
     UNITY_BEGIN();
     
@@ -672,6 +751,8 @@ int main(void) {
     RUN_TEST(test_parser_parse_config_with_numbers);
     RUN_TEST(test_parser_parse_config_ast_to_json);
     RUN_TEST(test_parser_parse_mixed_config_and_routes);
+    RUN_TEST(test_collect_middleware_names_from_config_blocks);
+    RUN_TEST(test_collect_middleware_names_config_only);
     // RUN_TEST(test_parser_parse_with_context);
     // RUN_TEST(test_parser_error_handling_invalid_syntax);
     
