@@ -1435,9 +1435,25 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
             // This case is not used in the current implementation
             break;
             
-        case AST_CONFIG_BLOCK:
-            // Configuration blocks don't contain pipeline steps
+        case AST_CONFIG_BLOCK: {
+            // Extract middleware name from config block
+            const char *config_name = node->data.config_block.name;
+            if (config_name) {
+                // Check if middleware is already in the list
+                bool found = false;
+                for (int i = 0; i < *middleware_count; i++) {
+                    if (strcmp(middleware_names[i], config_name) == 0) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && *middleware_count < max_middleware) {
+                    middleware_names[*middleware_count] = strdup(config_name);
+                    (*middleware_count)++;
+                }
+            }
             break;
+        }
             
         case AST_CONFIG_VALUE_STRING:
         case AST_CONFIG_VALUE_NUMBER:
