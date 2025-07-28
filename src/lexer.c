@@ -121,6 +121,38 @@ Token lexer_read_identifier(Lexer *lexer) {
     type = TOKEN_FALSE;
   } else if (strcmp(value, "null") == 0) {
     type = TOKEN_NULL;
+  } else if (strcmp(value, "describe") == 0) {
+    type = TOKEN_DESCRIBE;
+  } else if (strcmp(value, "it") == 0) {
+    type = TOKEN_IT;
+  } else if (strcmp(value, "with") == 0) {
+    type = TOKEN_WITH;
+  } else if (strcmp(value, "mock") == 0) {
+    type = TOKEN_MOCK;
+  } else if (strcmp(value, "returning") == 0) {
+    type = TOKEN_RETURNING;
+  } else if (strcmp(value, "when") == 0) {
+    type = TOKEN_WHEN;
+  } else if (strcmp(value, "executing") == 0) {
+    type = TOKEN_EXECUTING;
+  } else if (strcmp(value, "variable") == 0) {
+    type = TOKEN_VARIABLE;
+  } else if (strcmp(value, "calling") == 0) {
+    type = TOKEN_CALLING;
+  } else if (strcmp(value, "input") == 0) {
+    type = TOKEN_INPUT;
+  } else if (strcmp(value, "then") == 0) {
+    type = TOKEN_THEN;
+  } else if (strcmp(value, "output") == 0) {
+    type = TOKEN_OUTPUT;
+  } else if (strcmp(value, "equals") == 0) {
+    type = TOKEN_EQUALS_ASSERTION;
+  } else if (strcmp(value, "status") == 0) {
+    type = TOKEN_STATUS;
+  } else if (strcmp(value, "is") == 0) {
+    type = TOKEN_IS;
+  } else if (strcmp(value, "and") == 0) {
+    type = TOKEN_AND;
   }
 
   Token token = lexer_make_token(lexer, type, value);
@@ -244,6 +276,11 @@ Token lexer_next_token(Lexer *lexer) {
   if (c == '=') {
     lexer_advance(lexer);
     return lexer_make_token(lexer, TOKEN_EQUALS, "=");
+  }
+
+  if (c == '.') {
+    lexer_advance(lexer);
+    return lexer_make_token(lexer, TOKEN_DOT, ".");
   }
 
   if (c == '{') {

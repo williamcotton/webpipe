@@ -648,6 +648,7 @@ make test
 make test-unit       # Unit tests for core components
 make test-integration # Integration tests for middleware  
 make test-system     # System/end-to-end tests
+make test-bdd-suite  # BDD-style tests using Web Pipe testing syntax
 
 # Run performance tests
 make test-perf
@@ -661,6 +662,138 @@ make test-analyze
 # Run code linting
 make test-lint
 ```
+
+## BDD Testing Framework
+
+Web Pipe includes a BDD testing framework that allows you to write tests directly in your `.wp` files using `describe` and `it` blocks.
+
+### Complete Testing Example
+
+```wp
+# Define reusable components
+pg getTeamsQuery = `SELECT * FROM teams`
+
+pipeline getTeamById =
+  |> jq: `{ sqlParams: [.params.id | tostring] }`
+  |> pg: `SELECT * FROM teams WHERE id = $1`
+
+# Route definitions
+GET /hello
+  |> jq: `{ hello: "world" }`
+
+GET /teams
+  |> jq: `{ sqlParams: [] }`
+  |> pg: getTeamsQuery
+
+GET /teams/:id
+  |> pipeline: getTeamById
+  |> jq: `{ team: .data.rows[0] }`
+
+# BDD Tests
+describe "Teams API"
+  with mock pg.getTeamsQuery returning `{
+    "rows": [
+      { "id": 1, "name": "Engineering", "size": 8 },
+      { "id": 2, "name": "Marketing", "size": 5 }
+    ]
+  }`
+
+  it "returns all teams"
+    when executing variable pg getTeamsQuery
+    with input `{ "sqlParams": [] }`
+    then output equals `{
+      "rows": [
+        { "id": 1, "name": "Engineering", "size": 8 },
+        { "id": 2, "name": "Marketing", "size": 5 }
+      ]
+    }`
+
+describe "Team pipeline"
+  with mock pg returning `{
+    "rows": [{ "id": 1, "name": "Engineering", "size": 8 }]
+  }`
+
+  it "gets team by ID"
+    when executing pipeline getTeamById
+    with input `{ "params": { "id": "1" } }`
+    then output equals `{
+      "rows": [{ "id": 1, "name": "Engineering", "size": 8 }]
+    }`
+
+describe "Hello world route"
+  it "returns greeting"
+    when calling GET /hello
+    then status is 200
+    and output equals `{
+      "hello": "world"
+    }`
+```
+
+### Mock Configuration
+
+**Describe-level mocks** (shared across all tests):
+```wp
+describe "Database tests"
+  with mock pg.getTeamsQuery returning `{
+    "rows": [{"id": 1, "name": "Engineering"}]
+  }`
+```
+
+**Inline mocks** (specific to one test):
+```wp
+it "handles database errors"
+  and mock pg returning `{
+    "errors": [{"type": "sqlError", "message": "Connection failed"}]
+  }`
+  when calling GET /teams/1
+  then status is 500
+```
+
+### Test Execution Types
+
+**Route Testing**:
+```wp
+it "gets team list"
+  when calling GET /teams
+  then status is 200
+```
+
+**Pipeline Testing**:
+```wp
+it "transforms team data"
+  when executing pipeline getTeamById
+  with input `{"params": {"id": "1"}}`
+  then output equals `{
+    "rows": [{"id": 1, "name": "Engineering"}]
+  }`
+```
+
+**Variable Testing**:
+```wp
+it "executes teams query"
+  when executing variable pg getTeamsQuery
+  with input `{"sqlParams": []}`
+  then output equals `{
+    "rows": [{"id": 1, "name": "Engineering"}]
+  }`
+```
+
+### Assertions
+
+- `then status is 200` - Check HTTP status code
+- `and output equals \`{...}\`` - Verify exact JSON output
+
+### Running Tests
+
+```bash
+# Run BDD tests in your .wp file
+./build/wp your-app.wp --test
+
+# Or use the make target
+make test-bdd-suite
+```
+
+The test output includes colored results with pass/fail indicators and detailed error messages for failed assertions.
 
 ## Usage
 

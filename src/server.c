@@ -10,26 +10,8 @@
 #include "wp.h"
 #include "database_registry.h"
 
-// Configuration block for runtime
-typedef struct {
-    char *name;
-    json_t *config_json;
-} ConfigBlock;
-
-// Runtime state
-typedef struct {
-    struct MHD_Daemon *daemon;
-    ASTNode *program;
-    Middleware *middleware;
-    int middleware_count;
-    json_t *variables;
-    ParseContext *parse_ctx;
-    ConfigBlock *config_blocks;
-    int config_count;
-} WPRuntime;
-
 // Global runtime instance
-static WPRuntime *runtime = NULL;
+WPRuntime *runtime = NULL;
 
 // Function to process configuration blocks from AST
 static void process_config_blocks(ASTNode *program) {
@@ -65,7 +47,7 @@ static void process_config_blocks(ASTNode *program) {
 }
 
 // Function to get middleware configuration
-static json_t *get_middleware_config(const char *middleware_name) {
+json_t *get_middleware_config(const char *middleware_name) {
     if (!runtime || !runtime->config_blocks) {
         return NULL;
     }
@@ -224,11 +206,11 @@ void jansson_arena_free(void *ptr) {
 }
 
 // Wrapper functions for middleware interface
-static void *arena_alloc_wrapper(void *arena, size_t size) {
+void *arena_alloc_wrapper(void *arena, size_t size) {
     return arena_alloc((MemoryArena*)arena, size);
 }
 
-static void arena_free_wrapper(void *arena) {
+void arena_free_wrapper(void *arena) {
     arena_free((MemoryArena*)arena);
 }
 
@@ -600,6 +582,15 @@ static const char *get_first_error_type(json_t *json) {
     return json_string_value(type_json);
 }
 
+// Helper function to clean up response JSON for output (removes internal fields)
+json_t *cleanup_response_json(json_t *json_data) {
+    if (json_data) {
+        // Remove internal pipeline fields that shouldn't be in final response
+        json_object_del(json_data, "setCookies");
+    }
+    return json_data;
+}
+
 // Helper function to send response with flexible content type
 static enum MHD_Result send_response(struct MHD_Connection *connection, 
                                    json_t *json_data, int status_code, const char *content_type, MemoryArena *arena) {
@@ -628,8 +619,8 @@ static enum MHD_Result send_response(struct MHD_Connection *connection,
         }
     }
 
-    // delete the setCookies from the json_data
-    json_object_del(json_data, "setCookies");
+    // Clean up response JSON (removes internal fields like setCookies)
+    cleanup_response_json(json_data);
 
     // add the cookies to the mhd_response
     
@@ -1007,9 +998,20 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
         }
 
         json_t *mw_cfg = get_middleware_config(mw->name);
-        json_t *result = mw->execute(middleware_input, arena,
-                                     arena_alloc_wrapper, arena_free_wrapper,
-                                     conf, mw_cfg, content_type, runtime->variables);
+        
+        // Check for active mocks in test context
+        test_context_t *test_ctx = get_test_context();
+        json_t *result;
+        if (test_ctx && is_mock_active(test_ctx, mw->name, variable_name)) {
+            result = get_mock_result(test_ctx, mw->name, variable_name);
+            printf("Mock intercepted: %s%s%s\n", mw->name, 
+                   variable_name ? "." : "", variable_name ? variable_name : "");
+        } else {
+            // Normal middleware execution
+            result = mw->execute(middleware_input, arena,
+                                arena_alloc_wrapper, arena_free_wrapper,
+                                conf, mw_cfg, content_type, runtime->variables);
+        }
         set_current_arena(arena);
         if (!result) {
             fprintf(stderr, "Middleware %s failed\n", step->middleware);
@@ -1464,6 +1466,14 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
         case AST_CONFIG_VALUE_ARRAY:
             // Configuration values don't contain pipeline steps
             break;
+            
+        case AST_DESCRIBE_BLOCK:
+        case AST_IT_BLOCK:
+        case AST_MOCK_CONFIG:
+        case AST_TEST_EXECUTION:
+        case AST_TEST_ASSERTION:
+            // Test nodes don't contain middleware names for loading
+            break;
     }
 }
 
@@ -1475,6 +1485,7 @@ int wp_runtime_init(const char *wp_file, int port) {
     printf("Checking microhttpd availability...\n");
     
     runtime = malloc(sizeof(WPRuntime));
+    runtime->daemon = NULL;  // Initialize daemon to NULL
     runtime->middleware = NULL;
     runtime->middleware_count = 0;
     runtime->config_blocks = NULL;
@@ -1572,6 +1583,25 @@ int wp_runtime_init(const char *wp_file, int port) {
             printf("Loaded %s middleware successfully\n", middleware_names[i]);
         }
         free(middleware_names[i]); // Free the strdup'd name
+    }
+    
+    // Check for test mode
+    bool has_tests = has_test_blocks(runtime->program);
+    bool test_mode = is_test_mode_enabled();
+    
+    if (test_mode && has_tests) {
+        printf("Test mode enabled with test blocks found, executing tests...\n");
+        int test_result = execute_test_suite(runtime->program);
+        parser_free(parser);
+        free_tokens(tokens, token_count);
+        free(source);
+        return test_result; // Skip HTTP server startup
+    } else if (test_mode && !has_tests) {
+        printf("Test mode enabled but no test blocks found in %s\n", wp_file);
+        parser_free(parser);
+        free_tokens(tokens, token_count);
+        free(source);
+        return -1;
     }
     
     // Start HTTP server

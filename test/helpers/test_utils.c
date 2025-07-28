@@ -1,4 +1,5 @@
 #include "test_utils.h"
+#include "../../src/wp.h"
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
@@ -7,10 +8,6 @@
 #include <stdlib.h>
 #include <microhttpd.h>
 
-// Arena allocation wrapper for middleware interface
-static void *arena_alloc_wrapper(void *arena, size_t size) {
-    return arena_alloc((MemoryArena *)arena, size);
-}
 
 static struct timeval start_time;
 
@@ -388,18 +385,9 @@ void restore_middleware_functions(void) {
     // TODO: Implement middleware function restoration
 }
 
-// Compatible runtime structure definition for tests
-typedef struct WPRuntime {
-    struct MHD_Daemon *daemon;
-    ASTNode *program;
-    Middleware *middlewares;
-    int middleware_count;
-    json_t *variables;
-    ParseContext *parse_ctx;
-} WPRuntime;
 
 // Test-safe runtime initialization without jansson custom allocators
-struct WPRuntime *test_runtime = NULL; // Local test runtime
+WPRuntime *test_runtime = NULL; // Local test runtime
 
 int init_test_runtime(const char *wp_file) {
     // Check if already initialized
@@ -408,7 +396,7 @@ int init_test_runtime(const char *wp_file) {
     }
     
     // Allocate runtime
-    test_runtime = malloc(sizeof(struct WPRuntime));
+    test_runtime = malloc(sizeof(WPRuntime));
     if (!test_runtime) {
         return -1;
     }
@@ -416,7 +404,7 @@ int init_test_runtime(const char *wp_file) {
     // Initialize fields
     test_runtime->daemon = NULL;
     test_runtime->program = NULL;
-    test_runtime->middlewares = NULL;
+    test_runtime->middleware = NULL;
     test_runtime->middleware_count = 0;
     test_runtime->variables = json_object();  // Use default jansson allocators
     test_runtime->parse_ctx = NULL;
@@ -497,10 +485,10 @@ void cleanup_test_runtime(void) {
         
         // Cleanup middlewares
         for (int i = 0; i < test_runtime->middleware_count; i++) {
-            dlclose(test_runtime->middlewares[i].handle);
-            free(test_runtime->middlewares[i].name);
+            dlclose(test_runtime->middleware[i].handle);
+            free(test_runtime->middleware[i].name);
         }
-        free(test_runtime->middlewares);
+        free(test_runtime->middleware);
         
         // Cleanup other resources
         if (test_runtime->variables) {

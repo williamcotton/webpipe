@@ -55,15 +55,15 @@ $(DOTENV_OBJ): $(BUILD_DIR) $(DOTENV_SRC)
 	$(CC) $(CFLAGS) -c -o $@ $(DOTENV_SRC)
 
 # Main wp executable
-$(BUILD_DIR)/wp: $(BUILD_DIR) $(DOTENV_OBJ) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(SRC_DIR)/wp.h $(SRC_DIR)/database_registry.h
-	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(DOTENV_OBJ) $(LDFLAGS) $(SANITIZE_FLAGS)
+$(BUILD_DIR)/wp: $(BUILD_DIR) $(DOTENV_OBJ) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(SRC_DIR)/testing.c $(SRC_DIR)/wp.h $(SRC_DIR)/database_registry.h
+	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(SRC_DIR)/testing.c $(DOTENV_OBJ) $(LDFLAGS) $(SANITIZE_FLAGS)
 
 # Debug target - single wp executable in build directory
 debug: $(BUILD_DIR)/wp-debug middleware
 
 # Debug executable
-$(BUILD_DIR)/wp-debug: $(BUILD_DIR) $(DOTENV_OBJ) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(SRC_DIR)/wp.h $(SRC_DIR)/database_registry.h
-	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(DOTENV_OBJ) $(LDFLAGS) $(SANITIZE_FLAGS)
+$(BUILD_DIR)/wp-debug: $(BUILD_DIR) $(DOTENV_OBJ) $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(SRC_DIR)/testing.c $(SRC_DIR)/wp.h $(SRC_DIR)/database_registry.h
+	$(CC) $(CFLAGS) -o $@ $(SRC_DIR)/wp.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(SRC_DIR)/testing.c $(DOTENV_OBJ) $(LDFLAGS) $(SANITIZE_FLAGS)
 ifneq ($(CODESIGN_CMD),)
 	$(CODESIGN_CMD) ./build/wp-debug
 endif
@@ -117,7 +117,7 @@ TEST_CFLAGS = $(CFLAGS) -I$(TEST_DIR) -I$(SRC_DIR) -DUNITY_INCLUDE_DOUBLE
 TEST_LDFLAGS = $(LDFLAGS) -ljq
 # Unity framework with suppressed warnings
 UNITY_CFLAGS = $(CFLAGS) -I$(TEST_DIR) -I$(SRC_DIR) -DUNITY_INCLUDE_DOUBLE -Wno-double-promotion
-TEST_COMMON_SOURCES = $(TEST_DIR)/helpers/test_utils.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(DOTENV_OBJ)
+TEST_COMMON_SOURCES = $(TEST_DIR)/helpers/test_utils.c $(SRC_DIR)/lexer.c $(SRC_DIR)/parser.c $(SRC_DIR)/server.c $(SRC_DIR)/database_registry.c $(SRC_DIR)/testing.c $(DOTENV_OBJ)
 
 # Unity object file with suppressed warnings
 $(BUILD_DIR)/unity.o: $(BUILD_DIR) $(TEST_DIR)/unity/unity.c
@@ -141,6 +141,9 @@ $(BUILD_DIR)/test_cookies: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/t
 
 $(BUILD_DIR)/test_database_registry: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/test_database_registry.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_database_registry.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
+
+$(BUILD_DIR)/test_testing: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/test_testing.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_testing.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
 $(BUILD_DIR)/test_jq: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
@@ -182,7 +185,7 @@ $(BUILD_DIR)/test_perf: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/system/te
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
 # Test group targets
-TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_middleware $(BUILD_DIR)/test_cookies $(BUILD_DIR)/test_database_registry
+TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_middleware $(BUILD_DIR)/test_cookies $(BUILD_DIR)/test_database_registry $(BUILD_DIR)/test_testing
 TEST_INTEGRATION_BINS = $(BUILD_DIR)/test_jq $(BUILD_DIR)/test_lua $(BUILD_DIR)/test_mustache $(BUILD_DIR)/test_mustache_partials $(BUILD_DIR)/test_pg $(BUILD_DIR)/test_pipeline $(BUILD_DIR)/test_validate $(BUILD_DIR)/test_auth $(BUILD_DIR)/test_cache $(BUILD_DIR)/test_log
 TEST_SYSTEM_BINS = $(BUILD_DIR)/test_server $(BUILD_DIR)/test_e2e $(BUILD_DIR)/test_perf
 TEST_ALL_BINS = $(TEST_UNIT_BINS) $(TEST_INTEGRATION_BINS) $(TEST_SYSTEM_BINS)
@@ -199,6 +202,10 @@ test-integration: $(TEST_INTEGRATION_BINS)
 
 test-system: $(TEST_SYSTEM_BINS)
 	./test-runner.sh system $(TEST_SYSTEM_BINS)
+
+test-bdd-suite: $(BUILD_DIR)/wp install-middleware
+	@echo "Running BDD test suite..."
+	./build/wp test.wp --test
 
 test-leaks: $(TEST_ALL_BINS)
 	./test-runner.sh leaks $(TEST_ALL_BINS)
@@ -240,4 +247,4 @@ clean:
 	rm -rf $(BUILD_DIR)
 	rm -f ./middleware/*.so
 
-.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run run-debug run-express-test middleware install-middleware test-leaks test-leaks-unit test-leaks-integration test-leaks-system
+.PHONY: all clean test test-unit test-integration test-system test-bdd-suite test-perf test-analyze test-lint test-wp run run-debug run-express-test middleware install-middleware test-leaks test-leaks-unit test-leaks-integration test-leaks-system

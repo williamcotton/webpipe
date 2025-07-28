@@ -2,7 +2,7 @@ name: Test Suite
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "testing" ]
   pull_request:
     branches: [ "main" ]
 
@@ -147,6 +147,13 @@ jobs:
 
     - name: Run system tests
       run: make test-system
+      env:
+        WP_PG_HOST: localhost
+        WP_PG_USER: postgres
+        WP_PG_DATABASE: wp-test
+
+    - name: Run BDD test suite
+      run: make test-bdd-suite
       env:
         WP_PG_HOST: localhost
         WP_PG_USER: postgres

@@ -248,13 +248,21 @@ int main(int argc, char *argv[]) {
         init_mod_tracker(&mod_tracker, wp_file);
     }
     
-    // Server mode - run the runtime
-    if (wp_runtime_init(wp_file, port) != 0) {
-        return 1;
+    // Set test mode if applicable
+    if (mode == WP_MODE_TEST) {
+        set_test_mode(true);
     }
     
-    // Wait for shutdown based on mode
-    wait_for_shutdown(mode, port, watch_enabled, &mod_tracker, wp_file);
+    // Server mode - run the runtime
+    int result = wp_runtime_init(wp_file, port);
+    if (result != 0) {
+        return (result < 0) ? 1 : result; // Preserve test exit codes
+    }
+    
+    // Wait for shutdown based on mode (skip for test mode as tests handle execution)  
+    if (mode != WP_MODE_TEST) {
+        wait_for_shutdown(mode, port, watch_enabled, &mod_tracker, wp_file);
+    }
     
     // Cleanup
     wp_runtime_cleanup();
