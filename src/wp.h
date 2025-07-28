@@ -33,6 +33,7 @@ typedef enum {
   TOKEN_STRING,
   TOKEN_COLON,
   TOKEN_EQUALS,
+  TOKEN_DOT,
   TOKEN_LBRACE,
   TOKEN_RBRACE,
   TOKEN_LPAREN,
@@ -47,7 +48,25 @@ typedef enum {
   TOKEN_TRUE,
   TOKEN_FALSE,
   TOKEN_NULL,
-  TOKEN_COMMENT
+  TOKEN_COMMENT,
+  // Test-related tokens
+  TOKEN_DESCRIBE,
+  TOKEN_IT,
+  TOKEN_WITH,
+  TOKEN_MOCK,
+  TOKEN_RETURNING,
+  TOKEN_WHEN,
+  TOKEN_EXECUTING,
+  TOKEN_VARIABLE,
+  TOKEN_PIPELINE,
+  TOKEN_CALLING,
+  TOKEN_INPUT,
+  TOKEN_THEN,
+  TOKEN_OUTPUT,
+  TOKEN_EQUALS_ASSERTION,
+  TOKEN_STATUS,
+  TOKEN_IS,
+  TOKEN_AND
 } TokenType;
 
 // Token structure
@@ -73,7 +92,13 @@ typedef enum {
   AST_CONFIG_VALUE_NULL,
   AST_CONFIG_VALUE_ENV_CALL,
   AST_CONFIG_VALUE_OBJECT,
-  AST_CONFIG_VALUE_ARRAY
+  AST_CONFIG_VALUE_ARRAY,
+  // Test-related AST nodes
+  AST_DESCRIBE_BLOCK,
+  AST_IT_BLOCK,
+  AST_MOCK_CONFIG,
+  AST_TEST_EXECUTION,
+  AST_TEST_ASSERTION
 } ASTNodeType;
 
 // Pipeline step
@@ -153,6 +178,61 @@ struct ASTNode {
     struct {
       ConfigArrayItem *items;
     } config_value_array;
+    // Test-related structures
+    struct {
+      char *description;
+      ASTNode **mock_configs;
+      int mock_count;
+      ASTNode **tests;
+      int test_count;
+    } describe_block;
+    struct {
+      char *description;
+      ASTNode *execution;
+      ASTNode **assertions;
+      int assertion_count;
+    } it_block;
+    struct {
+      char *middleware_name;
+      char *variable_name;  // Optional - NULL for middleware-wide mocks
+      char *return_value;   // JSON string
+    } mock_config;
+    struct {
+      enum {
+        TEST_EXEC_VARIABLE,
+        TEST_EXEC_PIPELINE,
+        TEST_EXEC_HTTP_CALL
+      } type;
+      union {
+        struct {
+          char *middleware_type;
+          char *variable_name;
+          char *input_json;
+        } variable;
+        struct {
+          char *pipeline_name;
+          char *input_json;
+        } pipeline;
+        struct {
+          char *method;
+          char *path;
+        } http_call;
+      } data;
+    } test_execution;
+    struct {
+      enum {
+        TEST_ASSERT_OUTPUT_EQUALS,
+        TEST_ASSERT_STATUS_IS
+      } type;
+      union {
+        struct {
+          char *expected_json;
+        } output_equals;
+        struct {
+          int expected_status;
+        } status_is;
+      } data;
+    } test_assertion;
   } data;
 };
 
@@ -248,6 +328,13 @@ ConfigProperty *parser_parse_config_properties(Parser *parser);
 json_t *config_ast_to_json(ASTNode *node);
 json_t *config_block_to_json(ASTNode *config_block);
 ASTNode *parser_parse_statement(Parser *parser);
+// Test parsing functions
+ASTNode *parser_parse_describe_block(Parser *parser);
+ASTNode *parser_parse_it_block(Parser *parser);
+ASTNode *parser_parse_mock_config(Parser *parser);
+ASTNode *parser_parse_mock_config_inline(Parser *parser);
+ASTNode *parser_parse_test_execution(Parser *parser);
+ASTNode *parser_parse_test_assertion(Parser *parser);
 void stringify_indent(FILE *out, int level);
 void stringify_pipeline(FILE *out, PipelineStep *pipeline, int level);
 void free_pipeline(PipelineStep *pipeline);

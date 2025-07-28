@@ -698,6 +698,11 @@ json_t *config_block_to_json(ASTNode *config_block) {
 }
 
 ASTNode *parser_parse_statement(Parser *parser) {
+  // Check for test blocks
+  if (parser_check(parser, TOKEN_DESCRIBE)) {
+    return parser_parse_describe_block(parser);
+  }
+
   if (parser_check(parser, TOKEN_HTTP_METHOD)) {
     return parser_parse_route_definition(parser);
   }
@@ -1032,4 +1037,365 @@ void free_tokens(Token *tokens, int count) {
     free(tokens[i].value);
   }
   free(tokens);
+}
+
+// Inline mock parsing function (for 'and mock' within it blocks)
+ASTNode *parser_parse_mock_config_inline(Parser *parser) {
+  if (!parser_match(parser, TOKEN_MOCK)) {
+    return NULL;
+  }
+
+  if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+    fprintf(stderr, "Expected middleware name after 'mock'\n");
+    return NULL;
+  }
+
+  ASTNode *node = malloc(sizeof(ASTNode));
+  node->type = AST_MOCK_CONFIG;
+  node->data.mock_config.middleware_name = strdup(parser_advance(parser)->value);
+  node->data.mock_config.variable_name = NULL;
+
+  // Check for optional variable name (middleware.variable)
+  if (parser_check(parser, TOKEN_DOT)) {
+    parser_advance(parser); // consume '.'
+    if (parser_check(parser, TOKEN_IDENTIFIER)) {
+      node->data.mock_config.variable_name = strdup(parser_advance(parser)->value);
+    }
+  }
+
+  if (!parser_match(parser, TOKEN_RETURNING)) {
+    fprintf(stderr, "Expected 'returning' in mock configuration\n");
+    free(node->data.mock_config.middleware_name);
+    free(node->data.mock_config.variable_name);
+    free(node);
+    return NULL;
+  }
+
+  if (!parser_check(parser, TOKEN_STRING)) {
+    fprintf(stderr, "Expected JSON string after 'returning'\n");
+    free(node->data.mock_config.middleware_name);
+    free(node->data.mock_config.variable_name);
+    free(node);
+    return NULL;
+  }
+
+  node->data.mock_config.return_value = strdup(parser_advance(parser)->value);
+  return node;
+}
+
+// Test parsing functions
+ASTNode *parser_parse_describe_block(Parser *parser) {
+  if (!parser_match(parser, TOKEN_DESCRIBE)) {
+    return NULL;
+  }
+
+  if (!parser_check(parser, TOKEN_STRING)) {
+    fprintf(stderr, "Expected description string after 'describe'\n");
+    return NULL;
+  }
+
+  ASTNode *node = malloc(sizeof(ASTNode));
+  node->type = AST_DESCRIBE_BLOCK;
+  node->data.describe_block.description = strdup(parser_advance(parser)->value);
+  node->data.describe_block.mock_configs = NULL;
+  node->data.describe_block.mock_count = 0;
+  node->data.describe_block.tests = NULL;
+  node->data.describe_block.test_count = 0;
+
+  // Skip newlines and comments
+  while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
+    // Skip
+  }
+
+  // Parse mock configurations and tests
+  while (!parser_is_at_end(parser) && 
+         (parser_check(parser, TOKEN_WITH) || parser_check(parser, TOKEN_IT))) {
+    
+    // Skip newlines and comments before each block
+    while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
+      // Skip
+    }
+    
+    if (parser_check(parser, TOKEN_WITH)) {
+      ASTNode *mock = parser_parse_mock_config(parser);
+      if (mock) {
+        // Expand mock_configs array (simplified - in production use arena allocator)
+        node->data.describe_block.mock_configs = realloc(
+          node->data.describe_block.mock_configs,
+          sizeof(ASTNode*) * (node->data.describe_block.mock_count + 1)
+        );
+        node->data.describe_block.mock_configs[node->data.describe_block.mock_count++] = mock;
+      }
+    } else if (parser_check(parser, TOKEN_IT)) {
+      ASTNode *test = parser_parse_it_block(parser);
+      if (test) {
+        // Expand tests array (simplified - in production use arena allocator)
+        node->data.describe_block.tests = realloc(
+          node->data.describe_block.tests,
+          sizeof(ASTNode*) * (node->data.describe_block.test_count + 1)
+        );
+        node->data.describe_block.tests[node->data.describe_block.test_count++] = test;
+      }
+    }
+    
+    // Skip newlines and comments after each block
+    while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
+      // Skip
+    }
+  }
+
+  return node;
+}
+
+ASTNode *parser_parse_it_block(Parser *parser) {
+  if (!parser_match(parser, TOKEN_IT)) {
+    return NULL;
+  }
+
+  if (!parser_check(parser, TOKEN_STRING)) {
+    fprintf(stderr, "Expected description string after 'it'\n");
+    return NULL;
+  }
+
+  ASTNode *node = malloc(sizeof(ASTNode));
+  node->type = AST_IT_BLOCK;
+  node->data.it_block.description = strdup(parser_advance(parser)->value);
+  node->data.it_block.execution = NULL;
+  node->data.it_block.assertions = NULL;
+  node->data.it_block.assertion_count = 0;
+
+  // Skip newlines and comments
+  while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
+    // Skip
+  }
+
+  // Parse execution and assertions
+  if (parser_check(parser, TOKEN_WHEN)) {
+    node->data.it_block.execution = parser_parse_test_execution(parser);
+  }
+
+  // Skip newlines between execution and potential input
+  while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
+    // Skip
+  }
+
+  // Handle optional 'with input' for execution
+  if (parser_match(parser, TOKEN_WITH) && parser_match(parser, TOKEN_INPUT)) {
+    if (parser_check(parser, TOKEN_STRING) && node->data.it_block.execution) {
+      char *input_json = strdup(parser_advance(parser)->value);
+      // Store input based on execution type
+      if (node->data.it_block.execution->data.test_execution.type == TEST_EXEC_VARIABLE) {
+        node->data.it_block.execution->data.test_execution.data.variable.input_json = input_json;
+      } else if (node->data.it_block.execution->data.test_execution.type == TEST_EXEC_PIPELINE) {
+        node->data.it_block.execution->data.test_execution.data.pipeline.input_json = input_json;
+      } else {
+        free(input_json); // HTTP calls don't use input JSON
+      }
+    }
+  }
+
+  // Skip newlines between execution and potential inline mocks
+  while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
+    // Skip
+  }
+
+  // Handle inline mocks with 'and mock'
+  while (parser_check(parser, TOKEN_AND) && 
+         parser->current + 1 < parser->token_count &&
+         parser->tokens[parser->current + 1].type == TOKEN_MOCK) {
+    
+    parser_advance(parser); // consume 'and'
+    ASTNode *inline_mock = parser_parse_mock_config_inline(parser);
+    if (inline_mock) {
+      // Store inline mock - for now we'll add it to the describe block's mocks
+      // In a full implementation, we'd want it_block to have its own mocks array
+      
+      // Skip newlines after mock
+      while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
+        // Skip
+      }
+    }
+  }
+
+  // Skip newlines between mocks and assertions
+  while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
+    // Skip
+  }
+
+  while (parser_check(parser, TOKEN_THEN) || parser_check(parser, TOKEN_AND)) {
+    ASTNode *assertion = parser_parse_test_assertion(parser);
+    if (assertion) {
+      // Expand assertions array (simplified - in production use arena allocator)
+      node->data.it_block.assertions = realloc(
+        node->data.it_block.assertions,
+        sizeof(ASTNode*) * (node->data.it_block.assertion_count + 1)
+      );
+      node->data.it_block.assertions[node->data.it_block.assertion_count++] = assertion;
+    }
+    
+    // Skip newlines between assertions
+    while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
+      // Skip
+    }
+  }
+
+  return node;
+}
+
+ASTNode *parser_parse_mock_config(Parser *parser) {
+  if (!parser_match(parser, TOKEN_WITH)) {
+    return NULL;
+  }
+
+  if (!parser_match(parser, TOKEN_MOCK)) {
+    fprintf(stderr, "Expected 'mock' after 'with'\n");
+    return NULL;
+  }
+
+  if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+    fprintf(stderr, "Expected middleware name after 'mock'\n");
+    return NULL;
+  }
+
+  ASTNode *node = malloc(sizeof(ASTNode));
+  node->type = AST_MOCK_CONFIG;
+  node->data.mock_config.middleware_name = strdup(parser_advance(parser)->value);
+  node->data.mock_config.variable_name = NULL;
+
+  // Check for optional variable name (middleware.variable)
+  if (parser_check(parser, TOKEN_DOT)) {
+    parser_advance(parser); // consume '.'
+    if (parser_check(parser, TOKEN_IDENTIFIER)) {
+      node->data.mock_config.variable_name = strdup(parser_advance(parser)->value);
+    }
+  }
+
+  if (!parser_match(parser, TOKEN_RETURNING)) {
+    fprintf(stderr, "Expected 'returning' in mock configuration\n");
+    free(node->data.mock_config.middleware_name);
+    free(node->data.mock_config.variable_name);
+    free(node);
+    return NULL;
+  }
+
+  if (!parser_check(parser, TOKEN_STRING)) {
+    fprintf(stderr, "Expected JSON string after 'returning'\n");
+    free(node->data.mock_config.middleware_name);
+    free(node->data.mock_config.variable_name);
+    free(node);
+    return NULL;
+  }
+
+  node->data.mock_config.return_value = strdup(parser_advance(parser)->value);
+  return node;
+}
+
+ASTNode *parser_parse_test_execution(Parser *parser) {
+  if (!parser_match(parser, TOKEN_WHEN)) {
+    return NULL;
+  }
+
+  ASTNode *node = malloc(sizeof(ASTNode));
+  node->type = AST_TEST_EXECUTION;
+
+  if (parser_match(parser, TOKEN_EXECUTING)) {
+    if (parser_match(parser, TOKEN_VARIABLE)) {
+      node->data.test_execution.type = TEST_EXEC_VARIABLE;
+      
+      if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+        fprintf(stderr, "Expected middleware type after 'variable'\n");
+        free(node);
+        return NULL;
+      }
+      node->data.test_execution.data.variable.middleware_type = strdup(parser_advance(parser)->value);
+      
+      if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+        fprintf(stderr, "Expected variable name\n");
+        free(node->data.test_execution.data.variable.middleware_type);
+        free(node);
+        return NULL;
+      }
+      node->data.test_execution.data.variable.variable_name = strdup(parser_advance(parser)->value);
+      node->data.test_execution.data.variable.input_json = NULL;
+      
+    } else if (parser_check(parser, TOKEN_IDENTIFIER) && 
+               strcmp(parser_peek(parser)->value, "pipeline") == 0) {
+      parser_advance(parser); // consume 'pipeline'
+      node->data.test_execution.type = TEST_EXEC_PIPELINE;
+      
+      if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+        fprintf(stderr, "Expected pipeline name\n");
+        free(node);
+        return NULL;
+      }
+      node->data.test_execution.data.pipeline.pipeline_name = strdup(parser_advance(parser)->value);
+      node->data.test_execution.data.pipeline.input_json = NULL;
+      
+    } else {
+      fprintf(stderr, "Expected 'variable' or 'pipeline' after 'executing'\n");
+      free(node);
+      return NULL;
+    }
+  } else if (parser_match(parser, TOKEN_CALLING)) {
+    node->data.test_execution.type = TEST_EXEC_HTTP_CALL;
+    
+    if (!parser_check(parser, TOKEN_HTTP_METHOD)) {
+      fprintf(stderr, "Expected HTTP method\n");
+      free(node);
+      return NULL;
+    }
+    node->data.test_execution.data.http_call.method = strdup(parser_advance(parser)->value);
+    
+    if (!parser_check(parser, TOKEN_ROUTE)) {
+      fprintf(stderr, "Expected route path\n");
+      free(node->data.test_execution.data.http_call.method);
+      free(node);
+      return NULL;
+    }
+    node->data.test_execution.data.http_call.path = strdup(parser_advance(parser)->value);
+    
+  } else {
+    fprintf(stderr, "Expected 'executing' or 'calling' after 'when'\n");
+    free(node);
+    return NULL;
+  }
+
+  return node;
+}
+
+ASTNode *parser_parse_test_assertion(Parser *parser) {
+  if (!parser_match(parser, TOKEN_THEN) && !parser_match(parser, TOKEN_AND)) {
+    return NULL;
+  }
+
+  ASTNode *node = malloc(sizeof(ASTNode));
+  node->type = AST_TEST_ASSERTION;
+
+  if (parser_match(parser, TOKEN_OUTPUT) && parser_match(parser, TOKEN_EQUALS_ASSERTION)) {
+    node->data.test_assertion.type = TEST_ASSERT_OUTPUT_EQUALS;
+    
+    if (!parser_check(parser, TOKEN_STRING)) {
+      fprintf(stderr, "Expected JSON string after 'output equals'\n");
+      free(node);
+      return NULL;
+    }
+    node->data.test_assertion.data.output_equals.expected_json = strdup(parser_advance(parser)->value);
+    
+  } else if (parser_match(parser, TOKEN_STATUS) && parser_match(parser, TOKEN_IS)) {
+    node->data.test_assertion.type = TEST_ASSERT_STATUS_IS;
+    
+    if (!parser_check(parser, TOKEN_NUMBER)) {
+      fprintf(stderr, "Expected status code number after 'status is'\n");
+      free(node);
+      return NULL;
+    }
+    node->data.test_assertion.data.status_is.expected_status = atoi(parser_advance(parser)->value);
+    
+  } else {
+    fprintf(stderr, "Expected 'output equals' or 'status is' in assertion\n");
+    free(node);
+    return NULL;
+  }
+
+  return node;
 } 

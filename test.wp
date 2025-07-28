@@ -456,7 +456,6 @@ GET /api/search
 
 config log {
   enabled: true
-  output: "stdout"
   format: "json"
   level: "debug"
   includeBody: false
