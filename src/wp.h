@@ -274,6 +274,24 @@ typedef struct {
     post_execute_func post_execute; // Optional post-execute function
 } Middleware;
 
+// Configuration block for runtime
+typedef struct {
+    char *name;
+    json_t *config_json;
+} ConfigBlock;
+
+// Runtime state
+typedef struct {
+    struct MHD_Daemon *daemon;
+    ASTNode *program;
+    Middleware *middleware;
+    int middleware_count;
+    json_t *variables;
+    ParseContext *parse_ctx;
+    ConfigBlock *config_blocks;
+    int config_count;
+} WPRuntime;
+
 // Function declarations
 char *strdup_safe(const char *s);
 void set_current_arena(MemoryArena *arena);
@@ -354,6 +372,9 @@ typedef struct {
 
 #define POST_DATA_MAGIC 0x504F5354  // "POST" in ASCII
 
+// Global runtime instance (defined in server.c)
+extern WPRuntime *runtime;
+
 // Server internal function declarations
 int load_middleware(const char *name);
 Middleware *find_middleware(const char *name);
@@ -373,5 +394,87 @@ json_t *parse_cookies(const char *cookie_header);
 void register_post_execute_hook(post_execute_func func, json_t *middleware_config, MemoryArena *arena);
 void execute_post_hooks(json_t *final_response, MemoryArena *arena);
 void clear_post_hooks(void);
+
+// Hash table implementation for mock registry
+typedef struct hash_entry {
+    char *key;
+    void *value;
+    struct hash_entry *next;
+} hash_entry_t;
+
+typedef struct {
+    hash_entry_t **buckets;
+    int bucket_count;
+    MemoryArena *arena;
+} hash_table_t;
+
+// Test results structure
+typedef struct {
+    int total_tests;
+    int passed_tests;
+    int failed_tests;
+} test_results_t;
+
+// Test context structure for mock registry and test execution
+typedef struct {
+    hash_table_t *middleware_mocks;    // middleware_name -> mock_data
+    hash_table_t *variable_mocks;      // middleware.variable -> mock_data
+    test_results_t *results;           // Test execution results
+    MemoryArena *test_arena;          // Memory arena for test execution
+    bool is_test_mode;                // Runtime test mode flag
+} test_context_t;
+
+// Mock entry structure
+typedef struct {
+    char *middleware_name;     // e.g., "pg", "jq", "lua"
+    char *variable_name;       // e.g., "teamsQuery" (optional)
+    json_t *mock_data;         // Generic JSON response
+    bool is_active;           // Enable/disable mock
+    enum {
+        MIDDLEWARE_MOCK,    // Mock entire middleware: "with mock pg returning {...}"
+        VARIABLE_MOCK       // Mock specific variable: "with mock pg.teamsQuery returning {...}"
+    } type;
+} mock_entry_t;
+
+// Hash table functions
+hash_table_t *create_hash_table(MemoryArena *arena, int bucket_count);
+unsigned int hash_string(const char *str, int bucket_count);
+void hash_table_set(hash_table_t *table, const char *key, void *value);
+void *hash_table_get(hash_table_t *table, const char *key);
+
+// Test context management
+test_context_t *create_test_context(MemoryArena *arena);
+void set_test_context(test_context_t *ctx);
+test_context_t *get_test_context(void);
+
+// Test mode detection
+bool is_test_mode_enabled(void);
+void set_test_mode(bool enabled);
+
+// Mock registry functions
+void register_mock(test_context_t *ctx, const char *middleware_name, 
+                   const char *variable_name, json_t *mock_data);
+bool is_mock_active(test_context_t *ctx, const char *middleware_name, 
+                    const char *variable_name);
+json_t *get_mock_result(test_context_t *ctx, const char *middleware_name, 
+                        const char *variable_name);
+
+// Test execution functions
+int execute_test_suite(ASTNode *program);
+int execute_describe_block(ASTNode *describe_node, test_context_t *ctx, 
+                          int *total, int *passed);
+bool execute_it_block(ASTNode *it_node, test_context_t *ctx);
+json_t *execute_variable_test(ASTNode *exec_node, test_context_t *ctx);
+json_t *execute_pipeline_test(ASTNode *exec_node, test_context_t *ctx);
+json_t *execute_route_test(ASTNode *exec_node, test_context_t *ctx, int *status_code);
+
+// Helper functions for test execution
+json_t *create_test_request_json(const char *method, const char *url, json_t *test_input);
+json_t *execute_route_pipeline(ASTNode *route_stmt, json_t *request, 
+                              MemoryArena *arena, int *status_code);
+json_t *create_error_json(const char *message);
+bool validate_assertions(ASTNode **assertions, int assertion_count, 
+                        json_t *result, int status_code);
+bool has_test_blocks(ASTNode *program);
 
 #endif // WP_H
