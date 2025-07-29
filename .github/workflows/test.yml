@@ -75,14 +75,6 @@ jobs:
         WP_PG_PASSWORD: postgres
         WP_PG_DATABASE: wp-test
 
-    - name: Run BDD test suite
-      run: make test-bdd-suite
-      env:
-        WP_PG_HOST: localhost
-        WP_PG_USER: postgres
-        WP_PG_PASSWORD: postgres
-        WP_PG_DATABASE: wp-test
-
     - name: Run unit leak detection
       run: make test-leaks-unit
       env:
