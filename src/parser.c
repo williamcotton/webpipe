@@ -672,6 +672,11 @@ json_t *config_ast_to_json(ASTNode *node) {
     case AST_PIPELINE_DEFINITION:
     case AST_RESULT_STEP:
     case AST_CONFIG_BLOCK:
+    case AST_DESCRIBE_BLOCK:
+    case AST_IT_BLOCK:
+    case AST_MOCK_CONFIG:
+    case AST_TEST_EXECUTION:
+    case AST_TEST_ASSERTION:
       // These node types are not configuration values
       return NULL;
   }
@@ -900,6 +905,15 @@ void stringify_node(FILE *out, ASTNode *node, int level) {
     }
     fprintf(out, "]");
     break;
+
+  case AST_DESCRIBE_BLOCK:
+  case AST_IT_BLOCK:
+  case AST_MOCK_CONFIG:
+  case AST_TEST_EXECUTION:
+  case AST_TEST_ASSERTION:
+    // Test nodes - minimal stringification
+    fprintf(out, "[test node]");
+    break;
   }
 }
 
@@ -1027,6 +1041,76 @@ void free_ast(ASTNode *node) {
       }
     }
     break;
+
+  case AST_DESCRIBE_BLOCK:
+    free(node->data.describe_block.description);
+    if (node->data.describe_block.mock_configs) {
+      for (int i = 0; i < node->data.describe_block.mock_count; i++) {
+        free_ast(node->data.describe_block.mock_configs[i]);
+      }
+      free(node->data.describe_block.mock_configs);
+    }
+    if (node->data.describe_block.tests) {
+      for (int i = 0; i < node->data.describe_block.test_count; i++) {
+        free_ast(node->data.describe_block.tests[i]);
+      }
+      free(node->data.describe_block.tests);
+    }
+    break;
+
+  case AST_IT_BLOCK:
+    free(node->data.it_block.description);
+    if (node->data.it_block.execution) {
+      free_ast(node->data.it_block.execution);
+    }
+    if (node->data.it_block.assertions) {
+      for (int i = 0; i < node->data.it_block.assertion_count; i++) {
+        free_ast(node->data.it_block.assertions[i]);
+      }
+      free(node->data.it_block.assertions);
+    }
+    if (node->data.it_block.inline_mocks) {
+      for (int i = 0; i < node->data.it_block.inline_mock_count; i++) {
+        free_ast(node->data.it_block.inline_mocks[i]);
+      }
+      free(node->data.it_block.inline_mocks);
+    }
+    break;
+
+  case AST_MOCK_CONFIG:
+    free(node->data.mock_config.middleware_name);
+    free(node->data.mock_config.variable_name);
+    free(node->data.mock_config.return_value);
+    break;
+
+  case AST_TEST_EXECUTION:
+    switch (node->data.test_execution.type) {
+      case TEST_EXEC_VARIABLE:
+        free(node->data.test_execution.data.variable.middleware_type);
+        free(node->data.test_execution.data.variable.variable_name);
+        free(node->data.test_execution.data.variable.input_json);
+        break;
+      case TEST_EXEC_PIPELINE:
+        free(node->data.test_execution.data.pipeline.pipeline_name);
+        free(node->data.test_execution.data.pipeline.input_json);
+        break;
+      case TEST_EXEC_HTTP_CALL:
+        free(node->data.test_execution.data.http_call.method);
+        free(node->data.test_execution.data.http_call.path);
+        break;
+    }
+    break;
+
+  case AST_TEST_ASSERTION:
+    switch (node->data.test_assertion.type) {
+      case TEST_ASSERT_OUTPUT_EQUALS:
+        free(node->data.test_assertion.data.output_equals.expected_json);
+        break;
+      case TEST_ASSERT_STATUS_IS:
+        // No dynamic memory to free
+        break;
+    }
+    break;
   }
 
   free(node);
@@ -1122,7 +1206,7 @@ ASTNode *parser_parse_describe_block(Parser *parser) {
         // Expand mock_configs array (simplified - in production use arena allocator)
         node->data.describe_block.mock_configs = realloc(
           node->data.describe_block.mock_configs,
-          sizeof(ASTNode*) * (node->data.describe_block.mock_count + 1)
+          sizeof(ASTNode*) * (size_t)(node->data.describe_block.mock_count + 1)
         );
         node->data.describe_block.mock_configs[node->data.describe_block.mock_count++] = mock;
       }
@@ -1132,7 +1216,7 @@ ASTNode *parser_parse_describe_block(Parser *parser) {
         // Expand tests array (simplified - in production use arena allocator)
         node->data.describe_block.tests = realloc(
           node->data.describe_block.tests,
-          sizeof(ASTNode*) * (node->data.describe_block.test_count + 1)
+          sizeof(ASTNode*) * (size_t)(node->data.describe_block.test_count + 1)
         );
         node->data.describe_block.tests[node->data.describe_block.test_count++] = test;
       }
@@ -1163,6 +1247,8 @@ ASTNode *parser_parse_it_block(Parser *parser) {
   node->data.it_block.execution = NULL;
   node->data.it_block.assertions = NULL;
   node->data.it_block.assertion_count = 0;
+  node->data.it_block.inline_mocks = NULL;
+  node->data.it_block.inline_mock_count = 0;
 
   // Skip newlines and comments
   while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
@@ -1207,8 +1293,13 @@ ASTNode *parser_parse_it_block(Parser *parser) {
     parser_advance(parser); // consume 'and'
     ASTNode *inline_mock = parser_parse_mock_config_inline(parser);
     if (inline_mock) {
-      // Store inline mock - for now we'll add it to the describe block's mocks
-      // In a full implementation, we'd want it_block to have its own mocks array
+      // Store inline mock in it_block
+      node->data.it_block.inline_mocks = realloc(
+          node->data.it_block.inline_mocks,
+          sizeof(ASTNode*) * (size_t)(node->data.it_block.inline_mock_count + 1)
+      );
+      node->data.it_block.inline_mocks[node->data.it_block.inline_mock_count] = inline_mock;
+      node->data.it_block.inline_mock_count++;
       
       // Skip newlines after mock
       while (parser_match(parser, TOKEN_NEWLINE) || parser_match(parser, TOKEN_COMMENT)) {
@@ -1228,7 +1319,7 @@ ASTNode *parser_parse_it_block(Parser *parser) {
       // Expand assertions array (simplified - in production use arena allocator)
       node->data.it_block.assertions = realloc(
         node->data.it_block.assertions,
-        sizeof(ASTNode*) * (node->data.it_block.assertion_count + 1)
+        sizeof(ASTNode*) * (size_t)(node->data.it_block.assertion_count + 1)
       );
       node->data.it_block.assertions[node->data.it_block.assertion_count++] = assertion;
     }

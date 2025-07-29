@@ -14,7 +14,7 @@ static bool global_test_mode = false;
 // Hash table implementation
 hash_table_t *create_hash_table(MemoryArena *arena, int bucket_count) {
     hash_table_t *table = arena_alloc(arena, sizeof(hash_table_t));
-    table->buckets = arena_alloc(arena, sizeof(hash_entry_t*) * bucket_count);
+    table->buckets = arena_alloc(arena, sizeof(hash_entry_t*) * (size_t)bucket_count);
     table->bucket_count = bucket_count;
     table->arena = arena;
     
@@ -30,9 +30,9 @@ unsigned int hash_string(const char *str, int bucket_count) {
     unsigned int hash = 5381;
     int c;
     while ((c = *str++)) {
-        hash = ((hash << 5) + hash) + c;
+        hash = ((hash << 5) + hash) + (unsigned int)c;
     }
-    return hash % bucket_count;
+    return hash % (unsigned int)bucket_count;
 }
 
 void hash_table_set(hash_table_t *table, const char *key, void *value) {
@@ -428,6 +428,11 @@ json_t *execute_route_test(ASTNode *exec_node, test_context_t *ctx, int *status_
 bool execute_it_block(ASTNode *it_node, test_context_t *ctx) {
     if (it_node->type != AST_IT_BLOCK) {
         return false;
+    }
+    
+    // Apply inline mocks (these override describe-level mocks)
+    if (it_node->data.it_block.inline_mocks && it_node->data.it_block.inline_mock_count > 0) {
+        apply_mocks(ctx, it_node->data.it_block.inline_mocks, it_node->data.it_block.inline_mock_count);
     }
     
     // Execute the test

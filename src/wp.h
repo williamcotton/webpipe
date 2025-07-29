@@ -191,6 +191,8 @@ struct ASTNode {
       ASTNode *execution;
       ASTNode **assertions;
       int assertion_count;
+      ASTNode **inline_mocks;
+      int inline_mock_count;
     } it_block;
     struct {
       char *middleware_name;

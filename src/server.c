@@ -1466,6 +1466,14 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
         case AST_CONFIG_VALUE_ARRAY:
             // Configuration values don't contain pipeline steps
             break;
+            
+        case AST_DESCRIBE_BLOCK:
+        case AST_IT_BLOCK:
+        case AST_MOCK_CONFIG:
+        case AST_TEST_EXECUTION:
+        case AST_TEST_ASSERTION:
+            // Test nodes don't contain middleware names for loading
+            break;
     }
 }
 
@@ -1477,6 +1485,7 @@ int wp_runtime_init(const char *wp_file, int port) {
     printf("Checking microhttpd availability...\n");
     
     runtime = malloc(sizeof(WPRuntime));
+    runtime->daemon = NULL;  // Initialize daemon to NULL
     runtime->middleware = NULL;
     runtime->middleware_count = 0;
     runtime->config_blocks = NULL;
