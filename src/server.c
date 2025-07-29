@@ -444,63 +444,6 @@ static enum MHD_Result header_iterator(void *cls, enum MHD_ValueKind kind, const
     return MHD_YES;
 }
 
-// Helper function to parse cookies from Cookie header
-json_t *parse_cookies(const char *cookie_header) {
-    json_t *cookies = json_object();
-    if (!cookie_header) {
-        return cookies;
-    }
-    
-    // Make a copy of the header for parsing
-    char *header_copy = strdup(cookie_header);
-    if (!header_copy) {
-        return cookies;
-    }
-    
-    // Parse each cookie pair
-    char *saveptr = NULL;
-    char *cookie_pair = strtok_r(header_copy, ";", &saveptr);
-    
-    while (cookie_pair) {
-        // Skip leading whitespace
-        while (*cookie_pair == ' ') cookie_pair++;
-        
-        // Find the '=' separator
-        char *equal_sign = strchr(cookie_pair, '=');
-        if (equal_sign) {
-            *equal_sign = '\0'; // Split the string
-            char *name = cookie_pair;
-            char *value = equal_sign + 1;
-            
-            // Skip trailing whitespace from name
-            char *name_end = name + strlen(name) - 1;
-            while (name_end > name && *name_end == ' ') {
-                *name_end = '\0';
-                name_end--;
-            }
-            
-            // Skip leading whitespace from value
-            while (*value == ' ') value++;
-            
-            // Skip trailing whitespace from value
-            char *value_end = value + strlen(value) - 1;
-            while (value_end > value && *value_end == ' ') {
-                *value_end = '\0';
-                value_end--;
-            }
-            
-            // Add to cookies object if both name and value are valid
-            if (strlen(name) > 0 && strlen(value) > 0) {
-                json_object_set_new(cookies, name, json_string(value));
-            }
-        }
-        
-        cookie_pair = strtok_r(NULL, ";", &saveptr);
-    }
-    
-    free(header_copy);
-    return cookies;
-}
 
 // HTTP request handling
 json_t *create_request_json(struct MHD_Connection *connection, 
@@ -582,6 +525,137 @@ static const char *get_first_error_type(json_t *json) {
     return json_string_value(type_json);
 }
 
+// Helper function to create standardized error responses
+__attribute__((unused)) static json_t *create_error_response(const char *error_type, const char *message) {
+    json_t *error_obj = json_object();
+    json_t *errors_array = json_array();
+    json_t *error_entry = json_object();
+    
+    json_object_set_new(error_entry, "type", json_string(error_type));
+    json_object_set_new(error_entry, "message", json_string(message));
+    
+    json_array_append_new(errors_array, error_entry);
+    json_object_set_new(error_obj, "errors", errors_array);
+    
+    return error_obj;
+}
+
+// Helper function to create fallback error response in arena
+static char *create_fallback_error(const char *message, MemoryArena *arena) {
+    // Create a simple JSON error string in arena memory
+    const char *template = "{\"error\":\"%s\"}";
+    size_t len = strlen(template) + strlen(message) + 1;
+    char *error_str = arena_alloc(arena, len);
+    if (error_str) {
+        snprintf(error_str, len, template, message);
+    }
+    return error_str;
+}
+
+// Helper function to log errors consistently
+static void log_error(const char *context, const char *message) {
+    fprintf(stderr, "Error in %s: %s\n", context, message);
+}
+
+// String processing utilities
+typedef struct {
+    char **parts;
+    int count;
+    char *buffer;  // owns the memory
+} StringParts;
+
+// Helper function to split string into parts
+__attribute__((unused)) static StringParts *split_string_arena(const char *str, const char *delim, MemoryArena *arena, int max_parts) {
+    if (!str || !delim || max_parts <= 0) {
+        return NULL;
+    }
+    
+    StringParts *sp = arena_alloc(arena, sizeof(StringParts));
+    if (!sp) return NULL;
+    
+    // Create a copy of the string in arena
+    sp->buffer = arena_strdup(arena, str);
+    if (!sp->buffer) return NULL;
+    
+    // Allocate array for parts
+    sp->parts = arena_alloc(arena, sizeof(char*) * (size_t)max_parts);
+    if (!sp->parts) return NULL;
+    
+    sp->count = 0;
+    
+    char *saveptr = NULL;
+    char *part = strtok_r(sp->buffer, delim, &saveptr);
+    
+    while (part && sp->count < max_parts) {
+        sp->parts[sp->count++] = part;
+        part = strtok_r(NULL, delim, &saveptr);
+    }
+    
+    return sp;
+}
+
+// Helper function to trim whitespace from string in-place
+static char *trim_whitespace(char *str) {
+    if (!str) return NULL;
+    
+    // Skip leading whitespace
+    while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r') {
+        str++;
+    }
+    
+    // Skip trailing whitespace
+    char *end = str + strlen(str) - 1;
+    while (end > str && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) {
+        *end = '\0';
+        end--;
+    }
+    
+    return str;
+}
+
+// Helper function to split key-value pairs (like cookies)
+static int parse_key_value_pair(char *pair, char **key, char **value, char separator) {
+    if (!pair || !key || !value) return -1;
+    
+    char *sep = strchr(pair, separator);
+    if (!sep) return -1;
+    
+    *sep = '\0';  // Split the string
+    *key = trim_whitespace(pair);
+    *value = trim_whitespace(sep + 1);
+    
+    return (strlen(*key) > 0 && strlen(*value) > 0) ? 0 : -1;
+}
+
+// Helper function to parse cookies from Cookie header
+json_t *parse_cookies(const char *cookie_header) {
+    json_t *cookies = json_object();
+    if (!cookie_header) {
+        return cookies;
+    }
+    
+    // Make a copy of the header for parsing
+    char *header_copy = strdup(cookie_header);
+    if (!header_copy) {
+        return cookies;
+    }
+    
+    // Parse each cookie pair
+    char *saveptr = NULL;
+    char *cookie_pair = strtok_r(header_copy, ";", &saveptr);
+    
+    while (cookie_pair) {
+        char *key, *value;
+        if (parse_key_value_pair(cookie_pair, &key, &value, '=') == 0) {
+            json_object_set_new(cookies, key, json_string(value));
+        }
+        cookie_pair = strtok_r(NULL, ";", &saveptr);
+    }
+    
+    free(header_copy);
+    return cookies;
+}
+
 // Helper function to clean up response JSON for output (removes internal fields)
 json_t *cleanup_response_json(json_t *json_data) {
     if (json_data) {
@@ -591,21 +665,11 @@ json_t *cleanup_response_json(json_t *json_data) {
     return json_data;
 }
 
-// Helper function to send response with flexible content type
-static enum MHD_Result send_response(struct MHD_Connection *connection, 
-                                   json_t *json_data, int status_code, const char *content_type, MemoryArena *arena) {
-    char *response_str = NULL;
-    size_t response_len = 0;
-    
-    // Validate inputs
-    if (!connection) {
-        fprintf(stderr, "Error: connection is NULL in send_response\n");
-        return MHD_NO;
-    }
-
-    // we need to creaste a temp array for the cookies, process the cookies, delete the setCookies from the json_data, and then add the cookies to the mhd_response
+// Helper function to extract and process cookies from response JSON
+static json_t *extract_and_process_cookies(json_t *json_data) {
     json_t *temp_cookies = json_array();
     json_t *set_cookies = json_object_get(json_data, "setCookies");
+    
     if (set_cookies && json_is_array(set_cookies)) {
         size_t cookie_count = json_array_size(set_cookies);
         for (size_t i = 0; i < cookie_count; i++) {
@@ -618,103 +682,147 @@ static enum MHD_Result send_response(struct MHD_Connection *connection,
             }
         }
     }
+    
+    return temp_cookies;
+}
+
+// Helper function to serialize response content based on content type
+static char *serialize_response_content(json_t *json_data, const char **content_type, 
+                                       size_t *response_len, MemoryArena *arena) {
+    char *response_str = NULL;
+    
+    // Default content type if not specified
+    if (!*content_type) {
+        *content_type = "application/json";
+    }
+    
+    // Handle different content types
+    if (strcmp(*content_type, "application/json") == 0) {
+        // JSON response
+        response_str = json_dumps(json_data, JSON_COMPACT);
+        if (!response_str) {
+            log_error("serialize_response_content", "json_dumps failed");
+            response_str = create_fallback_error("JSON serialization failed", arena);
+        }
+    } else if (strcmp(*content_type, "text/html") == 0 || 
+               strcmp(*content_type, "text/plain") == 0 ||
+               strcmp(*content_type, "image/svg+xml") == 0 ||
+               strcmp(*content_type, "application/postscript") == 0 ||
+               strcmp(*content_type, "application/pdf") == 0 ||
+               strncmp(*content_type, "text/", 5) == 0) {
+        // HTML or text response - extract string from JSON
+        if (json_is_string(json_data)) {
+            const char *content = json_string_value(json_data);
+            if (content) {
+                // Use arena_strdup to prevent memory leak
+                response_str = arena_strdup(arena, content);
+            } else {
+                log_error("serialize_response_content", "json_string_value returned NULL");
+                response_str = arena_strdup(arena, "Internal server error");
+                *content_type = "text/plain";
+            }
+        } else {
+            // Fallback to JSON if not a string
+            response_str = json_dumps(json_data, JSON_COMPACT);
+            if (!response_str) {
+                log_error("serialize_response_content", "json_dumps fallback failed");
+                response_str = create_fallback_error("JSON serialization failed", arena);
+            }
+            *content_type = "application/json";
+        }
+    } else {
+        // Default to JSON for unknown content types
+        response_str = json_dumps(json_data, JSON_COMPACT);
+        if (!response_str) {
+            log_error("serialize_response_content", "json_dumps failed for unknown content type");
+            response_str = create_fallback_error("JSON serialization failed", arena);
+        }
+        *content_type = "application/json";
+    }
+    
+    if (response_str) {
+        *response_len = strlen(response_str);
+    }
+    
+    return response_str;
+}
+
+// Helper function to create and configure MHD response
+static struct MHD_Response *create_http_response(const char *response_str, size_t response_len,
+                                                const char *content_type, json_t *cookies) {
+    struct MHD_Response *mhd_response = MHD_create_response_from_buffer(
+        response_len, (void *)(uintptr_t)response_str, MHD_RESPMEM_PERSISTENT);
+    
+    if (!mhd_response) {
+        return NULL;
+    }
+    
+    // Add cookies to the response
+    if (cookies && json_is_array(cookies)) {
+        size_t cookie_count = json_array_size(cookies);
+        for (size_t i = 0; i < cookie_count; i++) {
+            const char *cookie_str = json_string_value(json_array_get(cookies, i));
+            if (cookie_str) {
+                MHD_add_response_header(mhd_response, "Set-Cookie", cookie_str);
+            }
+        }
+    }
+    
+    // Add content type header
+    MHD_add_response_header(mhd_response, "Content-Type", content_type);
+    
+    return mhd_response;
+}
+
+// Helper function to send response with flexible content type
+static enum MHD_Result send_response(struct MHD_Connection *connection, 
+                                   json_t *json_data, int status_code, const char *content_type, MemoryArena *arena) {
+    char *response_str = NULL;
+    size_t response_len = 0;
+    
+    // Validate inputs
+    if (!connection) {
+        log_error("send_response", "connection is NULL");
+        return MHD_NO;
+    }
+
+    // Extract cookies before cleaning up response JSON
+    json_t *cookies = extract_and_process_cookies(json_data);
 
     // Clean up response JSON (removes internal fields like setCookies)
     cleanup_response_json(json_data);
-
-    // add the cookies to the mhd_response
     
     if (!json_data) {
-        fprintf(stderr, "Error: json_data is NULL in send_response\n");
+        log_error("send_response", "json_data is NULL");
         // Create a fallback error response
-        response_str = arena_strdup(arena, "{\"error\":\"Internal server error\"}");
+        response_str = create_fallback_error("Internal server error", arena);
         response_len = strlen(response_str);
         content_type = "application/json";
         status_code = 500;
     } else {
-        // Default content type if not specified
-        if (!content_type) {
-            content_type = "application/json";
-        }
-        
-        // Handle different content types
-        if (strcmp(content_type, "application/json") == 0) {
-            // JSON response
-            response_str = json_dumps(json_data, JSON_COMPACT);
-            if (!response_str) {
-                fprintf(stderr, "Error: json_dumps failed in send_response\n");
-                response_str = arena_strdup(arena, "{\"error\":\"JSON serialization failed\"}");
-                response_len = strlen(response_str);
-            } else {
-                response_len = strlen(response_str);
-            }
-        } else if (strcmp(content_type, "text/html") == 0 || 
-                   strcmp(content_type, "text/plain") == 0 ||
-                   strcmp(content_type, "image/svg+xml") == 0 ||
-                   strcmp(content_type, "application/postscript") == 0 ||
-                   strcmp(content_type, "application/pdf") == 0 ||
-                   strncmp(content_type, "text/", 5) == 0) {
-            // HTML or text response - extract string from JSON
-            if (json_is_string(json_data)) {
-                const char *content = json_string_value(json_data);
-                if (content) {
-                    response_len = strlen(content);
-                    // Use arena_strdup to prevent memory leak
-                    response_str = arena_strdup(arena, content);
-                } else {
-                    fprintf(stderr, "Error: json_string_value returned NULL\n");
-                    response_str = arena_strdup(arena, "Internal server error");
-                    response_len = strlen(response_str);
-                    content_type = "text/plain";
-                }
-            } else {
-                // Fallback to JSON if not a string
-                response_str = json_dumps(json_data, JSON_COMPACT);
-                if (!response_str) {
-                    fprintf(stderr, "Error: json_dumps fallback failed\n");
-                    response_str = arena_strdup(arena, "{\"error\":\"JSON serialization failed\"}");
-                }
-                response_len = strlen(response_str);
-                content_type = "application/json";
-            }
-        } else {
-            // Default to JSON for unknown content types
-            response_str = json_dumps(json_data, JSON_COMPACT);
-            if (!response_str) {
-                fprintf(stderr, "Error: json_dumps failed for unknown content type\n");
-                response_str = arena_strdup(arena, "{\"error\":\"JSON serialization failed\"}");
-            }
-            response_len = strlen(response_str);
-            content_type = "application/json";
-        }
+        // Serialize response content based on content type
+        response_str = serialize_response_content(json_data, &content_type, &response_len, arena);
     }
     
     // Final check that we have a valid response string
     if (!response_str) {
-        fprintf(stderr, "Error: response_str is still NULL after processing\n");
+        log_error("send_response", "response_str is still NULL after processing");
         response_str = "{\"error\":\"Critical error\"}";
         response_len = strlen(response_str);
         content_type = "application/json";
     }
     
-    struct MHD_Response *mhd_response =
-        MHD_create_response_from_buffer(
-            response_len, (void *)response_str,
-            MHD_RESPMEM_PERSISTENT);
-
-    // add the cookies to the mhd_response
-    size_t cookie_count = json_array_size(temp_cookies);
-    for (size_t i = 0; i < cookie_count; i++) {
-        const char *cookie_str = json_string_value(json_array_get(temp_cookies, i));
-        MHD_add_response_header(mhd_response, "Set-Cookie", cookie_str);
+    // Create HTTP response with cookies and headers
+    struct MHD_Response *mhd_response = create_http_response(response_str, response_len, content_type, cookies);
+    if (!mhd_response) {
+        log_error("send_response", "Failed to create MHD response");
+        return MHD_NO;
     }
     
-    MHD_add_response_header(mhd_response, "Content-Type", content_type);
-    
-    (void)MHD_queue_response(connection, (unsigned int)status_code, mhd_response);
+    enum MHD_Result result = MHD_queue_response(connection, (unsigned int)status_code, mhd_response);
     MHD_destroy_response(mhd_response);
     
-    return MHD_YES;
+    return result;
 }
 
 // Helper function to send JSON response (backward compatibility)
@@ -906,7 +1014,187 @@ static int dispatch_result(ASTNode *result_node, json_t *state, MemoryArena *are
     return ok;
 }
 
-/* ───────────────────── main routine ──────────────────────────────────── */
+// Helper function to handle result steps
+static int handle_result_step(PipelineStep *step, json_t *current, json_t *original_req,
+                             MemoryArena *arena, json_t **final_response, 
+                             int *response_code, char **content_type) {
+    attach_request_meta(current, original_req);
+    return dispatch_result((ASTNode *)(uintptr_t)step->value, current,
+                          arena, final_response, response_code, content_type);
+}
+
+// Helper function to handle pipeline variable steps
+static int handle_pipeline_variable(PipelineStep *step, json_t **current, MemoryArena *arena,
+                                   char **content_type) {
+    json_t *var = json_object_get(runtime->variables, step->value);
+    if (!var) {
+        log_error("handle_pipeline_variable", step->value);
+        return -1;
+    }
+
+    json_t *type_field = json_object_get(var, "_type");
+    if (!json_is_string(type_field) ||
+        strcmp(json_string_value(type_field), "pipeline") != 0) {
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "Variable '%s' is not a pipeline definition", step->value);
+        log_error("handle_pipeline_variable", error_msg);
+        return -1;
+    }
+
+    ASTNode *pnode = (ASTNode *)(uintptr_t)
+                     json_integer_value(json_object_get(var, "_definition"));
+    if (!pnode || pnode->type != AST_PIPELINE_DEFINITION) {
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "Corrupted pipeline definition for '%s'", step->value);
+        log_error("handle_pipeline_variable", error_msg);
+        return -1;
+    }
+
+    json_t *tmp = NULL;
+    char *tmp_ctype = NULL;
+    int tmp_code;
+    int ok = execute_pipeline_with_result(pnode->data.pipeline_def.pipeline, *current,
+                                         arena, &tmp, &tmp_code, &tmp_ctype);
+    set_current_arena(arena);
+    if (ok != 0) return ok;
+
+    *current = tmp;
+    if (tmp_ctype && *content_type && strcmp(tmp_ctype, *content_type) != 0) {
+        *content_type = tmp_ctype;
+    }
+    
+    return 0;
+}
+
+// Helper function to prepare middleware input
+static json_t *prepare_middleware_input(json_t *current, json_t *original_req, 
+                                       const char *variable_name) {
+    json_t *middleware_input = json_deep_copy(current);
+    
+    // Ensure originalRequest is available to middleware for template resolution, etc.
+    if (!json_object_get(middleware_input, "originalRequest")) {
+        json_object_set(middleware_input, "originalRequest", original_req);
+    }
+
+    // If using a variable, auto-add resultName (this will be used by the middleware)
+    // Note: We remove any existing resultName first since it was for the previous step
+    if (variable_name) {
+        json_object_del(middleware_input, "resultName");
+        json_object_set_new(middleware_input, "resultName", json_string(variable_name));
+    }
+    
+    return middleware_input;
+}
+
+// Helper function to handle pipeline control responses (early termination)
+static int process_pipeline_control_response(json_t *result, json_t *current, 
+                                            json_t *original_req, MemoryArena *arena,
+                                            json_t **final_response) {
+    json_t *pipeline_action = json_object_get(result, "_pipeline_action");
+    if (!pipeline_action || !json_is_string(pipeline_action)) {
+        return 0; // No control action
+    }
+    
+    const char *action = json_string_value(pipeline_action);
+    if (strcmp(action, "return") == 0) {
+        // Early termination - extract value and execute post hooks
+        json_t *value = json_object_get(result, "value");
+        if (value) {
+            // Merge metadata from the current state (which has log start_time)
+            // into the cached value before executing post hooks.
+            merge_pipeline_metadata(value, current);
+            attach_request_meta(value, original_req);
+            execute_post_hooks(value, arena);
+            json_object_del(value, "originalRequest");
+
+            // Remove empty _metadata object if it exists and is empty
+            json_t *metadata = json_object_get(value, "_metadata");
+            if (metadata && json_is_object(metadata) && json_object_size(metadata) == 0) {
+                json_object_del(value, "_metadata");
+            }
+
+            *final_response = value;
+            return 1; // Signal early termination
+        } else {
+            fprintf(stderr, "Pipeline control 'return' without 'value' field\n");
+            return -1;
+        }
+    }
+    
+    return 0; // No early termination
+}
+
+// Helper function to execute a single middleware step
+static int execute_middleware_step(Middleware *mw, PipelineStep *step, json_t *middleware_input,
+                                  MemoryArena *arena, char **content_type, json_t **result) {
+    const char *conf = step->value;
+    const char *variable_name = NULL;
+    
+    if (step->is_variable) {
+        variable_name = step->value;  // Store variable name for auto-naming
+        json_t *v = json_object_get(runtime->variables, step->value);
+        if (v && json_is_string(v)) conf = json_string_value(v);
+    }
+
+    json_t *mw_cfg = get_middleware_config(mw->name);
+    
+    // Check for active mocks in test context
+    test_context_t *test_ctx = get_test_context();
+    if (test_ctx && is_mock_active(test_ctx, mw->name, variable_name)) {
+        *result = get_mock_result(test_ctx, mw->name, variable_name);
+        printf("Mock intercepted: %s%s%s\n", mw->name, 
+               variable_name ? "." : "", variable_name ? variable_name : "");
+    } else {
+        // Normal middleware execution
+        *result = mw->execute(middleware_input, arena,
+                            arena_alloc_wrapper, arena_free_wrapper,
+                            conf, mw_cfg, content_type, runtime->variables);
+    }
+    
+    set_current_arena(arena);
+    if (!*result) {
+        char error_msg[256];
+        snprintf(error_msg, sizeof(error_msg), "Middleware %s failed", step->middleware);
+        log_error("execute_middleware_step", error_msg);
+        return -1;
+    }
+    
+    return 0;
+}
+
+// Helper function to handle error cases by looking for result steps
+static int handle_error_result(PipelineStep *step, json_t *result, MemoryArena *arena,
+                              json_t **final_response, int *response_code, char **content_type) {
+    for (PipelineStep *r = step->next; r; r = r->next) {
+        if (strcmp(r->middleware, "result") == 0) {
+            return dispatch_result((ASTNode *)(uintptr_t)r->value, result,
+                                  arena, final_response, response_code, content_type);
+        }
+    }
+    return 0; // No result step found, continue normally
+}
+
+// Helper function to merge result into current context
+static void merge_step_result(json_t **current, json_t *result, bool is_last_step) {
+    if (is_last_step) {
+        // Last step: use result as final response (allows clean transformations)
+        *current = result;
+    } else if (json_is_object(result) && json_is_object(*current)) {
+        // Intermediate step: merge the middleware result with the current state
+        // This preserves context (method, path, params, etc.) and accumulated data
+        const char *key;
+        json_t *value;
+        json_object_foreach(result, key, value) {
+            json_object_set(*current, key, value);
+        }
+        // current now contains the merged state
+    } else {
+        // Fallback to replacement if either is not an object
+        *current = result;
+    }
+}
+
+/* ───────────────────── main routine ──────────────────────────────────────── */
 
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena,
                                  json_t **final_response, int *response_code, char **content_type) {
@@ -925,45 +1213,14 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
 
         /* ─── result step ─────────────────────────────────────────────── */
         if (strcmp(step->middleware, "result") == 0) {
-            attach_request_meta(current, original_req);
-            return dispatch_result((ASTNode *)(uintptr_t)step->value, current,
-                                   arena, final_response, response_code, content_type);
+            return handle_result_step(step, current, original_req, arena, 
+                                    final_response, response_code, content_type);
         }
 
         /* ─── inline pipeline variable ────────────────────────────────── */
         if (strcmp(step->middleware, "pipeline") == 0) {
-            json_t *var = json_object_get(runtime->variables, step->value);
-            if (!var) {
-                fprintf(stderr, "Pipeline variable not found: %s\n", step->value);
-                return -1;
-            }
-
-            json_t *type_field = json_object_get(var, "_type");
-            if (!json_is_string(type_field) ||
-                strcmp(json_string_value(type_field), "pipeline") != 0) {
-                fprintf(stderr, "Variable '%s' is not a pipeline definition\n", step->value);
-                return -1;
-            }
-
-            ASTNode *pnode = (ASTNode *)(uintptr_t)
-                             json_integer_value(json_object_get(var, "_definition"));
-            if (!pnode || pnode->type != AST_PIPELINE_DEFINITION) {
-                fprintf(stderr, "Corrupted pipeline definition for '%s'\n", step->value);
-                return -1;
-            }
-
-            json_t *tmp       = NULL;
-            char   *tmp_ctype = NULL;
-            int     tmp_code;
-            int ok = execute_pipeline_with_result(pnode->data.pipeline_def.pipeline, current,
-                                                  arena, &tmp, &tmp_code, &tmp_ctype);
-            set_current_arena(arena);
-            if (ok != 0) return ok;
-
-            current = tmp;
-            if (tmp_ctype && *content_type && strcmp(tmp_ctype, *content_type) != 0) {
-                *content_type = tmp_ctype;
-            }
+            int result = handle_pipeline_variable(step, &current, arena, content_type);
+            if (result != 0) return result;
             continue;                  /* proceed to next step             */
         }
 
@@ -974,79 +1231,18 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
             return -1;
         }
 
-        const char *conf = step->value;
-        const char *variable_name = NULL;
-        if (step->is_variable) {
-            variable_name = step->value;  // Store variable name for auto-naming
-            json_t *v = json_object_get(runtime->variables, step->value);
-            if (v && json_is_string(v)) conf = json_string_value(v);
-        }
+        // Prepare middleware input
+        const char *variable_name = step->is_variable ? step->value : NULL;
+        json_t *middleware_input = prepare_middleware_input(current, original_req, variable_name);
 
-        // Create middleware input by copying current state
-        json_t *middleware_input = json_deep_copy(current);
-        
-        // Ensure originalRequest is available to middleware for template resolution, etc.
-        if (!json_object_get(middleware_input, "originalRequest")) {
-            json_object_set(middleware_input, "originalRequest", original_req);
-        }
-
-        // If using a variable, auto-add resultName (this will be used by the middleware)
-        // Note: We remove any existing resultName first since it was for the previous step
-        if (variable_name) {
-            json_object_del(middleware_input, "resultName");
-            json_object_set_new(middleware_input, "resultName", json_string(variable_name));
-        }
-
-        json_t *mw_cfg = get_middleware_config(mw->name);
-        
-        // Check for active mocks in test context
-        test_context_t *test_ctx = get_test_context();
         json_t *result;
-        if (test_ctx && is_mock_active(test_ctx, mw->name, variable_name)) {
-            result = get_mock_result(test_ctx, mw->name, variable_name);
-            printf("Mock intercepted: %s%s%s\n", mw->name, 
-                   variable_name ? "." : "", variable_name ? variable_name : "");
-        } else {
-            // Normal middleware execution
-            result = mw->execute(middleware_input, arena,
-                                arena_alloc_wrapper, arena_free_wrapper,
-                                conf, mw_cfg, content_type, runtime->variables);
-        }
-        set_current_arena(arena);
-        if (!result) {
-            fprintf(stderr, "Middleware %s failed\n", step->middleware);
-            return -1;
-        }
+        int exec_result = execute_middleware_step(mw, step, middleware_input, arena, content_type, &result);
+        if (exec_result != 0) return exec_result;
 
         // Check for pipeline control response (early termination)
-        json_t *pipeline_action = json_object_get(result, "_pipeline_action");
-        if (pipeline_action && json_is_string(pipeline_action)) {
-            const char *action = json_string_value(pipeline_action);
-            if (strcmp(action, "return") == 0) {
-                // Early termination - extract value and execute post hooks
-                json_t *value = json_object_get(result, "value");
-                if (value) {
-                    // Merge metadata from the current state (which has log start_time)
-                    // into the cached value before executing post hooks.
-                    merge_pipeline_metadata(value, current);
-                    attach_request_meta(value, original_req);
-                    execute_post_hooks(value, arena);
-                    json_object_del(value, "originalRequest");
-
-                    // Remove empty _metadata object if it exists and is empty
-                    json_t *metadata = json_object_get(value, "_metadata");
-                    if (metadata && json_is_object(metadata) && json_object_size(metadata) == 0) {
-                        json_object_del(value, "_metadata");
-                    }
-
-                    *final_response = value;
-                    return 0;
-                } else {
-                    fprintf(stderr, "Pipeline control 'return' without 'value' field\n");
-                    return -1;
-                }
-            }
-        }
+        int control_result = process_pipeline_control_response(result, current, original_req, arena, final_response);
+        if (control_result == 1) return 0;  // Early termination
+        if (control_result == -1) return -1; // Error
 
         attach_request_meta(result, original_req);
 
@@ -1055,39 +1251,19 @@ int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, Memory
 
         /* ─── register post-execute hooks for middleware that have them ─── */
         if (mw->post_execute) {
-            // Register the middleware's post_execute function to be called later
+            json_t *mw_cfg = get_middleware_config(mw->name);
             register_post_execute_hook(mw->post_execute, mw_cfg, arena);
         }
 
         /* ─── early‑exit on error ─────────────────────────────────────── */
         if (has_errors(result)) {
-            for (PipelineStep *r = step->next; r; r = r->next) {
-                if (strcmp(r->middleware, "result") == 0) {
-                    return dispatch_result((ASTNode *)(uintptr_t)r->value, result,
-                                           arena, final_response, response_code, content_type);
-                }
-            }
+            int error_result = handle_error_result(step, result, arena, final_response, response_code, content_type);
+            if (error_result != 0) return error_result;
         }
 
         /* ─── merge result back into current context ──────────────────── */
-        // If this is the last step, don't merge - use the result as final response
-        // Otherwise, merge to preserve context and accumulated data
-        if (step->next == NULL) {
-            // Last step: use result as final response (allows clean transformations)
-            current = result;
-        } else if (json_is_object(result) && json_is_object(current)) {
-            // Intermediate step: merge the middleware result with the current state
-            // This preserves context (method, path, params, etc.) and accumulated data
-            const char *key;
-            json_t *value;
-            json_object_foreach(result, key, value) {
-                json_object_set(current, key, value);
-            }
-            // current now contains the merged state
-        } else {
-            // Fallback to replacement if either is not an object
-            current = result;
-        }
+        bool is_last_step = (step->next == NULL);
+        merge_step_result(&current, result, is_last_step);
     }
 
     /* ─── end of pipeline ──────────────────────────────────────────────── */
