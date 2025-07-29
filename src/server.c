@@ -13,26 +13,42 @@
 // Global runtime instance
 WPRuntime *runtime = NULL;
 
-// Function to process configuration blocks from AST
-static void process_config_blocks(ASTNode *program) {
+// Configuration Management Functions
+
+// Count configuration blocks in AST
+static int config_count_blocks(ASTNode *program) {
     if (!program || program->type != AST_PROGRAM) {
-        return;
+        return 0;
     }
     
-    // Count configuration blocks
-    int config_count = 0;
+    int count = 0;
     for (int i = 0; i < program->data.program.statement_count; i++) {
         if (program->data.program.statements[i]->type == AST_CONFIG_BLOCK) {
-            config_count++;
+            count++;
         }
     }
+    return count;
+}
+
+// Initialize configuration system
+static int config_init(ASTNode *program) {
+    if (!runtime) {
+        return -1;
+    }
     
+    int config_count = config_count_blocks(program);
     if (config_count == 0) {
-        return;
+        runtime->config_blocks = NULL;
+        runtime->config_count = 0;
+        return 0;
     }
     
     // Allocate config blocks
     runtime->config_blocks = malloc(sizeof(ConfigBlock) * (size_t)config_count);
+    if (!runtime->config_blocks) {
+        fprintf(stderr, "Failed to allocate memory for config blocks\n");
+        return -1;
+    }
     runtime->config_count = 0;
     
     // Extract configuration blocks
@@ -44,11 +60,12 @@ static void process_config_blocks(ASTNode *program) {
             runtime->config_count++;
         }
     }
+    return 0;
 }
 
-// Function to get middleware configuration
-json_t *get_middleware_config(const char *middleware_name) {
-    if (!runtime || !runtime->config_blocks) {
+// Get middleware configuration by name
+static json_t *config_get(const char *middleware_name) {
+    if (!runtime || !runtime->config_blocks || !middleware_name) {
         return NULL;
     }
     
@@ -58,6 +75,31 @@ json_t *get_middleware_config(const char *middleware_name) {
         }
     }
     return NULL;
+}
+
+// Cleanup configuration system
+static void config_cleanup(void) {
+    if (!runtime || !runtime->config_blocks) {
+        return;
+    }
+    
+    for (int i = 0; i < runtime->config_count; i++) {
+        free(runtime->config_blocks[i].name);
+        json_decref(runtime->config_blocks[i].config_json);
+    }
+    free(runtime->config_blocks);
+    runtime->config_blocks = NULL;
+    runtime->config_count = 0;
+}
+
+// Legacy wrapper for backward compatibility
+static void process_config_blocks(ASTNode *program) {
+    config_init(program);
+}
+
+// Legacy wrapper for backward compatibility  
+json_t *get_middleware_config(const char *middleware_name) {
+    return config_get(middleware_name);
 }
 
 // Memory arena functions
@@ -253,14 +295,20 @@ void clear_post_hooks(void) {
 }
 
 // Middleware loading and management
-int load_middleware(const char *name) {
-    // Check if runtime is initialized
-    if (!runtime) {
-        fprintf(stderr, "Error: Runtime not initialized\n");
+// Middleware Loading Helper Functions
+
+// Validate middleware path and name
+static int validate_middleware_path(const char *name, char *path_buffer, size_t buffer_size) {
+    if (!name || strlen(name) == 0) {
+        fprintf(stderr, "Error: Empty middleware name\n");
         return -1;
     }
     
-    char middleware_path[256];
+    // Check for path traversal attempts
+    if (strstr(name, "..") || strstr(name, "/") || strstr(name, "\\")) {
+        fprintf(stderr, "Error: Invalid characters in middleware name: %s\n", name);
+        return -1;
+    }
     
     // Check if middleware name would cause buffer overflow
     if (strlen(name) > 240) {  // Reserve space for "./middleware/" and ".so\0"
@@ -268,35 +316,31 @@ int load_middleware(const char *name) {
         return -1;
     }
     
-    snprintf(middleware_path, sizeof(middleware_path), "./middleware/%s.so", name);
-    
-    void *handle = dlopen(middleware_path, RTLD_LAZY);
-    if (!handle) {
-        fprintf(stderr, "Error loading middleware %s: %s\n", name, dlerror());
-        return -1;
-    }
-    
-    // Get middleware execute function
+    snprintf(path_buffer, buffer_size, "./middleware/%s.so", name);
+    return 0;
+}
+
+// Resolve required and optional middleware symbols
+static int resolve_middleware_symbols(void *handle, const char *name, Middleware *middleware) {
+    // Get required middleware execute function
     json_t *(*execute)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, json_t *, char **, json_t *) = 
         (json_t *(*)(json_t *, void *, arena_alloc_func, arena_free_func, const char *, json_t *, char **, json_t *))dlsym(handle, "middleware_execute");
     if (!execute) {
         fprintf(stderr, "Error getting middleware_execute for %s: %s\n", name, dlerror());
-        dlclose(handle);
         return -1;
     }
     
-    // Check for optional post_execute function
+    // Get optional post_execute function
     post_execute_func post_execute_func_ptr = (post_execute_func)dlsym(handle, "middleware_post_execute");
     // No error checking needed - post_execute is optional
     
-    // Add to runtime middleware
-    runtime->middleware = realloc(runtime->middleware, sizeof(Middleware) * (size_t)(runtime->middleware_count + 1));
-    runtime->middleware[runtime->middleware_count].name = strdup(name);
-    runtime->middleware[runtime->middleware_count].handle = handle;
-    runtime->middleware[runtime->middleware_count].execute = execute;
-    runtime->middleware[runtime->middleware_count].post_execute = post_execute_func_ptr;
-    runtime->middleware_count++;
-    
+    middleware->execute = execute;
+    middleware->post_execute = post_execute_func_ptr;
+    return 0;
+}
+
+// Register middleware as database provider if applicable
+static void register_database_provider_if_applicable(void *handle, const char *name) {
     // Check if this middleware is a database provider
     json_t *(*execute_sql_func)(const char *, json_t *, void *, arena_alloc_func) = 
         (json_t *(*)(const char *, json_t *, void *, arena_alloc_func))dlsym(handle, "execute_sql");
@@ -329,8 +373,10 @@ int load_middleware(const char *name) {
         
         printf("Injected database API into middleware: %s\n", name);
     }
-    
-    // Check if middleware has an initialization function and call it with config
+}
+
+// Initialize middleware if it has an init function
+static int initialize_middleware(void *handle, const char *name) {
     int (*init_func)(json_t *config) = (int (*)(json_t *))dlsym(handle, "middleware_init");
     
     if (init_func) {
@@ -340,10 +386,62 @@ int load_middleware(const char *name) {
         if (init_result != 0) {
             printf("Warning: Middleware '%s' initialization failed (returned %d)\n", name, init_result);
             // Continue loading despite initialization failure - middleware may still be usable
+            return 0; // Don't fail the entire load process
         } else {
             printf("Initialized middleware '%s' successfully\n", name);
         }
     }
+    return 0;
+}
+
+// Add middleware to runtime registry
+static int add_middleware_to_runtime(const char *name, void *handle, const Middleware *middleware) {
+    runtime->middleware = realloc(runtime->middleware, sizeof(Middleware) * (size_t)(runtime->middleware_count + 1));
+    if (!runtime->middleware) {
+        fprintf(stderr, "Error: Failed to allocate memory for middleware registry\n");
+        return -1;
+    }
+    
+    runtime->middleware[runtime->middleware_count].name = strdup(name);
+    runtime->middleware[runtime->middleware_count].handle = handle;
+    runtime->middleware[runtime->middleware_count].execute = middleware->execute;
+    runtime->middleware[runtime->middleware_count].post_execute = middleware->post_execute;
+    runtime->middleware_count++;
+    return 0;
+}
+
+// Main middleware loading function
+int load_middleware(const char *name) {
+    // Check if runtime is initialized
+    if (!runtime) {
+        fprintf(stderr, "Error: Runtime not initialized\n");
+        return -1;
+    }
+    
+    char middleware_path[256];
+    if (validate_middleware_path(name, middleware_path, sizeof(middleware_path)) != 0) {
+        return -1;
+    }
+    
+    void *handle = dlopen(middleware_path, RTLD_LAZY);
+    if (!handle) {
+        fprintf(stderr, "Error loading middleware %s: %s\n", name, dlerror());
+        return -1;
+    }
+    
+    Middleware middleware = {0};
+    if (resolve_middleware_symbols(handle, name, &middleware) != 0) {
+        dlclose(handle);
+        return -1;
+    }
+    
+    if (add_middleware_to_runtime(name, handle, &middleware) != 0) {
+        dlclose(handle);
+        return -1;
+    }
+    
+    register_database_provider_if_applicable(handle, name);
+    initialize_middleware(handle, name);
     
     return 0;
 }
@@ -1818,6 +1916,9 @@ void wp_runtime_cleanup() {
             free(runtime->middleware[i].name);
         }
         free(runtime->middleware);
+        
+        // Cleanup configuration blocks
+        config_cleanup();
         
         // Cleanup database registry
         database_registry_cleanup();

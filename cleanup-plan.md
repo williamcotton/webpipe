@@ -155,10 +155,20 @@ The core architecture of the web pipeline runtime is solid, but several function
 - ✅ Refactor cookie parsing to use utilities
 - ✅ Standardize error logging throughout
 
-### 🔄 Phase 4 (NEXT): Configuration & Middleware
-- Extract configuration management
-- Clean up middleware loading
-- Add path validation
+### ✅ Phase 4 (COMPLETED): Configuration & Middleware
+- ✅ Extract configuration management functions
+  - `config_count_blocks()`
+  - `config_init()`
+  - `config_get()`
+  - `config_cleanup()`
+- ✅ Clean up middleware loading logic
+  - `validate_middleware_path()` with path traversal protection
+  - `resolve_middleware_symbols()`
+  - `register_database_provider_if_applicable()`
+  - `initialize_middleware()`
+  - `add_middleware_to_runtime()`
+- ✅ Add proper memory cleanup for config blocks
+- ✅ Improved error handling and validation throughout
 
 ## Testing Strategy
 
