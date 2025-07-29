@@ -93,8 +93,7 @@ void cleanup_test_runtime(void);
 #define TEST_PORT 9080
 int get_test_port(void);
 
-// Test runtime access - forward declaration  
-struct WPRuntime;
-extern struct WPRuntime *test_runtime;
+// Test runtime access
+extern WPRuntime *test_runtime;
 
 #endif // TEST_UTILS_H

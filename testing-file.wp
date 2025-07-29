@@ -92,3 +92,14 @@ describe "test calling route"
     and output equals `{
       "hello": "world"
     }`
+
+describe "calling page"
+  it "calls the pipeline"
+    when calling GET /page/1
+    with mock pg returning `{
+      "rows": [{ "id": "1", "name": "Platform", "member_count": 8 }]
+    }`
+    then status is 200
+    and output equals `{
+      "team": { "id": "1", "name": "Platform", "member_count": 8 }
+    }`

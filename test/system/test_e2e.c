@@ -172,7 +172,7 @@ static int start_server(void) {
         // Use test port to avoid conflicts
         char port_arg[16];
         snprintf(port_arg, sizeof(port_arg), "%d", get_test_port());
-        execl("./build/wp", "./build/wp", "test.wp", "--test", "--port", port_arg, NULL);
+        execl("./build/wp", "./build/wp", "test.wp", "--port", port_arg, NULL);
         exit(1); // Should not reach here
     } else if (server_pid > 0) {
         // Parent process - wait a moment for server to start
