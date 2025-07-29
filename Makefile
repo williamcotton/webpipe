@@ -142,6 +142,9 @@ $(BUILD_DIR)/test_cookies: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/t
 $(BUILD_DIR)/test_database_registry: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/test_database_registry.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_database_registry.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
+$(BUILD_DIR)/test_testing: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/unit/test_testing.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/unit/test_testing.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
+
 $(BUILD_DIR)/test_jq: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_jq.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
@@ -182,7 +185,7 @@ $(BUILD_DIR)/test_perf: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/system/te
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_perf.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
 # Test group targets
-TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_middleware $(BUILD_DIR)/test_cookies $(BUILD_DIR)/test_database_registry
+TEST_UNIT_BINS = $(BUILD_DIR)/test_arena $(BUILD_DIR)/test_lexer $(BUILD_DIR)/test_parser $(BUILD_DIR)/test_middleware $(BUILD_DIR)/test_cookies $(BUILD_DIR)/test_database_registry $(BUILD_DIR)/test_testing
 TEST_INTEGRATION_BINS = $(BUILD_DIR)/test_jq $(BUILD_DIR)/test_lua $(BUILD_DIR)/test_mustache $(BUILD_DIR)/test_mustache_partials $(BUILD_DIR)/test_pg $(BUILD_DIR)/test_pipeline $(BUILD_DIR)/test_validate $(BUILD_DIR)/test_auth $(BUILD_DIR)/test_cache $(BUILD_DIR)/test_log
 TEST_SYSTEM_BINS = $(BUILD_DIR)/test_server $(BUILD_DIR)/test_e2e $(BUILD_DIR)/test_perf
 TEST_ALL_BINS = $(TEST_UNIT_BINS) $(TEST_INTEGRATION_BINS) $(TEST_SYSTEM_BINS)
@@ -199,6 +202,10 @@ test-integration: $(TEST_INTEGRATION_BINS)
 
 test-system: $(TEST_SYSTEM_BINS)
 	./test-runner.sh system $(TEST_SYSTEM_BINS)
+
+test-bdd-suite: $(BUILD_DIR)/wp install-middleware
+	@echo "Running BDD test suite..."
+	./build/wp test.wp --test
 
 test-leaks: $(TEST_ALL_BINS)
 	./test-runner.sh leaks $(TEST_ALL_BINS)
@@ -240,4 +247,4 @@ clean:
 	rm -rf $(BUILD_DIR)
 	rm -f ./middleware/*.so
 
-.PHONY: all clean test test-unit test-integration test-system test-perf test-analyze test-lint test-wp run run-debug run-express-test middleware install-middleware test-leaks test-leaks-unit test-leaks-integration test-leaks-system
+.PHONY: all clean test test-unit test-integration test-system test-bdd-suite test-perf test-analyze test-lint test-wp run run-debug run-express-test middleware install-middleware test-leaks test-leaks-unit test-leaks-integration test-leaks-system
