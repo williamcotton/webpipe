@@ -385,6 +385,7 @@ void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, i
 json_t *create_request_json(struct MHD_Connection *connection, 
                            const char *url, const char *method,
                            PostData *post_data);
+json_t *cleanup_response_json(json_t *json_data);
 int execute_pipeline_with_result(PipelineStep *pipeline, json_t *request, MemoryArena *arena, 
                                 json_t **final_response, int *response_code, char **content_type);
 int execute_pipeline(PipelineStep *pipeline, json_t *request, MemoryArena *arena);

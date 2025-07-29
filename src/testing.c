@@ -379,7 +379,8 @@ json_t *execute_route_pipeline(ASTNode *route_stmt, json_t *request,
     
     if (result == 0 && final_response) {
         *status_code = response_code;
-        return final_response;
+        // Clean up response to match production behavior
+        return cleanup_response_json(final_response);
     } else {
         // Error in pipeline execution
         *status_code = 500;

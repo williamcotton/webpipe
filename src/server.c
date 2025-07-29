@@ -582,6 +582,15 @@ static const char *get_first_error_type(json_t *json) {
     return json_string_value(type_json);
 }
 
+// Helper function to clean up response JSON for output (removes internal fields)
+json_t *cleanup_response_json(json_t *json_data) {
+    if (json_data) {
+        // Remove internal pipeline fields that shouldn't be in final response
+        json_object_del(json_data, "setCookies");
+    }
+    return json_data;
+}
+
 // Helper function to send response with flexible content type
 static enum MHD_Result send_response(struct MHD_Connection *connection, 
                                    json_t *json_data, int status_code, const char *content_type, MemoryArena *arena) {
@@ -610,8 +619,8 @@ static enum MHD_Result send_response(struct MHD_Connection *connection,
         }
     }
 
-    // delete the setCookies from the json_data
-    json_object_del(json_data, "setCookies");
+    // Clean up response JSON (removes internal fields like setCookies)
+    cleanup_response_json(json_data);
 
     // add the cookies to the mhd_response
     
