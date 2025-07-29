@@ -154,9 +154,6 @@ static json_t *make_request(const char *url, const char *method, const char *dat
 
 // Start the WP server in background
 static int start_server(void) {
-    // Set up test database before starting server
-    setup_test_database();
-    
     // Fork a child process to run the server
     server_pid = fork();
     
@@ -203,24 +200,19 @@ static void stop_server(void) {
         waitpid(server_pid, &status, 0);
         server_pid = 0;
     }
-    // Clean up test database
-    teardown_test_database();
 }
 
 void setUp(void) {
     // Set up function called before each test
-    // Make sure server is stopped
-    stop_server();
-    
-    // Start server for each test
-    if (start_server() != 0) {
-        TEST_FAIL_MESSAGE("Failed to start WP server");
-    }
+    // Server is already running, just reset test data (not the connection)
+    clear_test_data();
+    insert_test_data();
 }
 
 void tearDown(void) {
     // Tear down function called after each test
-    stop_server();
+    // Just clear data, keep connection alive for next test
+    clear_test_data();
 }
 
 static void test_e2e_simple_route(void) {
@@ -895,6 +887,17 @@ int main(void) {
     // Initialize curl
     curl_global_init(CURL_GLOBAL_DEFAULT);
     
+    // Set up test database connection once
+    setup_test_database();
+    
+    // Start server once for all tests
+    if (start_server() != 0) {
+        printf("Failed to start WP server for E2E tests\n");
+        teardown_test_database();
+        curl_global_cleanup();
+        return 1;
+    }
+    
     UNITY_BEGIN();
     
     RUN_TEST(test_e2e_simple_route);
@@ -919,8 +922,16 @@ int main(void) {
     RUN_TEST(test_cookies_with_http_requests);
     RUN_TEST(test_e2e_cookie_setting);
     
+    int result = UNITY_END();
+    
+    // Stop server after all tests
+    stop_server();
+    
+    // Clean up test database connection
+    teardown_test_database();
+    
     // Cleanup curl
     curl_global_cleanup();
     
-    return UNITY_END();
+    return result;
 }

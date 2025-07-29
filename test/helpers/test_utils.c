@@ -324,12 +324,16 @@ void insert_test_data(void) {
 void clear_test_data(void) {
     if (!test_db_connection) return;
     
-    // Clean up test data
-    const char *cleanup_sql = "DROP TABLE IF EXISTS teams CASCADE";
+    // Clean up test data (delete rows, keep tables)
+    const char *cleanup_sql = "DELETE FROM teams";
     
     PGresult *result = PQexec(test_db_connection, cleanup_sql);
     if (PQresultStatus(result) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Failed to clear test data: %s\n", PQerrorMessage(test_db_connection));
+        // Table might not exist yet, which is OK
+        // Don't print error for "relation does not exist"
+        if (!strstr(PQerrorMessage(test_db_connection), "does not exist")) {
+            fprintf(stderr, "Failed to clear test data: %s\n", PQerrorMessage(test_db_connection));
+        }
     }
     PQclear(result);
 }
