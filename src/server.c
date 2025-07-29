@@ -47,7 +47,7 @@ static void process_config_blocks(ASTNode *program) {
 }
 
 // Function to get middleware configuration
-static json_t *get_middleware_config(const char *middleware_name) {
+json_t *get_middleware_config(const char *middleware_name) {
     if (!runtime || !runtime->config_blocks) {
         return NULL;
     }
@@ -206,11 +206,11 @@ void jansson_arena_free(void *ptr) {
 }
 
 // Wrapper functions for middleware interface
-static void *arena_alloc_wrapper(void *arena, size_t size) {
+void *arena_alloc_wrapper(void *arena, size_t size) {
     return arena_alloc((MemoryArena*)arena, size);
 }
 
-static void arena_free_wrapper(void *arena) {
+void arena_free_wrapper(void *arena) {
     arena_free((MemoryArena*)arena);
 }
 

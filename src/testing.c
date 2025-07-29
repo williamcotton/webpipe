@@ -229,17 +229,113 @@ json_t *create_error_json(const char *message) {
 
 // Test execution functions
 json_t *execute_variable_test(ASTNode *exec_node, test_context_t *ctx) {
-    // TODO: Implement variable test execution
-    // This would find the variable in runtime->variables and execute it
-    printf("Variable test execution not yet implemented\n");
-    return json_object();
+    if (exec_node->type != AST_TEST_EXECUTION || 
+        exec_node->data.test_execution.type != TEST_EXEC_VARIABLE) {
+        fprintf(stderr, "Invalid variable test execution node\n");
+        return json_object();
+    }
+
+    char *middleware_type = exec_node->data.test_execution.data.variable.middleware_type;
+    char *variable_name = exec_node->data.test_execution.data.variable.variable_name;
+    char *input_json = exec_node->data.test_execution.data.variable.input_json;
+
+    // Look up the variable in runtime->variables
+    json_t *variable = json_object_get(runtime->variables, variable_name);
+    if (!variable) {
+        fprintf(stderr, "Variable not found: %s\n", variable_name);
+        return json_object();
+    }
+
+    // Find the middleware
+    Middleware *mw = find_middleware(middleware_type);
+    if (!mw) {
+        fprintf(stderr, "Middleware not found: %s\n", middleware_type);
+        return json_object();
+    }
+
+    // Parse input JSON if provided
+    json_t *input = json_object();
+    if (input_json) {
+        json_error_t error;
+        json_t *parsed_input = json_loads(input_json, 0, &error);
+        if (parsed_input) {
+            input = parsed_input;
+        } else {
+            fprintf(stderr, "Failed to parse input JSON: %s\n", error.text);
+        }
+    }
+
+    // Execute the variable through pipeline execution to get mock interception
+    // Create a single-step pipeline for the variable
+    PipelineStep *step = arena_alloc(ctx->test_arena, sizeof(PipelineStep));
+    step->middleware = arena_strdup(ctx->test_arena, middleware_type);
+    step->value = arena_strdup(ctx->test_arena, variable_name); 
+    step->is_variable = true;  // Mark as variable reference
+    step->next = NULL;
+
+    // Execute through pipeline system to get mock interception
+    json_t *result = NULL;
+    int response_code = 200;
+    char *content_type = NULL;
+    int ok = execute_pipeline_with_result(step, input, ctx->test_arena, 
+                                         &result, &response_code, &content_type);
+
+    return (ok == 0 && result) ? result : json_object();
 }
 
 json_t *execute_pipeline_test(ASTNode *exec_node, test_context_t *ctx) {
-    // TODO: Implement pipeline test execution
-    // This would find the pipeline definition and execute it
-    printf("Pipeline test execution not yet implemented\n");
-    return json_object();
+    if (exec_node->type != AST_TEST_EXECUTION || 
+        exec_node->data.test_execution.type != TEST_EXEC_PIPELINE) {
+        fprintf(stderr, "Invalid pipeline test execution node\n");
+        return json_object();
+    }
+
+    char *pipeline_name = exec_node->data.test_execution.data.pipeline.pipeline_name;
+    char *input_json = exec_node->data.test_execution.data.pipeline.input_json;
+
+    // Look up the pipeline definition in runtime->variables
+    json_t *pipeline_var = json_object_get(runtime->variables, pipeline_name);
+    if (!pipeline_var) {
+        fprintf(stderr, "Pipeline not found: %s\n", pipeline_name);
+        return json_object();
+    }
+
+    // Verify it's a pipeline definition
+    json_t *type_field = json_object_get(pipeline_var, "_type");
+    if (!json_is_string(type_field) || 
+        strcmp(json_string_value(type_field), "pipeline") != 0) {
+        fprintf(stderr, "Variable '%s' is not a pipeline definition\n", pipeline_name);
+        return json_object();
+    }
+
+    // Get pipeline AST node
+    ASTNode *pnode = (ASTNode *)(uintptr_t)json_integer_value(
+        json_object_get(pipeline_var, "_definition"));
+    if (!pnode || pnode->type != AST_PIPELINE_DEFINITION) {
+        fprintf(stderr, "Corrupted pipeline definition for '%s'\n", pipeline_name);
+        return json_object();
+    }
+
+    // Parse input JSON if provided, otherwise use empty object
+    json_t *input = json_object();
+    if (input_json) {
+        json_error_t error;
+        json_t *parsed_input = json_loads(input_json, 0, &error);
+        if (parsed_input) {
+            input = parsed_input;
+        } else {
+            fprintf(stderr, "Failed to parse input JSON: %s\n", error.text);
+        }
+    }
+
+    // Execute pipeline with mock interception through existing system
+    json_t *result = NULL;
+    int response_code = 200;
+    char *content_type = NULL;
+    int ok = execute_pipeline_with_result(pnode->data.pipeline_def.pipeline, input,
+                                         ctx->test_arena, &result, &response_code, &content_type);
+
+    return (ok == 0 && result) ? result : json_object();
 }
 
 json_t *create_test_request_json(const char *method, const char *url, json_t *test_input) {
@@ -292,11 +388,40 @@ json_t *execute_route_pipeline(ASTNode *route_stmt, json_t *request,
 }
 
 json_t *execute_route_test(ASTNode *exec_node, test_context_t *ctx, int *status_code) {
-    // TODO: Need to access the runtime to find matching routes
-    // This is a placeholder implementation
-    printf("Route test execution not yet implemented\n");
-    *status_code = 200;
-    return json_object();
+    if (exec_node->type != AST_TEST_EXECUTION || 
+        exec_node->data.test_execution.type != TEST_EXEC_HTTP_CALL) {
+        fprintf(stderr, "Invalid route test execution node\n");
+        *status_code = 500;
+        return json_object();
+    }
+
+    const char *method = exec_node->data.test_execution.data.http_call.method;
+    const char *url = exec_node->data.test_execution.data.http_call.path;
+
+    // Create synthetic request object (no real HTTP connection needed)
+    json_t *request = create_test_request_json(method, url, NULL);
+    
+    // Set test arena context
+    set_current_arena(ctx->test_arena);
+    
+    // Find matching route using existing server.c logic
+    for (int i = 0; i < runtime->program->data.program.statement_count; i++) {
+        ASTNode *stmt = runtime->program->data.program.statements[i];
+        if (stmt->type == AST_ROUTE_DEFINITION) {
+            if (strcmp(stmt->data.route_def.method, method) == 0) {
+                json_t *params = json_object_get(request, "params");
+                // Reuse existing match_route() function
+                if (match_route(stmt->data.route_def.route, url, params)) {
+                    // Execute route pipeline directly (bypassing HTTP layer)
+                    return execute_route_pipeline(stmt, request, ctx->test_arena, status_code);
+                }
+            }
+        }
+    }
+    
+    // Route not found
+    *status_code = 404;
+    return create_error_json("Route not found");
 }
 
 bool execute_it_block(ASTNode *it_node, test_context_t *ctx) {

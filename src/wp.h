@@ -378,6 +378,9 @@ extern WPRuntime *runtime;
 // Server internal function declarations
 int load_middleware(const char *name);
 Middleware *find_middleware(const char *name);
+json_t *get_middleware_config(const char *middleware_name);
+void *arena_alloc_wrapper(void *arena, size_t size);
+void arena_free_wrapper(void *arena);
 void collect_middleware_names_from_ast(ASTNode *node, char **middleware_names, int *middleware_count, int max_middleware);
 json_t *create_request_json(struct MHD_Connection *connection, 
                            const char *url, const char *method,
