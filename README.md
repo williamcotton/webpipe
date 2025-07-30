@@ -528,6 +528,147 @@ GET /test-partials
 - **Error Handling**: Missing partials are handled gracefully (rendered as empty strings)
 - **Variable Scope**: All mustache variables defined in your `.wp` file are available as partials
 
+### Fetch Middleware
+Makes HTTP requests to external APIs and services, enabling integration with third-party services and data aggregation from multiple sources.
+
+```wp
+# Basic GET request
+GET /test-fetch
+  |> fetch: `https://api.github.com/zen`
+
+# Override URL with fetchUrl from request data
+GET /test-fetch-override
+  |> jq: `{ fetchUrl: "https://api.github.com/zen" }`
+  |> fetch: `https://example.com`  # fetchUrl takes precedence
+
+# POST request with JSON body and custom headers
+GET /test-fetch-post
+  |> jq: `{
+    fetchMethod: "POST",
+    fetchBody: { name: "test", value: 123 },
+    fetchHeaders: { "Content-Type": "application/json" }
+  }`
+  |> fetch: `https://httpbin.org/post`
+
+# Store result with custom name
+GET /test-fetch-named
+  |> jq: `{ resultName: "apiCall" }`
+  |> fetch: `https://api.github.com/zen`
+  |> jq: `{ 
+    response: .data.apiCall.response,
+    status: .data.apiCall.status,
+    success: (.data.apiCall.status == 200)
+  }`
+
+# Request with custom timeout
+GET /test-fetch-timeout
+  |> jq: `{ fetchTimeout: 5 }`
+  |> fetch: `https://httpbin.org/delay/10`
+```
+
+**Fetch Configuration Options:**
+- `fetchUrl`: Override the URL specified in the fetch step
+- `fetchMethod`: HTTP method (GET, POST, PUT, DELETE, PATCH) - defaults to GET
+- `fetchHeaders`: Object containing HTTP headers to send
+- `fetchBody`: Request body data (automatically JSON-encoded for POST/PUT/PATCH requests)
+- `fetchTimeout`: Request timeout in seconds (overrides global config)
+- `fetchQuery`: Query parameters to append to URL (not yet implemented)
+- `resultName`: Custom name for storing the result (default: stores directly in `data`)
+
+**Response Format:**
+The fetch middleware adds the HTTP response to your data. For unnamed results:
+
+```json
+{
+  "data": {
+    "response": "API response body or parsed JSON",
+    "status": 200,
+    "headers": {
+      "content-type": "application/json",
+      "server": "nginx"
+    }
+  }
+}
+```
+
+For named results (with `resultName`):
+
+```json
+{
+  "data": {
+    "apiCall": {
+      "response": "API response body or parsed JSON", 
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      }
+    }
+  }
+}
+```
+
+**Response Body Parsing:**
+- JSON responses are automatically parsed into objects/arrays
+- Non-JSON responses are stored as strings
+- Empty responses are stored as empty strings
+
+**Error Handling:**
+Network errors, timeouts, and HTTP errors follow the standardized WebPipe error format:
+
+```wp
+GET /test-fetch-error
+  |> fetch: `https://nonexistent-domain-12345.com`
+  |> result
+    ok(200):
+      |> jq: `{
+        success: true,
+        data: .data.response
+      }`
+    networkError(500):
+      |> jq: `{
+        error: "Network error",
+        message: .errors[0].message,
+        url: .errors[0].url
+      }`
+    httpError(400):
+      |> jq: `{
+        error: "HTTP error", 
+        status: .errors[0].status,
+        message: .errors[0].message
+      }`
+    timeoutError(504):
+      |> jq: `{
+        error: "Request timeout",
+        message: .errors[0].message
+      }`
+```
+
+**Error Types:**
+- `networkError`: Connection failures, DNS resolution, SSL errors
+- `httpError`: HTTP 4xx/5xx status codes  
+- `timeoutError`: Request timeouts
+- Each error includes `type`, `message`, and contextual fields like `url` or `status`
+
+**Global Configuration:**
+```wp
+config fetch {
+  timeout: 30                    # Default timeout in seconds
+  connectTimeout: 10             # Connection timeout
+  followRedirects: true          # Follow HTTP redirects
+  maxRedirects: 5               # Maximum redirect count
+  userAgent: "WebPipe/1.0"      # User-Agent header
+  allowedDomains: ["api.github.com", "httpbin.org"]  # Domain whitelist (not yet implemented)
+  blockedDomains: ["malicious.com"]                  # Domain blacklist (not yet implemented)
+}
+```
+
+**Use Cases:**
+- **API Integration**: Fetch data from REST APIs and GraphQL endpoints
+- **Data Aggregation**: Combine data from multiple external sources in a single pipeline
+- **Webhooks**: Make callbacks to external services with request data
+- **Content Fetching**: Retrieve remote content for processing or templating
+- **Service Communication**: Inter-service communication in microservice architectures
+
 ## HTTP Methods Support
 
 WebPipe supports all standard HTTP methods with proper request body handling:
