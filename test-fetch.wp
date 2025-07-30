@@ -1,0 +1,38 @@
+# Test Fetch Middleware
+
+## Basic GET request
+GET /test-fetch
+  |> fetch: `https://api.github.com/zen`
+
+## GET with fetchUrl override
+GET /test-fetch-override
+  |> jq: `{ fetchUrl: "https://api.github.com/zen" }`
+  |> fetch: `https://example.com`
+
+## POST with body
+GET /test-fetch-post
+  |> jq: `{
+    fetchMethod: "POST",
+    fetchBody: { name: "test", value: 123 },
+    fetchHeaders: { "Content-Type": "application/json" }
+  }`
+  |> fetch: `https://api.github.com/zen`
+
+## Named result
+GET /test-fetch-named
+  |> jq: `{ resultName: "apiCall" }`
+  |> fetch: `https://api.github.com/zen`
+  |> jq: `{ 
+    response: .data.apiCall.response,
+    status: .data.apiCall.status,
+    success: (.data.apiCall.status == 200)
+  }`
+
+## Test error handling
+GET /test-fetch-error
+  |> fetch: `https://nonexistent-domain-12345.com`
+
+## Test timeout (if httpbin is slow)
+GET /test-fetch-timeout
+  |> jq: `{ fetchTimeout: 1 }`
+  |> fetch: `https://httpbin.org/delay/5`
