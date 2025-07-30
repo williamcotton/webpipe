@@ -76,7 +76,7 @@ else ifeq ($(PLATFORM),DARWIN)
 endif
 
 # Middleware targets
-middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so $(BUILD_DIR)/mustache.so $(BUILD_DIR)/validate.so $(BUILD_DIR)/auth.so $(BUILD_DIR)/cache.so $(BUILD_DIR)/log.so $(BUILD_DIR)/fetch.so
+middleware: $(BUILD_DIR) $(BUILD_DIR)/jq.so $(BUILD_DIR)/lua.so $(BUILD_DIR)/pg.so $(BUILD_DIR)/mustache.so $(BUILD_DIR)/validate.so $(BUILD_DIR)/auth.so $(BUILD_DIR)/cache.so $(BUILD_DIR)/log.so $(BUILD_DIR)/fetch.so $(BUILD_DIR)/debug.so
 
 $(BUILD_DIR)/jq.so: $(MIDDLEWARE_DIR)/jq.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -ljq
@@ -104,6 +104,9 @@ $(BUILD_DIR)/log.so: $(MIDDLEWARE_DIR)/log.c
 
 $(BUILD_DIR)/fetch.so: $(MIDDLEWARE_DIR)/fetch.c
 	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson -lcurl
+
+$(BUILD_DIR)/debug.so: $(MIDDLEWARE_DIR)/debug.c
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ $< -ljansson
 
 # Install middleware to runtime directory
 install-middleware: middleware
