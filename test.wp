@@ -1066,3 +1066,503 @@ GET /test-fetch-error
 GET /test-fetch-timeout
   |> jq: `{ fetchTimeout: 1 }`
   |> fetch: `https://httpbin.org/delay/5`
+
+# Contentful Integration (Phase 2)
+
+## All blog articles (matching F# allArticles function)
+GET /contentful/articles
+  |> lua: `
+    local spaceId = getEnv("CONTENTFUL_SPACE")
+    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
+    
+    if not spaceId or not token then
+      return {
+        errors = {{
+          type = "configError",
+          message = "Missing Contentful configuration: CONTENTFUL_SPACE and CONTENTFUL_ACCESS_TOKEN required"
+        }}
+      }
+    end
+    
+    return {
+      fetchUrl = "https://cdn.contentful.com/spaces/" .. spaceId .. "/entries?content_type=blogPost&fields.hidden=false&order=-fields.publishedDate",
+      fetchHeaders = {
+        ["Authorization"] = "Bearer " .. token
+      }
+    }
+  `
+  |> fetch: `placeholder`
+  |> lua: `
+    if request.data and request.data.response then
+      local entries = request.data.response.items or {}
+      
+      -- Trim body content like the F# version (take first 4 content nodes)
+      local processedEntries = {}
+      for i, entry in ipairs(entries) do
+        local fields = entry.fields or {}
+        local body = fields.body or {}
+        local content = body.content or {}
+        
+        -- Take only first 4 content nodes for preview
+        local trimmedContent = {}
+        for j = 1, math.min(4, #content) do
+          table.insert(trimmedContent, content[j])
+        end
+        
+        local trimmedBody = {
+          content = trimmedContent,
+          nodeType = body.nodeType,
+          data = body.data
+        }
+        
+        local processedFields = {}
+        for k, v in pairs(fields) do
+          processedFields[k] = v
+        end
+        processedFields.body = trimmedBody
+        
+        table.insert(processedEntries, {
+          fields = processedFields,
+          sys = entry.sys
+        })
+      end
+      
+      return {
+        articles = processedEntries,
+        total = request.data.response.total or 0,
+        message = "Blog articles retrieved successfully"
+      }
+    else
+      return {
+        error = "Failed to fetch from Contentful",
+        details = request.data
+      }
+    end
+  `
+  |> mustache: `
+    <html>
+      <head>
+        <title>William Cotton - Blog Articles</title>
+        <style>
+          body { font-family: Georgia, serif; max-width: 1000px; margin: 0 auto; padding: 40px 20px; }
+          .article-list { display: grid; gap: 30px; }
+          .article-preview { border: 1px solid #ddd; padding: 25px; border-radius: 8px; }
+          .article-preview h2 { margin-top: 0; }
+          .article-meta { color: #666; font-size: 14px; margin: 15px 0; }
+          .read-more { color: #007acc; text-decoration: none; font-weight: bold; }
+          .read-more:hover { text-decoration: underline; }
+          .error { color: red; background: #ffe6e6; padding: 20px; border: 1px solid red; }
+        </style>
+      </head>
+      <body>
+        <header>
+          <h1>William Cotton - Blog</h1>
+          <p>{{total}} articles</p>
+        </header>
+        
+        {{#error}}
+          <div class="error">{{error}}</div>
+        {{/error}}
+        
+        <div class="article-list">
+          {{#articles}}
+            <article class="article-preview">
+              <h2><a href="/contentful/article/{{fields.slug}}" class="read-more">{{fields.title}}</a></h2>
+              <div class="article-meta">
+                Published: {{fields.publishedDate}}<br>
+                {{#fields.author}}Author: {{fields.author}}<br>{{/fields.author}}
+                {{#fields.tags}}Tags: {{fields.tags}}<br>{{/fields.tags}}
+              </div>
+              {{#fields.excerpt}}<p>{{fields.excerpt}}</p>{{/fields.excerpt}}
+              <a href="/contentful/article/{{fields.slug}}" class="read-more">Read More →</a>
+            </article>
+          {{/articles}}
+          {{^articles}}
+            <p>No articles found.</p>
+          {{/articles}}
+        </div>
+      </body>
+    </html>
+  `
+
+## Blog article by slug (matching F# article function)  
+GET /contentful/article/:slug
+  |> lua: `
+    local spaceId = getEnv("CONTENTFUL_SPACE")
+    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
+    local slug = request.params.slug
+    
+    if not spaceId or not token then
+      return {
+        errors = {{
+          type = "configError", 
+          message = "Missing Contentful configuration"
+        }}
+      }
+    end
+    
+    return {
+      fetchUrl = "https://cdn.contentful.com/spaces/" .. spaceId .. "/entries?content_type=blogPost&fields.slug[in]=" .. slug,
+      fetchHeaders = {
+        ["Authorization"] = "Bearer " .. token
+      }
+    }
+  `
+  |> fetch: `placeholder`
+  |> lua: `
+    if request.data and request.data.response and request.data.response.items then
+      local items = request.data.response.items
+      if #items > 0 then
+        local entry = items[1]
+        local fields = entry.fields or {}
+        
+        -- Enhanced rich text processing for blog posts
+        local function renderRichText(richTextObj)
+          if not richTextObj or not richTextObj.content then
+            return ""
+          end
+          
+          local html = ""
+          for _, node in ipairs(richTextObj.content) do
+            if node.nodeType == "paragraph" and node.content then
+              html = html .. "<p>"
+              for _, textNode in ipairs(node.content) do
+                if textNode.nodeType == "text" then
+                  local value = textNode.value or ""
+                  -- Handle basic text formatting
+                  if textNode.marks then
+                    for _, mark in ipairs(textNode.marks) do
+                      if mark.type == "bold" then
+                        value = "<strong>" .. value .. "</strong>"
+                      elseif mark.type == "italic" then
+                        value = "<em>" .. value .. "</em>"
+                      elseif mark.type == "code" then
+                        value = "<code>" .. value .. "</code>"
+                      end
+                    end
+                  end
+                  html = html .. value
+                elseif textNode.nodeType == "hyperlink" then
+                  local linkText = ""
+                  if textNode.content then
+                    for _, linkContent in ipairs(textNode.content) do
+                      if linkContent.nodeType == "text" then
+                        linkText = linkText .. (linkContent.value or "")
+                      end
+                    end
+                  end
+                  local uri = textNode.data and textNode.data.uri or "#"
+                  html = html .. "<a href=\"" .. uri .. "\">" .. linkText .. "</a>"
+                end
+              end
+              html = html .. "</p>\n"
+            elseif node.nodeType == "heading-1" and node.content then
+              html = html .. "<h1>"
+              for _, textNode in ipairs(node.content) do
+                if textNode.nodeType == "text" then
+                  html = html .. (textNode.value or "")
+                end
+              end
+              html = html .. "</h1>\n"
+            elseif node.nodeType == "heading-2" and node.content then
+              html = html .. "<h2>"
+              for _, textNode in ipairs(node.content) do
+                if textNode.nodeType == "text" then
+                  html = html .. (textNode.value or "")
+                end
+              end
+              html = html .. "</h2>\n"
+            elseif node.nodeType == "heading-3" and node.content then
+              html = html .. "<h3>"
+              for _, textNode in ipairs(node.content) do
+                if textNode.nodeType == "text" then
+                  html = html .. (textNode.value or "")
+                end
+              end
+              html = html .. "</h3>\n"
+            elseif node.nodeType == "unordered-list" and node.content then
+              html = html .. "<ul>\n"
+              for _, listItem in ipairs(node.content) do
+                if listItem.nodeType == "list-item" and listItem.content then
+                  html = html .. "<li>"
+                  for _, itemContent in ipairs(listItem.content) do
+                    if itemContent.nodeType == "paragraph" and itemContent.content then
+                      for _, textNode in ipairs(itemContent.content) do
+                        if textNode.nodeType == "text" then
+                          html = html .. (textNode.value or "")
+                        end
+                      end
+                    end
+                  end
+                  html = html .. "</li>\n"
+                end
+              end
+              html = html .. "</ul>\n"
+            elseif node.nodeType == "ordered-list" and node.content then
+              html = html .. "<ol>\n"
+              for _, listItem in ipairs(node.content) do
+                if listItem.nodeType == "list-item" and listItem.content then
+                  html = html .. "<li>"
+                  for _, itemContent in ipairs(listItem.content) do
+                    if itemContent.nodeType == "paragraph" and itemContent.content then
+                      for _, textNode in ipairs(itemContent.content) do
+                        if textNode.nodeType == "text" then
+                          html = html .. (textNode.value or "")
+                        end
+                      end
+                    end
+                  end
+                  html = html .. "</li>\n"
+                end
+              end
+              html = html .. "</ol>\n"
+            elseif node.nodeType == "blockquote" and node.content then
+              html = html .. "<blockquote>"
+              for _, quoteContent in ipairs(node.content) do
+                if quoteContent.nodeType == "paragraph" and quoteContent.content then
+                  html = html .. "<p>"
+                  for _, textNode in ipairs(quoteContent.content) do
+                    if textNode.nodeType == "text" then
+                      html = html .. (textNode.value or "")
+                    end
+                  end
+                  html = html .. "</p>"
+                end
+              end
+              html = html .. "</blockquote>\n"
+            end
+          end
+          return html
+        end
+        
+        return {
+          title = fields.title or "Untitled",
+          bodyHtml = renderRichText(fields.body),
+          slug = fields.slug or "",
+          publishedDate = fields.publishedDate or entry.sys.createdAt,
+          author = fields.author or "William Cotton",
+          excerpt = fields.excerpt or "",
+          tags = fields.tags or {},
+          seoDescription = fields.seoDescription or fields.excerpt or "",
+          contentType = entry.sys.contentType.sys.id,
+          found = true
+        }
+      else
+        return {
+          found = false,
+          message = "Article not found with slug: " .. slug
+        }
+      end
+    else
+      return {
+        error = "Failed to fetch article from Contentful",
+        slug = slug
+      }
+    end
+  `
+  |> mustache: `
+    <html>
+      <head>
+        <title>{{#found}}{{title}} - William Cotton{{/found}}{{^found}}Article Not Found{{/found}}</title>
+        {{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}
+        <meta name="author" content="{{author}}">
+        <style>
+          body { font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 40px 20px; line-height: 1.6; }
+          .article-header { margin-bottom: 40px; }
+          .article-meta { color: #666; font-size: 14px; margin: 20px 0; }
+          .article-content { font-size: 18px; }
+          .article-content h1, .article-content h2, .article-content h3 { margin-top: 40px; margin-bottom: 20px; }
+          .article-content blockquote { border-left: 4px solid #007acc; padding-left: 20px; margin: 30px 0; font-style: italic; }
+          .article-content code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-family: Monaco, monospace; }
+          .tags { margin-top: 30px; }
+          .tag { background: #f0f0f0; padding: 4px 8px; margin-right: 8px; border-radius: 3px; font-size: 12px; }
+          .back-link { color: #007acc; text-decoration: none; }
+          .back-link:hover { text-decoration: underline; }
+          .error { color: red; background: #ffe6e6; padding: 20px; border: 1px solid red; }
+          .not-found { text-align: center; padding: 60px 20px; }
+        </style>
+      </head>
+      <body>
+        {{#found}}
+          <article>
+            <header class="article-header">
+              <h1>{{title}}</h1>
+              <div class="article-meta">
+                By {{author}} on {{publishedDate}}<br>
+                {{#excerpt}}<em>{{excerpt}}</em>{{/excerpt}}
+              </div>
+            </header>
+            
+            <div class="article-content">
+              {{{bodyHtml}}}
+            </div>
+            
+            {{#tags}}
+            <div class="tags">
+              <strong>Tags:</strong>
+              {{#tags}}<span class="tag">{{.}}</span>{{/tags}}
+            </div>
+            {{/tags}}
+            
+            <div style="margin-top: 50px; padding-top: 20px; border-top: 1px solid #eee;">
+              <a href="/contentful/articles" class="back-link">← Back to all articles</a>
+            </div>
+          </article>
+        {{/found}}
+        {{^found}}
+          <div class="not-found">
+            <h1>Article Not Found</h1>
+            <p>{{message}}</p>
+            <a href="/contentful/articles" class="back-link">← Back to all articles</a>
+          </div>
+        {{/found}}
+        {{#error}}
+          <div class="error">
+            <h2>Error</h2>
+            <p>{{error}}</p>
+          </div>
+        {{/error}}
+      </body>
+    </html>
+  `
+
+## Page by slug (matching F# page function)
+GET /contentful/page/:slug
+  |> lua: `
+    local spaceId = getEnv("CONTENTFUL_SPACE")
+    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
+    local slug = request.params.slug
+    
+    if not spaceId or not token then
+      return {
+        errors = {{
+          type = "configError", 
+          message = "Missing Contentful configuration"
+        }}
+      }
+    end
+    
+    return {
+      fetchUrl = "https://cdn.contentful.com/spaces/" .. spaceId .. "/entries?content_type=page&fields.slug[in]=" .. slug,
+      fetchHeaders = {
+        ["Authorization"] = "Bearer " .. token
+      }
+    }
+  `
+  |> fetch: `placeholder`
+  |> lua: `
+    if request.data and request.data.response and request.data.response.items then
+      local items = request.data.response.items
+      if #items > 0 then
+        local entry = items[1]
+        local fields = entry.fields or {}
+        
+        -- Basic rich text processing for pages
+        local function renderRichText(richTextObj)
+          if not richTextObj or not richTextObj.content then
+            return ""
+          end
+          
+          local html = ""
+          for _, node in ipairs(richTextObj.content) do
+            if node.nodeType == "paragraph" and node.content then
+              html = html .. "<p>"
+              for _, textNode in ipairs(node.content) do
+                if textNode.nodeType == "text" then
+                  html = html .. (textNode.value or "")
+                end
+              end
+              html = html .. "</p>\n"
+            elseif node.nodeType == "heading-1" and node.content then
+              html = html .. "<h1>"
+              for _, textNode in ipairs(node.content) do
+                if textNode.nodeType == "text" then
+                  html = html .. (textNode.value or "")
+                end
+              end
+              html = html .. "</h1>\n"
+            elseif node.nodeType == "heading-2" and node.content then
+              html = html .. "<h2>"
+              for _, textNode in ipairs(node.content) do
+                if textNode.nodeType == "text" then
+                  html = html .. (textNode.value or "")
+                end
+              end
+              html = html .. "</h2>\n"
+            end
+          end
+          return html
+        end
+        
+        return {
+          title = fields.title or "Untitled",
+          bodyHtml = renderRichText(fields.body),
+          slug = fields.slug or "",
+          seoDescription = fields.seoDescription or "",
+          contentType = entry.sys.contentType.sys.id,
+          found = true
+        }
+      else
+        return {
+          found = false,
+          message = "Page not found with slug: " .. slug
+        }
+      end
+    else
+      return {
+        error = "Failed to fetch page from Contentful",
+        slug = slug
+      }
+    end
+  `
+  |> mustache: `
+    <html>
+      <head>
+        <title>{{#found}}{{title}} - William Cotton{{/found}}{{^found}}Page Not Found{{/found}}</title>
+        {{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}
+        <style>
+          body { font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 40px 20px; line-height: 1.6; }
+          .page-content { font-size: 18px; }
+          .error { color: red; background: #ffe6e6; padding: 20px; border: 1px solid red; }
+          .not-found { text-align: center; padding: 60px 20px; }
+          .back-link { color: #007acc; text-decoration: none; }
+          .back-link:hover { text-decoration: underline; }
+        </style>
+      </head>
+      <body>
+        {{#found}}
+          <div class="page-content">
+            <h1>{{title}}</h1>
+            {{{bodyHtml}}}
+          </div>
+        {{/found}}
+        {{^found}}
+          <div class="not-found">
+            <h1>Page Not Found</h1>
+            <p>{{message}}</p>
+            <a href="/" class="back-link">← Back to home</a>
+          </div>
+        {{/found}}
+        {{#error}}
+          <div class="error">
+            <h2>Error</h2>
+            <p>{{error}}</p>
+          </div>
+        {{/error}}
+      </body>
+    </html>
+  `
+
+## Test route for Contentful configuration
+GET /contentful/config
+  |> lua: `
+    local spaceId = getEnv("CONTENTFUL_SPACE")
+    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
+    
+    return {
+      hasSpaceId = (spaceId ~= nil),
+      hasToken = (token ~= nil),
+      spaceId = spaceId,
+      message = "Contentful configuration status"
+    }
+  `
