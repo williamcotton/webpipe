@@ -1003,6 +1003,31 @@ GET /test/auto-naming/:id
 GET /test/legacy/:id
   |> pg: `SELECT 1 as id, 'Legacy User' as name`
 
+# Test getEnv function
+
+GET /test-get-env
+  |> lua: `
+    local homeDir = getEnv("HOME")
+    local nonexistent = getEnv("NONEXISTENT_VAR")
+    local withDefault = getEnv("NONEXISTENT_VAR", "default_value")
+    local path = getEnv("PATH")
+    local dotenvVar = getEnv("TEST_DOTENV_VAR")
+    local contentfulSpace = getEnv("CONTENTFUL_SPACE")
+    local contentfulToken = getEnv("CONTENTFUL_ACCESS_TOKEN")
+    
+    return {
+      message = "getEnv function test including .env file support",
+      home = homeDir,
+      nonexistent = nonexistent,
+      withDefault = withDefault,
+      hasPath = (path ~= nil),
+      pathLength = path and string.len(path) or 0,
+      dotenvVar = dotenvVar,
+      hasContentfulSpace = (contentfulSpace ~= nil),
+      hasContentfulToken = (contentfulToken ~= nil)
+    }
+  `
+
 # Test Fetch Middleware
 
 ## Basic GET request

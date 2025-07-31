@@ -33,6 +33,7 @@ static void jansson_to_lua(lua_State *L, json_t *json);
 static json_t *lua_to_jansson(lua_State *L, int index);
 static json_t *lua_to_jansson_with_depth(lua_State *L, int index, int depth);
 static int lua_execute_sql(lua_State *L);
+static int lua_get_env(lua_State *L);
 json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code, json_t *middleware_config, char **contentType, json_t *variables);
 
 // Conversion functions
@@ -266,6 +267,47 @@ static int lua_execute_sql(lua_State *L) {
     return 1; // Return result table
 }
 
+// Lua C function for getEnv - callable from Lua scripts
+static int lua_get_env(lua_State *L) {
+    // Get arguments: varName (string) and optional defaultValue (string)
+    if (lua_gettop(L) < 1) {
+        lua_pushnil(L);
+        return 1;
+    }
+    
+    // First argument must be variable name string
+    if (!lua_isstring(L, 1)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    
+    const char *var_name = lua_tostring(L, 1);
+    if (!var_name) {
+        lua_pushnil(L);
+        return 1;
+    }
+    
+    // Get environment variable
+    const char *env_value = getenv(var_name);
+    
+    if (env_value) {
+        // Environment variable exists, return its value
+        lua_pushstring(L, env_value);
+        return 1;
+    } else {
+        // Environment variable doesn't exist, check for default value
+        if (lua_gettop(L) >= 2 && lua_isstring(L, 2)) {
+            // Return default value
+            lua_pushvalue(L, 2);
+            return 1;
+        } else {
+            // No default value, return nil
+            lua_pushnil(L);
+            return 1;
+        }
+    }
+}
+
 // Middleware execute function
 json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code, json_t *middleware_config, char **contentType, json_t *variables) {
   (void)free_func; // Suppress unused parameter warning
@@ -337,6 +379,10 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
         lua_pushcfunction(L, lua_execute_sql);
         lua_setglobal(L, "executeSql");
     }
+    
+    // Always register getEnv function
+    lua_pushcfunction(L, lua_get_env);
+    lua_setglobal(L, "getEnv");
     
     // Execute lua code
     if (luaL_dostring(L, arena_code) != LUA_OK) {

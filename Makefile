@@ -184,6 +184,9 @@ $(BUILD_DIR)/test_log: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integratio
 $(BUILD_DIR)/test_fetch: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_fetch.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_fetch.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS) -lcurl -lmicrohttpd
 
+$(BUILD_DIR)/test_lua_getenv: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/integration/test_lua_getenv.c $(TEST_COMMON_SOURCES)
+	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/integration/test_lua_getenv.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
+
 $(BUILD_DIR)/test_server: $(BUILD_DIR)/unity.o $(DOTENV_OBJ) $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES)
 	$(CC) $(TEST_CFLAGS) -o $@ $(TEST_DIR)/system/test_server.c $(TEST_COMMON_SOURCES) $(BUILD_DIR)/unity.o $(TEST_LDFLAGS)
 
