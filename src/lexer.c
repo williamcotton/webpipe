@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,19 +67,45 @@ Token lexer_make_token(Lexer *lexer, TokenType type, const char *value) {
 
 Token lexer_read_string(Lexer *lexer) {
   char quote_char = lexer_peek(lexer); // Remember the quote character (` or ")
-  lexer_advance(lexer); // Skip opening quote
+  bool is_triple_quote = false;
+  
+  // Check for triple double quotes
+  if (quote_char == '"' && 
+      lexer->source[lexer->current + 1] == '"' && 
+      lexer->source[lexer->current + 2] == '"') {
+    is_triple_quote = true;
+    lexer_advance(lexer); // Skip first "
+    lexer_advance(lexer); // Skip second "
+    lexer_advance(lexer); // Skip third "
+  } else {
+    lexer_advance(lexer); // Skip opening quote
+  }
+  
   int start = lexer->current;
 
-  while (lexer_peek(lexer) != '\0') {
-    if (lexer_peek(lexer) == '\\') {
-      lexer_advance(lexer); // Skip escape character
-      if (lexer_peek(lexer) != '\0') {
-        lexer_advance(lexer); // Skip escaped character
+  if (is_triple_quote) {
+    // For triple quotes, look for the closing """
+    while (lexer_peek(lexer) != '\0') {
+      if (lexer_peek(lexer) == '"' && 
+          lexer->source[lexer->current + 1] == '"' && 
+          lexer->source[lexer->current + 2] == '"') {
+        break;
       }
-    } else if (lexer_peek(lexer) == quote_char) {
-      break;
-    } else {
       lexer_advance(lexer);
+    }
+  } else {
+    // Original logic for single quotes
+    while (lexer_peek(lexer) != '\0') {
+      if (lexer_peek(lexer) == '\\') {
+        lexer_advance(lexer); // Skip escape character
+        if (lexer_peek(lexer) != '\0') {
+          lexer_advance(lexer); // Skip escaped character
+        }
+      } else if (lexer_peek(lexer) == quote_char) {
+        break;
+      } else {
+        lexer_advance(lexer);
+      }
     }
   }
 
@@ -87,7 +114,13 @@ Token lexer_read_string(Lexer *lexer) {
   strncpy(value, lexer->source + start, (size_t)length);
   value[length] = '\0';
 
-  lexer_advance(lexer); // Skip closing quote
+  if (is_triple_quote) {
+    lexer_advance(lexer); // Skip first closing "
+    lexer_advance(lexer); // Skip second closing "
+    lexer_advance(lexer); // Skip third closing "
+  } else {
+    lexer_advance(lexer); // Skip closing quote
+  }
 
   Token token = lexer_make_token(lexer, TOKEN_STRING, value);
   free(value);
