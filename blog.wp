@@ -1,5 +1,11 @@
 # Contentful Integration (Phase 2)
 
+config cache {
+  enabled: true
+  defaultTtl: 60
+  maxCacheSize: 10485760
+}
+
 mustache baseLayout = `
 <!DOCTYPE html>
 <html lang="en">
@@ -282,6 +288,10 @@ hljs.highlightAll();
 
 ## All blog articles (matching F# allArticles function)
 GET /contentful/articles
+  |> cache: `
+    ttl: 30
+    enabled: true
+  `
   |> lua: `
     local spaceId = getEnv("CONTENTFUL_SPACE")
     local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
@@ -386,6 +396,11 @@ GET /contentful/articles
 
 ## Blog article by slug (matching F# article function)  
 GET /contentful/article/:slug
+  |> cache: `
+    keyTemplate: contentful-article-{params.slug}
+    ttl: 30
+    enabled: true
+  `
   |> lua: `
     local spaceId = getEnv("CONTENTFUL_SPACE")
     local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
@@ -711,6 +726,7 @@ GET /contentful/article/:slug
       }
     end
   `
+  |> debug: `cache`
   |> mustache: `
     {{<blogLayout}}
       {{$title}}{{#found}}{{title}} - William Cotton{{/found}}{{^found}}Article Not Found{{/found}}{{/title}}
