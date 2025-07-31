@@ -85,7 +85,6 @@ static void config_cleanup(void) {
     
     for (int i = 0; i < runtime->config_count; i++) {
         free(runtime->config_blocks[i].name);
-        json_decref(runtime->config_blocks[i].config_json);
     }
     free(runtime->config_blocks);
     runtime->config_blocks = NULL;
@@ -1164,10 +1163,10 @@ static int handle_pipeline_variable(PipelineStep *step, json_t **current, Memory
     return 0;
 }
 
-// Helper function to prepare middleware input
 static json_t *prepare_middleware_input(json_t *current, json_t *original_req, 
                                        const char *variable_name) {
-    json_t *middleware_input = json_deep_copy(current);
+    // Skip deep copy to avoid arena/malloc conflicts - use current directly
+    json_t *middleware_input = current;
     
     // Ensure originalRequest is available to middleware for template resolution, etc.
     if (!json_object_get(middleware_input, "originalRequest")) {
@@ -1279,13 +1278,26 @@ static void merge_step_result(json_t **current, json_t *result, bool is_last_ste
         *current = result;
     } else if (json_is_object(result) && json_is_object(*current)) {
         // Intermediate step: merge the middleware result with the current state
-        // This preserves context (method, path, params, etc.) and accumulated data
+        // Create new object to avoid arena/malloc memory conflicts
+        json_t *merged = json_object();
+        if (!merged) {
+            *current = result;  // Fallback to replacement
+            return;
+        }
+        
+        // First copy all keys from current
         const char *key;
         json_t *value;
-        json_object_foreach(result, key, value) {
-            json_object_set(*current, key, value);
+        json_object_foreach(*current, key, value) {
+            json_object_set(merged, key, value);
         }
-        // current now contains the merged state
+        
+        // Then copy/overwrite with keys from result
+        json_object_foreach(result, key, value) {
+            json_object_set(merged, key, value);
+        }
+        
+        *current = merged;
     } else {
         // Fallback to replacement if either is not an object
         *current = result;
