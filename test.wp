@@ -310,106 +310,46 @@ hljs.registerLanguage('webpipe', function(hljs) {
     name: 'WebPipe',
     case_insensitive: false,
     contains: [
-      // Comments first
+      // Comments
       hljs.HASH_COMMENT_MODE,
-      
-      // Pipeline operator - must come before other operators
+
+      // HTTP Methods
+      {
+        scope: 'keyword',
+        match: '\\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|describe|it|with|when|then|and|executing|calling|input|output|equals|status|mock|returning)\\b'
+      },
+
+      // Config / pipeline keywords
+      {
+        scope: 'keyword',
+        match: '\\b(config|pipeline)\\b'
+      },
+
+      {
+        scope: 'keyword',
+        match: '^\\s*[a-zA-Z_][a-zA-Z0-9_]*(?=\\s+[a-zA-Z_][a-zA-Z0-9_]*\\s*=)'
+      },
+
       {
         scope: 'operator',
-        match: '\\\\|\\\\>'
+        match: '\\|>'
       },
-      
-      // HTTP Methods at start of line
+
       {
         scope: 'keyword',
-        begin: '^\\\\s*(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\\\b',
-        end: '$',
-        contains: [
-          {
-            scope: 'string',
-            match: '/[^\\\\s]*',
-            contains: [
-              {
-                scope: 'variable',
-                match: ':[a-zA-Z_][a-zA-Z0-9_]*'
-              }
-            ]
-          }
-        ]
+        match: '\\b[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*:)'
       },
-      
-      // Config and pipeline keywords
+
+      // Route paths
       {
-        scope: 'keyword',
-        match: '\\\\b(config|pipeline)\\\\b'
-      },
-      
-      // Variable assignments (middleware type before variable name)
-      {
-        scope: 'keyword',
-        match: '^\\\\s*(pg|mustache|lua|jq)(?=\\\\s+[a-zA-Z_][a-zA-Z0-9_]*\\\\s*=)'
-      },
-      
-      // Middleware functions (word before colon)
-      {
-        scope: 'keyword',
-        match: '\\\\b(jq|lua|pg|mustache|validate|auth|cache|log|fetch|pipeline|result)(?=\\\\s*:)'
-      },
-      
-      // Backtick strings - more specific patterns first
-      {
-        begin: '\\\\b(lua|jq|pg|mustache|validate):\\\\s*\`',
-        end: '\`',
         scope: 'string',
+        match: '/[^\\s]*',
         contains: [
           {
             scope: 'variable',
-            match: '\\\\.[a-zA-Z_][a-zA-Z0-9_]*|\\\\$[a-zA-Z_][a-zA-Z0-9_]*'
+            match: ':[a-zA-Z_][a-zA-Z0-9_]*'
           }
         ]
-      },
-      
-      // Generic backtick strings
-      {
-        scope: 'string',
-        begin: '\`',
-        end: '\`',
-        contains: [
-          {
-            scope: 'variable',
-            match: '\\\\.[a-zA-Z_][a-zA-Z0-9_]*|\\\\$[a-zA-Z_][a-zA-Z0-9_]*'
-          }
-        ]
-      },
-      
-      // Regular quoted strings
-      hljs.QUOTE_STRING_MODE,
-      
-      // Numbers
-      hljs.C_NUMBER_MODE,
-      
-      // Environment variables
-      {
-        scope: 'variable',
-        match: '\\\\$[a-zA-Z_][a-zA-Z0-9_]*'
-      },
-      
-      // Boolean literals
-      {
-        scope: 'literal',
-        match: '\\\\b(true|false)\\\\b'  
-      },
-      
-      // BDD test keywords
-      {
-        scope: 'keyword',
-        match: '\\\\b(describe|it|with|when|then|and|executing|calling|input|output|equals|status|mock|returning)\\\\b'
-      },
-      
-      // Result block keywords
-      {
-        scope: 'keyword',
-        match: '\\\\b(ok|validationError|authError|sqlError|default)\\\\s*\\\\([0-9]+\\\\):'
       }
     ]
   };
@@ -1750,16 +1690,9 @@ GET /contentful/article/:slug
             <div class="article-content">
               {{{bodyHtml}}}
             </div>
-            
-            {{#tags}}
-            <div class="tags">
-              <strong>Tags:</strong>
-              {{#tags}}<span class="tag">{{.}}</span>{{/tags}}
-            </div>
-            {{/tags}}
-            
+
             <div style="margin-top: 50px; padding-top: 20px; border-top: 1px solid #eee;">
-              <a href="/contentful/articles" class="back-link">← Back to all articles</a>
+              <a href="/contentful/articles" class="back-link">Back to all articles</a>
             </div>
           </article>
         {{/found}}
@@ -1767,7 +1700,7 @@ GET /contentful/article/:slug
           <div class="not-found">
             <h1>Article Not Found</h1>
             <p>{{message}}</p>
-            <a href="/contentful/articles" class="back-link">← Back to all articles</a>
+            <a href="/contentful/articles" class="back-link">Back to all articles</a>
           </div>
         {{/found}}
         {{#error}}
