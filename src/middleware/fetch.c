@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 // Arena allocation function types for middlewares
 typedef void *(*arena_alloc_func)(void *arena, size_t size);
@@ -26,6 +27,9 @@ typedef struct {
 // Global fetch configuration (set once at init)
 static json_t *fetch_config = NULL;
 static int fetch_init_failed = 0;
+
+// Mutex for protecting jansson allocator function changes
+static pthread_mutex_t allocator_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Default values
 #define DEFAULT_TIMEOUT 30
@@ -262,7 +266,23 @@ static json_t *create_fetch_response(HttpResponse *response, HttpHeaders *header
     json_t *parsed_body = NULL;
     
     if (response->memory && response->size > 0) {
+        // Protect jansson allocator changes for json_loads
+        pthread_mutex_lock(&allocator_mutex);
+        
+        // Get current allocators
+        json_malloc_t current_malloc;
+        json_free_t current_free;
+        json_get_alloc_funcs(&current_malloc, &current_free);
+        
+        // Switch to heap allocators for json_loads
+        json_set_alloc_funcs(malloc, free);
+        
         parsed_body = json_loads(response->memory, 0, &json_error);
+        
+        // Restore arena allocators
+        json_set_alloc_funcs(current_malloc, current_free);
+        
+        pthread_mutex_unlock(&allocator_mutex);
     }
     
     if (parsed_body) {
