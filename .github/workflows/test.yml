@@ -2,7 +2,7 @@ name: Test Suite
 
 on:
   push:
-    branches: [ "main", "testing-content-types" ]
+    branches: [ "main", "contentful" ]
   pull_request:
     branches: [ "main" ]
 

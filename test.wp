@@ -1705,9 +1705,10 @@ GET /contentful/article/:slug
         <title>{{#found}}{{title}} - William Cotton{{/found}}{{^found}}Article Not Found{{/found}}</title>
         {{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}
         <meta name="author" content="{{author}}">
-        <link rel="preload" href="https://williamcotton.com/LigaMenlo-Regular.woff" as="font" type="font/woff" crossorigin>
+        <link rel="preload" href="https://williamcotton.com/LigaMenlo-Regular.woff" as="font" type="font/woff">
         <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css">
         <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+        {{>highlightJsScript}}
         <style>
           @font-face {
             font-family: 'LigaMenlo-Regular';
@@ -1846,8 +1847,6 @@ GET /contentful/article/:slug
             <p>{{error}}</p>
           </div>
         {{/error}}
-        
-        {{>highlightJsScript}}
       </body>
     </html>
   `
