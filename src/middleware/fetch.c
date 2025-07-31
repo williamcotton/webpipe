@@ -31,6 +31,25 @@ static int fetch_init_failed = 0;
 // Mutex for protecting jansson allocator function changes
 static pthread_mutex_t allocator_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// Safe wrapper for json_deep_copy that handles allocator switching
+static json_t *safe_json_deep_copy(json_t *json) {
+    if (!json) return NULL;
+    
+    pthread_mutex_lock(&allocator_mutex);
+    
+    json_malloc_t current_malloc;
+    json_free_t current_free;
+    json_get_alloc_funcs(&current_malloc, &current_free);
+    
+    json_set_alloc_funcs(malloc, free);
+    json_t *result = json_deep_copy(json);
+    json_set_alloc_funcs(current_malloc, current_free);
+    
+    pthread_mutex_unlock(&allocator_mutex);
+    
+    return result;
+}
+
 // Default values
 #define DEFAULT_TIMEOUT 30
 #define DEFAULT_CONNECT_TIMEOUT 10
@@ -140,8 +159,18 @@ static size_t HeaderCallback(char *buffer, size_t size, size_t nitems, HttpHeade
     memcpy(value, value_start, value_len);
     value[value_len] = '\0';
     
-    // Add to headers JSON object
+    // Add to headers JSON object - protect against race conditions
+    pthread_mutex_lock(&allocator_mutex);
+    
+    json_malloc_t current_malloc;
+    json_free_t current_free;
+    json_get_alloc_funcs(&current_malloc, &current_free);
+    
+    json_set_alloc_funcs(malloc, free);
     json_object_set_new(headers->headers, name, json_string(value));
+    json_set_alloc_funcs(current_malloc, current_free);
+    
+    pthread_mutex_unlock(&allocator_mutex);
     
     return realsize;
 }
@@ -259,7 +288,18 @@ static json_t *create_fetch_response(HttpResponse *response, HttpHeaders *header
     (void)arena; // Not used yet
     (void)alloc_func; // Not used yet
     
+    // Create result object with allocator protection
+    pthread_mutex_lock(&allocator_mutex);
+    
+    json_malloc_t init_malloc;
+    json_free_t init_free;
+    json_get_alloc_funcs(&init_malloc, &init_free);
+    
+    json_set_alloc_funcs(malloc, free);
     json_t *result = json_object();
+    json_set_alloc_funcs(init_malloc, init_free);
+    
+    pthread_mutex_unlock(&allocator_mutex);
     
     // Parse response body as JSON if possible, otherwise store as string
     json_error_t json_error;
@@ -285,6 +325,15 @@ static json_t *create_fetch_response(HttpResponse *response, HttpHeaders *header
         pthread_mutex_unlock(&allocator_mutex);
     }
     
+    // Protect result object modifications
+    pthread_mutex_lock(&allocator_mutex);
+    
+    json_malloc_t result_malloc;
+    json_free_t result_free;
+    json_get_alloc_funcs(&result_malloc, &result_free);
+    
+    json_set_alloc_funcs(malloc, free);
+    
     if (parsed_body) {
         json_object_set_new(result, "response", parsed_body);
     } else {
@@ -294,11 +343,24 @@ static json_t *create_fetch_response(HttpResponse *response, HttpHeaders *header
     json_object_set_new(result, "status", json_integer(response_code));
     json_object_set_new(result, "headers", headers_data->headers);
     
+    json_set_alloc_funcs(result_malloc, result_free);
+    
+    pthread_mutex_unlock(&allocator_mutex);
+    
     return result;
 }
 
 // Error Creation Functions
 static json_t *create_fetch_error(const char *type, const char *message, const char *url, long status_code) {
+    // Protect all JSON operations with allocator mutex
+    pthread_mutex_lock(&allocator_mutex);
+    
+    json_malloc_t current_malloc;
+    json_free_t current_free;
+    json_get_alloc_funcs(&current_malloc, &current_free);
+    
+    json_set_alloc_funcs(malloc, free);
+    
     json_t *error_obj = json_object();
     json_t *errors_array = json_array();
     json_t *error_detail = json_object();
@@ -314,6 +376,10 @@ static json_t *create_fetch_error(const char *type, const char *message, const c
     
     json_array_append_new(errors_array, error_detail);
     json_object_set_new(error_obj, "errors", errors_array);
+    
+    json_set_alloc_funcs(current_malloc, current_free);
+    
+    pthread_mutex_unlock(&allocator_mutex);
     
     return error_obj;
 }
@@ -410,7 +476,19 @@ static json_t *execute_http_request(const char *url, json_t *request_params,
     HttpHeaders headers_data = {0};
     headers_data.arena = arena;
     headers_data.alloc_func = alloc_func;
+    
+    // Create headers JSON object with allocator protection
+    pthread_mutex_lock(&allocator_mutex);
+    
+    json_malloc_t current_malloc;
+    json_free_t current_free;
+    json_get_alloc_funcs(&current_malloc, &current_free);
+    
+    json_set_alloc_funcs(malloc, free);
     headers_data.headers = json_object();
+    json_set_alloc_funcs(current_malloc, current_free);
+    
+    pthread_mutex_unlock(&allocator_mutex);
     
     // Set callbacks
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
@@ -479,9 +557,9 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
     (void)variables; // Not used for now
     
     if (fetch_init_failed) {
-        json_t *response = json_deep_copy(input);
+        json_t *response = safe_json_deep_copy(input);
         json_t *error = create_fetch_error("networkError", "HTTP client not initialized", url_template, 0);
-        json_object_set_new(response, "errors", json_deep_copy(json_object_get(error, "errors")));
+        json_object_set_new(response, "errors", safe_json_deep_copy(json_object_get(error, "errors")));
         return response;
     }
     
@@ -493,17 +571,17 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
     }
     
     if (!url || strlen(url) == 0) {
-        json_t *response = json_deep_copy(input);
+        json_t *response = safe_json_deep_copy(input);
         json_t *error = create_fetch_error("networkError", "No URL specified", "", 0);
-        json_object_set_new(response, "errors", json_deep_copy(json_object_get(error, "errors")));
+        json_object_set_new(response, "errors", safe_json_deep_copy(json_object_get(error, "errors")));
         return response;
     }
     
     // Security check
     if (!is_url_allowed(url, middleware_config)) {
-        json_t *response = json_deep_copy(input);
+        json_t *response = safe_json_deep_copy(input);
         json_t *error = create_fetch_error("networkError", "URL not allowed", url, 0);
-        json_object_set_new(response, "errors", json_deep_copy(json_object_get(error, "errors")));
+        json_object_set_new(response, "errors", safe_json_deep_copy(json_object_get(error, "errors")));
         return response;
     }
     
@@ -512,13 +590,13 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
     
     // Check for errors
     if (json_object_get(http_result, "errors")) {
-        json_t *response = json_deep_copy(input);
-        json_object_set_new(response, "errors", json_deep_copy(json_object_get(http_result, "errors")));
+        json_t *response = safe_json_deep_copy(input);
+        json_object_set_new(response, "errors", safe_json_deep_copy(json_object_get(http_result, "errors")));
         return response;
     }
     
     // Create response by copying input
-    json_t *response = json_deep_copy(input);
+    json_t *response = safe_json_deep_copy(input);
     
     // Handle result naming (same as pg.c)
     json_t *result_name = json_object_get(input, "resultName");
@@ -527,13 +605,46 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
         const char *name = json_string_value(result_name);
         json_t *data_obj = json_object_get(response, "data");
         if (!data_obj || !json_is_object(data_obj)) {
+            // Protect data object creation and assignment
+            pthread_mutex_lock(&allocator_mutex);
+            
+            json_malloc_t data_malloc;
+            json_free_t data_free;
+            json_get_alloc_funcs(&data_malloc, &data_free);
+            
+            json_set_alloc_funcs(malloc, free);
             data_obj = json_object();
             json_object_set_new(response, "data", data_obj);
+            json_set_alloc_funcs(data_malloc, data_free);
+            
+            pthread_mutex_unlock(&allocator_mutex);
         }
+        
+        // Protect named result assignment
+        pthread_mutex_lock(&allocator_mutex);
+        
+        json_malloc_t assign_malloc;
+        json_free_t assign_free;
+        json_get_alloc_funcs(&assign_malloc, &assign_free);
+        
+        json_set_alloc_funcs(malloc, free);
         json_object_set_new(data_obj, name, http_result);
+        json_set_alloc_funcs(assign_malloc, assign_free);
+        
+        pthread_mutex_unlock(&allocator_mutex);
     } else {
         // Unnamed result: store as { data: { response: ..., status: ..., headers: ... } }
+        pthread_mutex_lock(&allocator_mutex);
+        
+        json_malloc_t unnamed_malloc;
+        json_free_t unnamed_free;
+        json_get_alloc_funcs(&unnamed_malloc, &unnamed_free);
+        
+        json_set_alloc_funcs(malloc, free);
         json_object_set_new(response, "data", http_result);
+        json_set_alloc_funcs(unnamed_malloc, unnamed_free);
+        
+        pthread_mutex_unlock(&allocator_mutex);
     }
     
     return response;

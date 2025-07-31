@@ -13,6 +13,9 @@
 // Global runtime instance
 WPRuntime *runtime = NULL;
 
+// Mutex for protecting jansson allocator function changes during serialization
+static pthread_mutex_t serialization_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 // Configuration Management Functions
 
 // Count configuration blocks in AST
@@ -795,8 +798,19 @@ static char *serialize_response_content(json_t *json_data, const char **content_
     
     // Handle different content types
     if (strcmp(*content_type, "application/json") == 0) {
-        // JSON response
+        // JSON response - protect json_dumps from allocator race conditions
+        pthread_mutex_lock(&serialization_mutex);
+        
+        json_malloc_t current_malloc;
+        json_free_t current_free;
+        json_get_alloc_funcs(&current_malloc, &current_free);
+        
+        json_set_alloc_funcs(malloc, free);
         response_str = json_dumps(json_data, JSON_COMPACT);
+        json_set_alloc_funcs(current_malloc, current_free);
+        
+        pthread_mutex_unlock(&serialization_mutex);
+        
         if (!response_str) {
             log_error("serialize_response_content", "json_dumps failed");
             response_str = create_fallback_error("JSON serialization failed", arena);
@@ -1279,9 +1293,20 @@ static void merge_step_result(json_t **current, json_t *result, bool is_last_ste
         *current = result;
     } else if (json_is_object(result) && json_is_object(*current)) {
         // Intermediate step: merge the middleware result with the current state
+        // Protect JSON operations from allocator race conditions
+        pthread_mutex_lock(&serialization_mutex);
+        
+        json_malloc_t current_malloc;
+        json_free_t current_free;
+        json_get_alloc_funcs(&current_malloc, &current_free);
+        
+        json_set_alloc_funcs(malloc, free);
+        
         // Create new object to avoid arena/malloc memory conflicts
         json_t *merged = json_object();
         if (!merged) {
+            json_set_alloc_funcs(current_malloc, current_free);
+            pthread_mutex_unlock(&serialization_mutex);
             *current = result;  // Fallback to replacement
             return;
         }
@@ -1297,6 +1322,9 @@ static void merge_step_result(json_t **current, json_t *result, bool is_last_ste
         json_object_foreach(result, key, value) {
             json_object_set(merged, key, value);
         }
+        
+        json_set_alloc_funcs(current_malloc, current_free);
+        pthread_mutex_unlock(&serialization_mutex);
         
         *current = merged;
     } else {
