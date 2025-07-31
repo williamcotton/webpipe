@@ -1287,70 +1287,192 @@ GET /contentful/article/:slug
         local entry = items[1]
         local fields = entry.fields or {}
         
-        -- Enhanced rich text processing for blog posts
-        local function renderRichText(richTextObj)
+        -- Enhanced rich text processing for blog posts with full Contentful support
+        local function escapeHtml(text)
+          if not text then return "" end
+          return text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub("\"", "&quot;"):gsub("'", "&#39;")
+        end
+        
+        local function generateEntryUrl(target)
+          if not target or not target.fields then return "#" end
+          local contentType = target.sys and target.sys.contentType and target.sys.contentType.sys and target.sys.contentType.sys.id
+          local slug = target.fields.slug
+          
+          if contentType == "blogPost" and slug then
+            return "/contentful/article/" .. slug
+          elseif contentType == "page" and slug then
+            return "/contentful/page/" .. slug
+          else
+            return "#"
+          end
+        end
+        
+        local function renderTextWithMarks(textNode)
+          if not textNode or textNode.nodeType ~= "text" then return "" end
+          
+          local value = escapeHtml(textNode.value or "")
+          
+          if textNode.marks then
+            for _, mark in ipairs(textNode.marks) do
+              if mark.type == "bold" then
+                value = "<strong>" .. value .. "</strong>"
+              elseif mark.type == "italic" then
+                value = "<em>" .. value .. "</em>"
+              elseif mark.type == "code" then
+                value = "<code>" .. value .. "</code>"
+              elseif mark.type == "underline" then
+                value = "<u>" .. value .. "</u>"
+              end
+            end
+          end
+          
+          return value
+        end
+        
+        local function renderRichText(richTextObj, includes)
           if not richTextObj or not richTextObj.content then
             return ""
           end
           
+          -- Helper function to resolve entry references from includes
+          local function resolveEntry(entryId)
+            if not includes or not includes.Entry then return nil end
+            for _, entry in ipairs(includes.Entry) do
+              if entry.sys and entry.sys.id == entryId then
+                return entry
+              end
+            end
+            return nil
+          end
+          
           local html = ""
           for _, node in ipairs(richTextObj.content) do
-            if node.nodeType == "paragraph" and node.content then
+            
+            -- Handle embedded assets (images)
+            if node.nodeType == "embedded-asset-block" then
+              if node.data and node.data.target and node.data.target.fields then
+                local asset = node.data.target.fields
+                local url = asset.file and asset.file.url or ""
+                local title = asset.title or ""
+                local description = asset.description or title
+                
+                -- Ensure HTTPS URLs
+                if url:sub(1, 2) == "//" then
+                  url = "https:" .. url
+                end
+                
+                html = html .. string.format('<img src="%s" alt="%s" title="%s" class="embedded-asset" loading="lazy" />\n', 
+                                           escapeHtml(url), escapeHtml(description), escapeHtml(title))
+              end
+              
+            -- Handle embedded entries (code blocks, etc.)
+            elseif node.nodeType == "embedded-entry-block" then
+              if node.data and node.data.target and node.data.target.sys then
+                local entryId = node.data.target.sys.id
+                local resolvedEntry = resolveEntry(entryId)
+                
+                if resolvedEntry and resolvedEntry.fields then
+                  local contentType = resolvedEntry.sys and resolvedEntry.sys.contentType and resolvedEntry.sys.contentType.sys and resolvedEntry.sys.contentType.sys.id
+                  
+                  if (contentType == "codeBlock" or contentType == "codeSample") then
+                    local code = escapeHtml(resolvedEntry.fields.code or "")
+                    local lang = resolvedEntry.fields.lang or resolvedEntry.fields.language or "text"
+                    local filename = resolvedEntry.fields.filename and (" data-filename=\"" .. escapeHtml(resolvedEntry.fields.filename) .. "\"") or ""
+                    local title = resolvedEntry.fields.title and ("\n<!-- " .. escapeHtml(resolvedEntry.fields.title) .. " -->\n") or ""
+                    
+                    html = html .. title .. string.format('<pre class="code-block"><code class="language-%s"%s>%s</code></pre>\n', 
+                                                         escapeHtml(lang), filename, code)
+                  end
+                end
+              end
+              
+            -- Handle paragraphs with inline content
+            elseif node.nodeType == "paragraph" and node.content then
               html = html .. "<p>"
-              for _, textNode in ipairs(node.content) do
-                if textNode.nodeType == "text" then
-                  local value = textNode.value or ""
-                  -- Handle basic text formatting
-                  if textNode.marks then
-                    for _, mark in ipairs(textNode.marks) do
-                      if mark.type == "bold" then
-                        value = "<strong>" .. value .. "</strong>"
-                      elseif mark.type == "italic" then
-                        value = "<em>" .. value .. "</em>"
-                      elseif mark.type == "code" then
-                        value = "<code>" .. value .. "</code>"
-                      end
-                    end
-                  end
-                  html = html .. value
-                elseif textNode.nodeType == "hyperlink" then
+              for _, inline in ipairs(node.content) do
+                if inline.nodeType == "text" then
+                  html = html .. renderTextWithMarks(inline)
+                elseif inline.nodeType == "hyperlink" then
                   local linkText = ""
-                  if textNode.content then
-                    for _, linkContent in ipairs(textNode.content) do
-                      if linkContent.nodeType == "text" then
-                        linkText = linkText .. (linkContent.value or "")
-                      end
+                  if inline.content then
+                    for _, linkContent in ipairs(inline.content) do
+                      linkText = linkText .. renderTextWithMarks(linkContent)
                     end
                   end
-                  local uri = textNode.data and textNode.data.uri or "#"
-                  html = html .. "<a href=\"" .. uri .. "\">" .. linkText .. "</a>"
+                  local uri = inline.data and inline.data.uri or "#"
+                  html = html .. string.format('<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>', 
+                                              escapeHtml(uri), linkText)
+                elseif inline.nodeType == "entry-hyperlink" then
+                  local linkText = ""
+                  if inline.content then
+                    for _, linkContent in ipairs(inline.content) do
+                      linkText = linkText .. renderTextWithMarks(linkContent)
+                    end
+                  end
+                  local target = inline.data and inline.data.target
+                  local href = generateEntryUrl(target)
+                  local title = target and target.fields and target.fields.title or ""
+                  
+                  html = html .. string.format('<a href="%s" title="%s">%s</a>', 
+                                              escapeHtml(href), escapeHtml(title), linkText)
+                elseif inline.nodeType == "asset-hyperlink" then
+                  local linkText = ""
+                  if inline.content then
+                    for _, linkContent in ipairs(inline.content) do
+                      linkText = linkText .. renderTextWithMarks(linkContent)
+                    end
+                  end
+                  local target = inline.data and inline.data.target
+                  local url = target and target.fields and target.fields.file and target.fields.file.url or "#"
+                  
+                  if url:sub(1, 2) == "//" then
+                    url = "https:" .. url
+                  end
+                  
+                  html = html .. string.format('<a href="%s" download>%s</a>', escapeHtml(url), linkText)
                 end
               end
               html = html .. "</p>\n"
+              
+            -- Handle headings
             elseif node.nodeType == "heading-1" and node.content then
               html = html .. "<h1>"
               for _, textNode in ipairs(node.content) do
-                if textNode.nodeType == "text" then
-                  html = html .. (textNode.value or "")
-                end
+                html = html .. renderTextWithMarks(textNode)
               end
               html = html .. "</h1>\n"
             elseif node.nodeType == "heading-2" and node.content then
               html = html .. "<h2>"
               for _, textNode in ipairs(node.content) do
-                if textNode.nodeType == "text" then
-                  html = html .. (textNode.value or "")
-                end
+                html = html .. renderTextWithMarks(textNode)
               end
               html = html .. "</h2>\n"
             elseif node.nodeType == "heading-3" and node.content then
               html = html .. "<h3>"
               for _, textNode in ipairs(node.content) do
-                if textNode.nodeType == "text" then
-                  html = html .. (textNode.value or "")
-                end
+                html = html .. renderTextWithMarks(textNode)
               end
               html = html .. "</h3>\n"
+            elseif node.nodeType == "heading-4" and node.content then
+              html = html .. "<h4>"
+              for _, textNode in ipairs(node.content) do
+                html = html .. renderTextWithMarks(textNode)
+              end
+              html = html .. "</h4>\n"
+            elseif node.nodeType == "heading-5" and node.content then
+              html = html .. "<h5>"
+              for _, textNode in ipairs(node.content) do
+                html = html .. renderTextWithMarks(textNode)
+              end
+              html = html .. "</h5>\n"
+            elseif node.nodeType == "heading-6" and node.content then
+              html = html .. "<h6>"
+              for _, textNode in ipairs(node.content) do
+                html = html .. renderTextWithMarks(textNode)
+              end
+              html = html .. "</h6>\n"
+              
+            -- Handle lists
             elseif node.nodeType == "unordered-list" and node.content then
               html = html .. "<ul>\n"
               for _, listItem in ipairs(node.content) do
@@ -1359,10 +1481,11 @@ GET /contentful/article/:slug
                   for _, itemContent in ipairs(listItem.content) do
                     if itemContent.nodeType == "paragraph" and itemContent.content then
                       for _, textNode in ipairs(itemContent.content) do
-                        if textNode.nodeType == "text" then
-                          html = html .. (textNode.value or "")
-                        end
+                        html = html .. renderTextWithMarks(textNode)
                       end
+                    else
+                      -- Recursively handle nested content
+                      html = html .. renderRichText(itemContent)
                     end
                   end
                   html = html .. "</li>\n"
@@ -1377,30 +1500,59 @@ GET /contentful/article/:slug
                   for _, itemContent in ipairs(listItem.content) do
                     if itemContent.nodeType == "paragraph" and itemContent.content then
                       for _, textNode in ipairs(itemContent.content) do
-                        if textNode.nodeType == "text" then
-                          html = html .. (textNode.value or "")
-                        end
+                        html = html .. renderTextWithMarks(textNode)
                       end
+                    else
+                      html = html .. renderRichText(itemContent)
                     end
                   end
                   html = html .. "</li>\n"
                 end
               end
               html = html .. "</ol>\n"
+              
+            -- Handle blockquotes
             elseif node.nodeType == "blockquote" and node.content then
-              html = html .. "<blockquote>"
+              html = html .. "<blockquote>\n"
               for _, quoteContent in ipairs(node.content) do
                 if quoteContent.nodeType == "paragraph" and quoteContent.content then
                   html = html .. "<p>"
                   for _, textNode in ipairs(quoteContent.content) do
-                    if textNode.nodeType == "text" then
-                      html = html .. (textNode.value or "")
-                    end
+                    html = html .. renderTextWithMarks(textNode)
                   end
-                  html = html .. "</p>"
+                  html = html .. "</p>\n"
+                else
+                  html = html .. renderRichText(quoteContent)
                 end
               end
               html = html .. "</blockquote>\n"
+              
+            -- Handle horizontal rule
+            elseif node.nodeType == "hr" then
+              html = html .. "<hr />\n"
+              
+            -- Handle table (basic support)
+            elseif node.nodeType == "table" and node.content then
+              html = html .. "<table>\n"
+              for _, row in ipairs(node.content) do
+                if row.nodeType == "table-row" and row.content then
+                  html = html .. "<tr>\n"
+                  for _, cell in ipairs(row.content) do
+                    if cell.nodeType == "table-cell" or cell.nodeType == "table-header-cell" then
+                      local tag = cell.nodeType == "table-header-cell" and "th" or "td"
+                      html = html .. "<" .. tag .. ">"
+                      if cell.content then
+                        for _, cellContent in ipairs(cell.content) do
+                          html = html .. renderRichText(cellContent)
+                        end
+                      end
+                      html = html .. "</" .. tag .. ">\n"
+                    end
+                  end
+                  html = html .. "</tr>\n"
+                end
+              end
+              html = html .. "</table>\n"
             end
           end
           return html
@@ -1408,7 +1560,7 @@ GET /contentful/article/:slug
         
         return {
           title = fields.title or "Untitled",
-          bodyHtml = renderRichText(fields.body),
+          bodyHtml = renderRichText(fields.body, request.data.response.includes),
           slug = fields.slug or "",
           publishedDate = fields.publishedDate or entry.sys.createdAt,
           author = fields.author or "William Cotton",
@@ -1442,9 +1594,85 @@ GET /contentful/article/:slug
           .article-header { margin-bottom: 40px; }
           .article-meta { color: #666; font-size: 14px; margin: 20px 0; }
           .article-content { font-size: 18px; }
-          .article-content h1, .article-content h2, .article-content h3 { margin-top: 40px; margin-bottom: 20px; }
-          .article-content blockquote { border-left: 4px solid #007acc; padding-left: 20px; margin: 30px 0; font-style: italic; }
-          .article-content code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-family: Monaco, monospace; }
+          .article-content h1, .article-content h2, .article-content h3, .article-content h4, .article-content h5, .article-content h6 { 
+            margin-top: 40px; margin-bottom: 20px; color: #333; line-height: 1.3; 
+          }
+          .article-content h1 { font-size: 2.2em; }
+          .article-content h2 { font-size: 1.8em; }
+          .article-content h3 { font-size: 1.4em; }
+          .article-content h4 { font-size: 1.2em; }
+          .article-content h5 { font-size: 1.1em; }
+          .article-content h6 { font-size: 1em; font-weight: bold; }
+          .article-content blockquote { 
+            border-left: 4px solid #007acc; padding-left: 20px; margin: 30px 0; 
+            font-style: italic; background: #f8f9fa; padding: 20px; border-radius: 4px;
+          }
+          .article-content code { 
+            background: #f5f5f5; padding: 2px 6px; border-radius: 3px; 
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 0.9em; 
+          }
+          .article-content pre { 
+            background: #f8f9fa; padding: 20px; border-radius: 6px; 
+            overflow-x: auto; margin: 30px 0; border: 1px solid #e9ecef;
+          }
+          .article-content pre code { 
+            background: none; padding: 0; border-radius: 0; display: block;
+            font-size: 14px; line-height: 1.5;
+          }
+          .article-content pre.code-block {
+            position: relative;
+          }
+          .article-content pre.code-block::before {
+            content: attr(data-filename);
+            position: absolute;
+            top: -10px;
+            right: 10px;
+            background: #007acc;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: sans-serif;
+          }
+          .article-content .embedded-asset {
+            max-width: 100%; height: auto; margin: 30px 0;
+            border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+          }
+          .article-content ul, .article-content ol {
+            margin: 20px 0; padding-left: 30px;
+          }
+          .article-content li {
+            margin: 8px 0;
+          }
+          .article-content table {
+            width: 100%; border-collapse: collapse; margin: 30px 0;
+            border: 1px solid #e9ecef;
+          }
+          .article-content th, .article-content td {
+            padding: 12px; text-align: left; border-bottom: 1px solid #e9ecef;
+          }
+          .article-content th {
+            background: #f8f9fa; font-weight: bold;
+          }
+          .article-content hr {
+            border: none; height: 2px; background: #e9ecef;
+            margin: 40px 0;
+          }
+          .article-content a {
+            color: #007acc; text-decoration: none;
+          }
+          .article-content a:hover {
+            text-decoration: underline;
+          }
+          .article-content strong {
+            font-weight: bold;
+          }
+          .article-content em {
+            font-style: italic;
+          }
+          .article-content u {
+            text-decoration: underline;
+          }
           .tags { margin-top: 30px; }
           .tag { background: #f0f0f0; padding: 4px 8px; margin-right: 8px; border-radius: 3px; font-size: 12px; }
           .back-link { color: #007acc; text-decoration: none; }
@@ -1529,7 +1757,7 @@ GET /contentful/page/:slug
         local fields = entry.fields or {}
         
         -- Basic rich text processing for pages
-        local function renderRichText(richTextObj)
+        local function renderRichText(richTextObj, includes)
           if not richTextObj or not richTextObj.content then
             return ""
           end
@@ -1567,7 +1795,7 @@ GET /contentful/page/:slug
         
         return {
           title = fields.title or "Untitled",
-          bodyHtml = renderRichText(fields.body),
+          bodyHtml = renderRichText(fields.body, request.data.response.includes),
           slug = fields.slug or "",
           seoDescription = fields.seoDescription or "",
           contentType = entry.sys.contentType.sys.id,
@@ -1636,4 +1864,44 @@ GET /contentful/config
       spaceId = spaceId,
       message = "Contentful configuration status"
     }
+  `
+
+## Debug route to see raw Contentful response
+GET /contentful/debug/:slug
+  |> lua: `
+    local spaceId = getEnv("CONTENTFUL_SPACE")
+    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
+    local slug = request.params.slug
+    
+    if not spaceId or not token then
+      return {
+        errors = {{
+          type = "configError", 
+          message = "Missing Contentful configuration"
+        }}
+      }
+    end
+    
+    return {
+      fetchUrl = "https://cdn.contentful.com/spaces/" .. spaceId .. "/entries?content_type=blogPost&fields.slug[in]=" .. slug,
+      fetchHeaders = {
+        ["Authorization"] = "Bearer " .. token
+      }
+    }
+  `
+  |> fetch: `placeholder`
+  |> lua: `
+    return {
+      rawResponse = request.data.response,
+      message = "Raw Contentful API response for debugging"
+    }
+  `
+  |> mustache: `
+    <html>
+      <head><title>Debug: {{message}}</title></head>
+      <body>
+        <h1>{{message}}</h1>
+        <pre style="background: #f5f5f5; padding: 20px; overflow-x: auto; white-space: pre-wrap;">{{rawResponse}}</pre>
+      </body>
+    </html>
   `
