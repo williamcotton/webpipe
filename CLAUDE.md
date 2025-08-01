@@ -67,6 +67,20 @@ config pg {
 - **auth**: User authentication with session management, password hashing
 - **cache**: Response caching with TTL, LRU eviction, template-based keys
 - **log**: Request/response logging with configurable output, format, and level
+- **debug**: Development tool that prints input JSON with config message and passes data through unchanged
+
+### Debug Middleware
+
+The debug middleware is a development tool that prints the current JSON state in the pipeline to stdout. It accepts a config string that is printed along with the JSON data, making it useful for debugging pipeline flow.
+
+```wp
+GET /api/test
+  |> debug: `Before transformation`
+  |> jq: `{ transformed: true }`
+  |> debug: `After transformation`
+```
+
+The middleware prints the config message followed by the JSON data formatted with 2-space indentation, then passes the data through unchanged to the next step in the pipeline.
 
 ## Middleware Development
 
