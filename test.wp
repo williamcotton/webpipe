@@ -10,6 +10,26 @@ describe "hello, world"
     then status is 200
     and output equals `<p>hello, world</p>`
 
+GET /lua/:id/example
+  |> lua: `
+    local id = request.params.id
+    local name = request.query.name
+    return {
+      message = "Hello from Lua!",
+      id = id,
+      name = name
+    }
+  `
+describe "lua"
+  it "calls the route"
+    when calling GET /lua/123/example?name=example
+    then status is 200
+    and output equals `{
+      "message": "Hello from Lua!",
+      "id": "123",
+      "name": "example"
+    }`
+
 ## Config
 config pg {
   host: $WP_PG_HOST || "localhost"

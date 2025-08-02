@@ -452,7 +452,31 @@ json_t *create_test_request_json(const char *method, const char *url, json_t *te
     json_object_set_new(request, "method", json_string(method));
     json_object_set_new(request, "url", json_string(url));
     json_object_set_new(request, "params", json_object());  // Populated by match_route()
-    json_object_set_new(request, "query", json_object());
+    
+    // Parse query parameters from URL
+    json_t *query = json_object();
+    char *query_start = strchr(url, '?');
+    if (query_start) {
+        query_start++; // Skip the '?'
+        char *query_copy = strdup(query_start);
+        char *saveptr = NULL;
+        char *pair = strtok_r(query_copy, "&", &saveptr);
+        
+        while (pair) {
+            char *equals = strchr(pair, '=');
+            if (equals) {
+                *equals = '\0'; // Split key=value
+                char *key = pair;
+                char *value = equals + 1;
+                json_object_set_new(query, key, json_string(value));
+            }
+            pair = strtok_r(NULL, "&", &saveptr);
+        }
+        
+        free(query_copy);
+    }
+    json_object_set_new(request, "query", query);
+    
     json_object_set_new(request, "headers", json_object());
     json_object_set_new(request, "cookies", json_object());
     json_object_set_new(request, "setCookies", json_array());

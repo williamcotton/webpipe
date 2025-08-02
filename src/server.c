@@ -1404,6 +1404,12 @@ bool match_route(const char *pattern, const char *url, json_t *params) {
     char *pattern_copy = strdup(pattern);
     char *url_copy = strdup(url);
     
+    // Strip query parameters from URL (everything after '?')
+    char *query_start = strchr(url_copy, '?');
+    if (query_start) {
+        *query_start = '\0';
+    }
+    
     char *pattern_parts[64];  // Max 64 parts
     char *url_parts[64];
     int pattern_count = 0;

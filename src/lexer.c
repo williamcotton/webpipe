@@ -166,7 +166,8 @@ Token lexer_read_route(Lexer *lexer) {
   while (lexer_peek(lexer) != '\0' && lexer_peek(lexer) != '\n' &&
          lexer_peek(lexer) != ' ' && lexer_peek(lexer) != '\t') {
     char c = lexer_peek(lexer);
-    if (isalnum(c) || c == '/' || c == ':' || c == '-' || c == '_' || c == '.') {
+    if (isalnum(c) || c == '/' || c == ':' || c == '-' || c == '_' || c == '.' ||
+        c == '?' || c == '=' || c == '&') {
       lexer_advance(lexer);
     } else {
       break;
