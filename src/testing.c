@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include <jansson.h>
 #include "wp.h"
 
@@ -197,30 +198,117 @@ static void apply_mocks(test_context_t *ctx, ASTNode **mock_configs, int mock_co
     }
 }
 
+// Helper function to normalize whitespace for comparison
+static char *normalize_whitespace(const char *str) {
+    if (!str) return NULL;
+    
+    size_t len = strlen(str);
+    char *normalized = malloc(len + 1);
+    char *dst = normalized;
+    bool in_whitespace = false;
+    
+    // Trim leading whitespace
+    while (*str && isspace((unsigned char)*str)) str++;
+    
+    while (*str) {
+        if (isspace((unsigned char)*str)) {
+            if (!in_whitespace) {
+                *dst++ = ' ';
+                in_whitespace = true;
+            }
+        } else {
+            *dst++ = *str;
+            in_whitespace = false;
+        }
+        str++;
+    }
+    
+    // Trim trailing whitespace
+    while (dst > normalized && isspace((unsigned char)*(dst-1))) dst--;
+    
+    *dst = '\0';
+    return normalized;
+}
+
+// Helper function to extract content from result based on content-type
+static const char *extract_content_from_result(json_t *result, const char *content_type) {
+    if (!result) return NULL;
+    
+    // If content-type indicates HTML or text, extract string value directly
+    if (content_type && (strstr(content_type, "text/html") || 
+                        strstr(content_type, "text/plain") ||
+                        strstr(content_type, "text/css") ||
+                        strstr(content_type, "text/javascript"))) {
+        if (json_is_string(result)) {
+            return json_string_value(result);  // Don't dup, just return pointer
+        }
+    }
+    
+    // For JSON or when content-type is not available, serialize as JSON
+    // Note: json_dumps returns arena-allocated memory in test context
+    return json_dumps(result, JSON_COMPACT);
+}
+
+// Helper function to detect if content looks like JSON
+static bool is_json_content(const char *content) {
+    if (!content) return false;
+    
+    // Skip leading whitespace
+    while (isspace((unsigned char)*content)) content++;
+    
+    // Check if it starts with JSON structure
+    return (*content == '{' || *content == '[');
+}
+
 // Helper function to validate assertions
 bool validate_assertions(ASTNode **assertions, int assertion_count, 
-                        json_t *result, int status_code) {
+                        json_t *result, int status_code, const char *content_type) {
     for (int i = 0; i < assertion_count; i++) {
         ASTNode *assertion = assertions[i];
         if (assertion->type == AST_TEST_ASSERTION) {
             switch (assertion->data.test_assertion.type) {
                 case TEST_ASSERT_OUTPUT_EQUALS: {
-                    json_error_t error;
-                    json_t *expected = json_loads(assertion->data.test_assertion.data.output_equals.expected_json, 0, &error);
-                    if (!expected) {
-                        fprintf(stderr, "Failed to parse expected JSON: %s\n", error.text);
-                        return false;
+                    const char *expected_content = assertion->data.test_assertion.data.output_equals.expected_json;
+                    const char *actual_content = extract_content_from_result(result, content_type);
+                    
+                    // Auto-detect comparison mode based on content and content-type
+                    if (is_json_content(expected_content) && 
+                        (!content_type || strstr(content_type, "application/json"))) {
+                        // JSON comparison mode
+                        json_error_t error;
+                        json_t *expected = json_loads(expected_content, 0, &error);
+                        if (!expected) {
+                            printf("    %s❌ JSON parsing failed:%s %s\n", ANSI_RED, ANSI_RESET, error.text);
+                            return false;
+                        }
+                        
+                        if (!json_equal(result, expected)) {
+                            const char *expected_str = json_dumps(expected, JSON_INDENT(2));
+                            printf("    %s❌ JSON assertion failed:%s\n", ANSI_RED, ANSI_RESET);
+                            printf("    %sExpected:%s %s\n", ANSI_YELLOW, ANSI_RESET, expected_str);
+                            printf("    %sGot:     %s %s\n", ANSI_YELLOW, ANSI_RESET, actual_content);
+                            return false;
+                        }
+                    } else {
+                        // Text/HTML comparison mode with whitespace normalization
+                        char *norm_expected = normalize_whitespace(expected_content);
+                        char *norm_actual = normalize_whitespace(actual_content);
+                        
+                        if (strcmp(norm_expected, norm_actual) != 0) {
+                            printf("    %s❌ Content assertion failed:%s\n", ANSI_RED, ANSI_RESET);
+                            printf("    %sContent-Type:%s %s\n", ANSI_BLUE, ANSI_RESET, 
+                                   content_type ? content_type : "unknown");
+                            printf("    %sExpected:%s %s\n", ANSI_YELLOW, ANSI_RESET, expected_content);
+                            printf("    %sGot:     %s %s\n", ANSI_YELLOW, ANSI_RESET, actual_content);
+                            if (norm_expected) free(norm_expected);
+                            if (norm_actual) free(norm_actual);
+                            return false;
+                        }
+                        
+                        if (norm_expected) free(norm_expected);
+                        if (norm_actual) free(norm_actual);
                     }
                     
-                    if (!json_equal(result, expected)) {
-                        char *result_str = json_dumps(result, JSON_INDENT(2));
-                        char *expected_str = json_dumps(expected, JSON_INDENT(2));
-                        printf("    %s❌ Assertion failed:%s\n", ANSI_RED, ANSI_RESET);
-                        printf("    %sExpected:%s %s\n", ANSI_YELLOW, ANSI_RESET, expected_str);
-                        printf("    %sGot:     %s %s\n", ANSI_YELLOW, ANSI_RESET, result_str);
-                        // Don't free these as they may be arena-allocated in some contexts
-                        return false;
-                    }
                     break;
                 }
                 case TEST_ASSERT_STATUS_IS: {
@@ -380,38 +468,42 @@ json_t *create_test_request_json(const char *method, const char *url, json_t *te
 }
 
 json_t *execute_route_pipeline(ASTNode *route_stmt, json_t *request, 
-                              MemoryArena *arena, int *status_code) {
+                              MemoryArena *arena, int *status_code, char **content_type) {
     // If pipeline is empty, return the request object
     if (!route_stmt->data.route_def.pipeline) {
         *status_code = 200;
+        *content_type = NULL;
         return request;
     }
     
     // Execute pipeline with result handling (reuses server.c logic)
     json_t *final_response = NULL;
     int response_code = 200;
-    char *content_type = NULL;
+    char *pipeline_content_type = NULL;
     
     int result = execute_pipeline_with_result(route_stmt->data.route_def.pipeline, 
                                             request, arena, &final_response, 
-                                            &response_code, &content_type);
+                                            &response_code, &pipeline_content_type);
     
     if (result == 0 && final_response) {
         *status_code = response_code;
+        *content_type = pipeline_content_type;
         // Clean up response to match production behavior
         return cleanup_response_json(final_response);
     } else {
         // Error in pipeline execution
         *status_code = 500;
+        *content_type = NULL;
         return create_error_json("Internal server error");
     }
 }
 
-json_t *execute_route_test(ASTNode *exec_node, test_context_t *ctx, int *status_code) {
+json_t *execute_route_test(ASTNode *exec_node, test_context_t *ctx, int *status_code, char **content_type) {
     if (exec_node->type != AST_TEST_EXECUTION || 
         exec_node->data.test_execution.type != TEST_EXEC_HTTP_CALL) {
         fprintf(stderr, "Invalid route test execution node\n");
         *status_code = 500;
+        *content_type = NULL;
         return json_object();
     }
 
@@ -433,7 +525,7 @@ json_t *execute_route_test(ASTNode *exec_node, test_context_t *ctx, int *status_
                 // Reuse existing match_route() function
                 if (match_route(stmt->data.route_def.route, url, params)) {
                     // Execute route pipeline directly (bypassing HTTP layer)
-                    return execute_route_pipeline(stmt, request, ctx->test_arena, status_code);
+                    return execute_route_pipeline(stmt, request, ctx->test_arena, status_code, content_type);
                 }
             }
         }
@@ -441,6 +533,7 @@ json_t *execute_route_test(ASTNode *exec_node, test_context_t *ctx, int *status_
     
     // Route not found
     *status_code = 404;
+    *content_type = NULL;
     return create_error_json("Route not found");
 }
 
@@ -457,6 +550,7 @@ bool execute_it_block(ASTNode *it_node, test_context_t *ctx) {
     // Execute the test
     json_t *result = NULL;
     int status_code = 200;
+    char *content_type = NULL;
     
     ASTNode *execution = it_node->data.it_block.execution;
     if (execution && execution->type == AST_TEST_EXECUTION) {
@@ -468,7 +562,7 @@ bool execute_it_block(ASTNode *it_node, test_context_t *ctx) {
                 result = execute_pipeline_test(execution, ctx);
                 break;
             case TEST_EXEC_HTTP_CALL:
-                result = execute_route_test(execution, ctx, &status_code);
+                result = execute_route_test(execution, ctx, &status_code, &content_type);
                 break;
         }
     }
@@ -476,7 +570,7 @@ bool execute_it_block(ASTNode *it_node, test_context_t *ctx) {
     // Validate assertions
     bool success = validate_assertions(it_node->data.it_block.assertions, 
                                      it_node->data.it_block.assertion_count,
-                                     result, status_code);
+                                     result, status_code, content_type);
     
     // Update test results
     ctx->results->total_tests++;

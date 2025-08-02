@@ -472,15 +472,15 @@ int execute_describe_block(ASTNode *describe_node, test_context_t *ctx,
 bool execute_it_block(ASTNode *it_node, test_context_t *ctx);
 json_t *execute_variable_test(ASTNode *exec_node, test_context_t *ctx);
 json_t *execute_pipeline_test(ASTNode *exec_node, test_context_t *ctx);
-json_t *execute_route_test(ASTNode *exec_node, test_context_t *ctx, int *status_code);
+json_t *execute_route_test(ASTNode *exec_node, test_context_t *ctx, int *status_code, char **content_type);
 
 // Helper functions for test execution
 json_t *create_test_request_json(const char *method, const char *url, json_t *test_input);
 json_t *execute_route_pipeline(ASTNode *route_stmt, json_t *request, 
-                              MemoryArena *arena, int *status_code);
+                              MemoryArena *arena, int *status_code, char **content_type);
 json_t *create_error_json(const char *message);
 bool validate_assertions(ASTNode **assertions, int assertion_count, 
-                        json_t *result, int status_code);
+                        json_t *result, int status_code, const char *content_type);
 bool has_test_blocks(ASTNode *program);
 
 #endif // WP_H
