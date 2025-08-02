@@ -726,7 +726,6 @@ GET /contentful/article/:slug
       }
     end
   `
-  |> debug: `cache`
   |> mustache: `
     {{<blogLayout}}
       {{$title}}{{#found}}{{title}} - William Cotton{{/found}}{{^found}}Article Not Found{{/found}}{{/title}}
