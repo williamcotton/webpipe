@@ -975,6 +975,7 @@ static enum MHD_Result find_and_process_route(struct MHD_Connection *connection,
                                              const char *url, const char *method,
                                              json_t *request, MemoryArena *arena) {
     // Find matching route
+    json_incref(request);
     for (int i = 0; i < runtime->program->data.program.statement_count; i++) {
         ASTNode *stmt = runtime->program->data.program.statements[i];
         if (stmt->type == AST_ROUTE_DEFINITION) {
@@ -1167,7 +1168,8 @@ static int handle_pipeline_variable(PipelineStep *step, json_t **current, Memory
 // Helper function to prepare middleware input
 static json_t *prepare_middleware_input(json_t *current, json_t *original_req, 
                                        const char *variable_name) {
-    json_t *middleware_input = json_deep_copy(current);
+    json_t *middleware_input = current;
+    json_incref(middleware_input);
     
     // Ensure originalRequest is available to middleware for template resolution, etc.
     if (!json_object_get(middleware_input, "originalRequest")) {
@@ -1780,8 +1782,8 @@ int wp_runtime_init(const char *wp_file, int port) {
     // Use runtime arena for JSON variables
     set_current_arena(runtime->parse_ctx->runtime_arena);
     
-    // Set up jansson to use arena allocators once at startup
-    json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
+    // Don't use arena allocators for Jansson due to thread safety issues
+    // json_set_alloc_funcs(jansson_arena_malloc, jansson_arena_free);
 
     // Initialize database registry
     if (database_registry_init() != 0) {
