@@ -799,28 +799,12 @@ static char *serialize_response_content(json_t *json_data, const char **content_
     // Handle different content types
     if (strcmp(*content_type, "application/json") == 0) {
         // JSON response - protect json_dumps from allocator race conditions
-        pthread_mutex_lock(&serialization_mutex);
-        
-        json_malloc_t current_malloc;
-        json_free_t current_free;
-        json_get_alloc_funcs(&current_malloc, &current_free);
-        
-        json_set_alloc_funcs(malloc, free);
         response_str = json_dumps(json_data, JSON_COMPACT);
-        json_set_alloc_funcs(current_malloc, current_free);
-        
-        pthread_mutex_unlock(&serialization_mutex);
-        
         if (!response_str) {
             log_error("serialize_response_content", "json_dumps failed");
             response_str = create_fallback_error("JSON serialization failed", arena);
         }
-    } else if (strcmp(*content_type, "text/html") == 0 || 
-               strcmp(*content_type, "text/plain") == 0 ||
-               strcmp(*content_type, "image/svg+xml") == 0 ||
-               strcmp(*content_type, "application/postscript") == 0 ||
-               strcmp(*content_type, "application/pdf") == 0 ||
-               strncmp(*content_type, "text/", 5) == 0) {
+    } else if (strcmp(*content_type, "text/html") == 0 || strcmp(*content_type, "text/plain") == 0) {
         // HTML or text response - extract string from JSON
         if (json_is_string(json_data)) {
             const char *content = json_string_value(json_data);
@@ -1522,7 +1506,7 @@ static enum MHD_Result handle_request(void *cls, struct MHD_Connection *connecti
     
     (void)cls; // Suppress unused parameter warning
     (void)version; // Suppress unused parameter warning
-    
+
     if (*con_cls == NULL) {
         MemoryArena *arena = arena_create(1024 * 1024 * 5); // 5MB arena
         if (!arena) {

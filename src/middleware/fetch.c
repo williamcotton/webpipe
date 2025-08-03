@@ -605,46 +605,14 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
         const char *name = json_string_value(result_name);
         json_t *data_obj = json_object_get(response, "data");
         if (!data_obj || !json_is_object(data_obj)) {
-            // Protect data object creation and assignment
-            pthread_mutex_lock(&allocator_mutex);
-            
-            json_malloc_t data_malloc;
-            json_free_t data_free;
-            json_get_alloc_funcs(&data_malloc, &data_free);
-            
-            json_set_alloc_funcs(malloc, free);
             data_obj = json_object();
-            json_object_set_new(response, "data", data_obj);
-            json_set_alloc_funcs(data_malloc, data_free);
-            
-            pthread_mutex_unlock(&allocator_mutex);
         }
         
-        // Protect named result assignment
-        pthread_mutex_lock(&allocator_mutex);
-        
-        json_malloc_t assign_malloc;
-        json_free_t assign_free;
-        json_get_alloc_funcs(&assign_malloc, &assign_free);
-        
-        json_set_alloc_funcs(malloc, free);
         json_object_set_new(data_obj, name, http_result);
-        json_set_alloc_funcs(assign_malloc, assign_free);
-        
-        pthread_mutex_unlock(&allocator_mutex);
+        json_object_set_new(response, "data", data_obj);
     } else {
         // Unnamed result: store as { data: { response: ..., status: ..., headers: ... } }
-        pthread_mutex_lock(&allocator_mutex);
-        
-        json_malloc_t unnamed_malloc;
-        json_free_t unnamed_free;
-        json_get_alloc_funcs(&unnamed_malloc, &unnamed_free);
-        
-        json_set_alloc_funcs(malloc, free);
         json_object_set_new(response, "data", http_result);
-        json_set_alloc_funcs(unnamed_malloc, unnamed_free);
-        
-        pthread_mutex_unlock(&allocator_mutex);
     }
     
     return response;
