@@ -32,8 +32,8 @@ mustache blogLayout = `
   {{/metaTags}}
   {{$headExtras}}
     <link rel="preload" href="https://williamcotton.com/LigaMenlo-Regular.woff" as="font" type="font/woff">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/styles/github.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/highlight.min.js"></script>
     {{>highlightJsScript}}
     <style>
       @font-face {
