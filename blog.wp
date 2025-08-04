@@ -6,6 +6,189 @@ config cache {
   maxCacheSize: 10485760
 }
 
+## Reusable Contentful Pipelines
+
+# Base authentication and environment validation
+pipeline contentfulAuth =
+  |> lua: `
+    local spaceId = getEnv("CONTENTFUL_SPACE")
+    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
+    
+    if not spaceId or not token then
+      return {
+        errors = {{
+          type = "configError",
+          message = "Missing Contentful configuration: CONTENTFUL_SPACE and CONTENTFUL_ACCESS_TOKEN required"
+        }}
+      }
+    end
+    
+    return {
+      contentful = {
+        spaceId = spaceId,
+        token = token
+      },
+      params = request.params or {},
+      query = request.query or {},
+      originalRequest = request
+    }
+  `
+
+# Generic Contentful API fetcher
+pipeline contentfulFetch =
+  |> lua: `
+    local cf = request.contentful
+    local contentType = request.contentType or "blogPost"
+    local filters = request.filters or ""
+    
+    return {
+      fetchUrl = "https://cdn.contentful.com/spaces/" .. cf.spaceId .. "/entries?content_type=" .. contentType .. filters,
+      fetchHeaders = {
+        ["Authorization"] = "Bearer " .. cf.token
+      },
+      contentful = cf,
+      params = request.params,
+      query = request.query,
+      originalRequest = request.originalRequest
+    }
+  `
+  |> fetch: `placeholder`
+
+# Blog posts list pipeline
+pipeline contentfulBlogPosts =
+  |> pipeline: contentfulAuth
+  |> jq: `. + { contentType: "blogPost", filters: "&fields.hidden=false&order=-fields.publishedDate" }`
+  |> pipeline: contentfulFetch
+  |> lua: `
+    if request.data and request.data.response then
+      local entries = request.data.response.items or {}
+      
+      -- Trim body content like the F# version (take first 4 content nodes)
+      local processedEntries = {}
+      for i, entry in ipairs(entries) do
+        local fields = entry.fields or {}
+        local body = fields.body or {}
+        local content = body.content or {}
+        
+        -- Take only first 4 content nodes for preview
+        local trimmedContent = {}
+        for j = 1, math.min(4, #content) do
+          table.insert(trimmedContent, content[j])
+        end
+        
+        local trimmedBody = {
+          content = trimmedContent,
+          nodeType = body.nodeType,
+          data = body.data
+        }
+        
+        local processedFields = {}
+        for k, v in pairs(fields) do
+          processedFields[k] = v
+        end
+        processedFields.body = trimmedBody
+        
+        -- Render the trimmed body content for preview
+        processedFields.bodyPreview = contentful.renderRichText(trimmedBody, request.data.response.includes)
+        
+        -- Format published date
+        processedFields.formattedDate = dateFormatter.formatPublishedDate(fields.publishedDate)
+        
+        table.insert(processedEntries, {
+          fields = processedFields,
+          sys = entry.sys
+        })
+      end
+      
+      return {
+        articles = processedEntries,
+        total = request.data.response.total or 0,
+        message = "Blog articles retrieved successfully"
+      }
+    else
+      return {
+        error = "Failed to fetch from Contentful",
+        details = request.data
+      }
+    end
+  `
+
+# Single entry by slug pipeline
+pipeline contentfulBySlug =
+  |> pipeline: contentfulAuth
+  |> jq: `. + { filters: ("&fields.slug[in]=" + .params.slug) }`
+  |> pipeline: contentfulFetch
+  |> lua: `
+    if request.data and request.data.response and request.data.response.items then
+      local items = request.data.response.items
+      if #items > 0 then
+        local entry = items[1]
+        local fields = entry.fields or {}
+        
+        -- Format published date
+        local formattedDate = dateFormatter.formatPublishedDate(fields.publishedDate)
+        
+        return {
+          title = fields.title or "Untitled",
+          bodyHtml = contentful.renderRichText(fields.body, request.data.response.includes),
+          slug = fields.slug or "",
+          publishedDate = fields.publishedDate or entry.sys.createdAt,
+          formattedDate = formattedDate,
+          author = fields.author or "William Cotton",
+          excerpt = fields.excerpt or "",
+          tags = fields.tags or {},
+          seoDescription = fields.seoDescription or fields.excerpt or "",
+          contentType = entry.sys.contentType.sys.id,
+          found = true
+        }
+      else
+        return {
+          found = false,
+          message = "Article not found with slug: " .. request.params.slug
+        }
+      end
+    else
+      return {
+        error = "Failed to fetch article from Contentful",
+        slug = request.params.slug
+      }
+    end
+  `
+
+# Pages by slug pipeline  
+pipeline contentfulPages =
+  |> pipeline: contentfulAuth
+  |> jq: `. + { contentType: "page", filters: ("&fields.slug[in]=" + .params.slug) }`
+  |> pipeline: contentfulFetch
+  |> lua: `
+    if request.data and request.data.response and request.data.response.items then
+      local items = request.data.response.items
+      if #items > 0 then
+        local entry = items[1]
+        local fields = entry.fields or {}
+        
+        return {
+          title = fields.title or "Untitled",
+          bodyHtml = contentful.renderBasicRichText(fields.body, request.data.response.includes),
+          slug = fields.slug or "",
+          seoDescription = fields.seoDescription or "",
+          contentType = entry.sys.contentType.sys.id,
+          found = true
+        }
+      else
+        return {
+          found = false,
+          message = "Page not found with slug: " .. request.params.slug
+        }
+      end
+    else
+      return {
+        error = "Failed to fetch page from Contentful",
+        slug = request.params.slug
+      }
+    end
+  `
+
 mustache baseLayout = `
 <!DOCTYPE html>
 <html lang="en">
@@ -67,80 +250,7 @@ GET /
     ttl: 30
     enabled: true
   `
-  |> lua: `
-    local spaceId = getEnv("CONTENTFUL_SPACE")
-    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
-    
-    if not spaceId or not token then
-      return {
-        errors = {{
-          type = "configError",
-          message = "Missing Contentful configuration: CONTENTFUL_SPACE and CONTENTFUL_ACCESS_TOKEN required"
-        }}
-      }
-    end
-    
-    return {
-      fetchUrl = "https://cdn.contentful.com/spaces/" .. spaceId .. "/entries?content_type=blogPost&fields.hidden=false&order=-fields.publishedDate",
-      fetchHeaders = {
-        ["Authorization"] = "Bearer " .. token
-      }
-    }
-  `
-  |> fetch: `placeholder`
-  |> lua: `
-    if request.data and request.data.response then
-      local entries = request.data.response.items or {}
-      
-      -- Trim body content like the F# version (take first 4 content nodes)
-      local processedEntries = {}
-      for i, entry in ipairs(entries) do
-        local fields = entry.fields or {}
-        local body = fields.body or {}
-        local content = body.content or {}
-        
-        -- Take only first 4 content nodes for preview
-        local trimmedContent = {}
-        for j = 1, math.min(4, #content) do
-          table.insert(trimmedContent, content[j])
-        end
-        
-        local trimmedBody = {
-          content = trimmedContent,
-          nodeType = body.nodeType,
-          data = body.data
-        }
-        
-        local processedFields = {}
-        for k, v in pairs(fields) do
-          processedFields[k] = v
-        end
-        processedFields.body = trimmedBody
-        
-        -- Render the trimmed body content for preview
-        processedFields.bodyPreview = contentful.renderRichText(trimmedBody, request.data.response.includes)
-        
-        -- Format published date
-        processedFields.formattedDate = dateFormatter.formatPublishedDate(fields.publishedDate)
-        
-        table.insert(processedEntries, {
-          fields = processedFields,
-          sys = entry.sys
-        })
-      end
-      
-      return {
-        articles = processedEntries,
-        total = request.data.response.total or 0,
-        message = "Blog articles retrieved successfully"
-      }
-    else
-      return {
-        error = "Failed to fetch from Contentful",
-        details = request.data
-      }
-    end
-  `
+  |> pipeline: contentfulBlogPosts
   |> mustache: `
     {{<blogLayout}}
       {{$title}}William Cotton{{/title}}
@@ -172,64 +282,7 @@ GET /articles/:slug
     ttl: 30
     enabled: true
   `
-  |> lua: `
-    local spaceId = getEnv("CONTENTFUL_SPACE")
-    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
-    local slug = request.params.slug
-    
-    if not spaceId or not token then
-      return {
-        errors = {{
-          type = "configError", 
-          message = "Missing Contentful configuration"
-        }}
-      }
-    end
-    
-    return {
-      fetchUrl = "https://cdn.contentful.com/spaces/" .. spaceId .. "/entries?content_type=blogPost&fields.slug[in]=" .. slug,
-      fetchHeaders = {
-        ["Authorization"] = "Bearer " .. token
-      }
-    }
-  `
-  |> fetch: `placeholder`
-  |> lua: `
-    if request.data and request.data.response and request.data.response.items then
-      local items = request.data.response.items
-      if #items > 0 then
-        local entry = items[1]
-        local fields = entry.fields or {}
-        
-        -- Format published date
-        local formattedDate = dateFormatter.formatPublishedDate(fields.publishedDate)
-        
-        return {
-          title = fields.title or "Untitled",
-          bodyHtml = contentful.renderRichText(fields.body, request.data.response.includes),
-          slug = fields.slug or "",
-          publishedDate = fields.publishedDate or entry.sys.createdAt,
-          formattedDate = formattedDate,
-          author = fields.author or "William Cotton",
-          excerpt = fields.excerpt or "",
-          tags = fields.tags or {},
-          seoDescription = fields.seoDescription or fields.excerpt or "",
-          contentType = entry.sys.contentType.sys.id,
-          found = true
-        }
-      else
-        return {
-          found = false,
-          message = "Article not found with slug: " .. slug
-        }
-      end
-    else
-      return {
-        error = "Failed to fetch article from Contentful",
-        slug = slug
-      }
-    end
-  `
+  |> pipeline: contentfulBySlug
   |> mustache: `
     {{<blogLayout}}
       {{$title}}{{#found}}{{title}} - {{/found}}William Cotton{{/title}}
@@ -262,56 +315,7 @@ GET /articles/:slug
 
 ## Page by slug
 GET /:slug
-  |> lua: `
-    local spaceId = getEnv("CONTENTFUL_SPACE")
-    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
-    local slug = request.params.slug
-    
-    if not spaceId or not token then
-      return {
-        errors = {{
-          type = "configError", 
-          message = "Missing Contentful configuration"
-        }}
-      }
-    end
-    
-    return {
-      fetchUrl = "https://cdn.contentful.com/spaces/" .. spaceId .. "/entries?content_type=page&fields.slug[in]=" .. slug,
-      fetchHeaders = {
-        ["Authorization"] = "Bearer " .. token
-      }
-    }
-  `
-  |> fetch: `placeholder`
-  |> lua: `
-    if request.data and request.data.response and request.data.response.items then
-      local items = request.data.response.items
-      if #items > 0 then
-        local entry = items[1]
-        local fields = entry.fields or {}
-        
-        return {
-          title = fields.title or "Untitled",
-          bodyHtml = contentful.renderBasicRichText(fields.body, request.data.response.includes),
-          slug = fields.slug or "",
-          seoDescription = fields.seoDescription or "",
-          contentType = entry.sys.contentType.sys.id,
-          found = true
-        }
-      else
-        return {
-          found = false,
-          message = "Page not found with slug: " .. slug
-        }
-      end
-    else
-      return {
-        error = "Failed to fetch page from Contentful",
-        slug = slug
-      }
-    end
-  `
+  |> pipeline: contentfulPages
   |> mustache: `
     {{<baseLayout}}
       {{$title}}{{#found}}{{title}} - {{/found}}William Cotton{{/title}}
