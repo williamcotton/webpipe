@@ -121,28 +121,7 @@ GET /
         processedFields.bodyPreview = contentful.renderRichText(trimmedBody, request.data.response.includes)
         
         -- Format published date
-        local publishedDate = fields.publishedDate or ""
-        if publishedDate ~= "" then
-          -- Convert ISO date to readable format (simplified)
-          local year, month, day = publishedDate:match("(%d+)-(%d+)-(%d+)")
-          if year and month and day then
-            local months = {"January", "February", "March", "April", "May", "June", 
-                          "July", "August", "September", "October", "November", "December"}
-            local monthName = months[tonumber(month)] or month
-            local dayNum = tonumber(day)
-            local suffix = "th"
-            if dayNum % 10 == 1 and dayNum ~= 11 then
-              suffix = "st"
-            elseif dayNum % 10 == 2 and dayNum ~= 12 then
-              suffix = "nd"
-            elseif dayNum % 10 == 3 and dayNum ~= 13 then
-              suffix = "rd"
-            end
-            processedFields.formattedDate = monthName .. " " .. dayNum .. suffix .. ", " .. year
-          else
-            processedFields.formattedDate = publishedDate
-          end
-        end
+        processedFields.formattedDate = dateFormatter.formatPublishedDate(fields.publishedDate)
         
         table.insert(processedEntries, {
           fields = processedFields,
@@ -223,26 +202,7 @@ GET /articles/:slug
         local fields = entry.fields or {}
         
         -- Format published date
-        local publishedDate = fields.publishedDate or ""
-        local formattedDate = publishedDate
-        if publishedDate ~= "" then
-          local year, month, day = publishedDate:match("(%d+)-(%d+)-(%d+)")
-          if year and month and day then
-            local months = {"January", "February", "March", "April", "May", "June", 
-                          "July", "August", "September", "October", "November", "December"}
-            local monthName = months[tonumber(month)] or month
-            local dayNum = tonumber(day)
-            local suffix = "th"
-            if dayNum % 10 == 1 and dayNum ~= 11 then
-              suffix = "st"
-            elseif dayNum % 10 == 2 and dayNum ~= 12 then
-              suffix = "nd"
-            elseif dayNum % 10 == 3 and dayNum ~= 13 then
-              suffix = "rd"
-            end
-            formattedDate = monthName .. " " .. dayNum .. suffix .. ", " .. year
-          end
-        end
+        local formattedDate = dateFormatter.formatPublishedDate(fields.publishedDate)
         
         return {
           title = fields.title or "Untitled",
