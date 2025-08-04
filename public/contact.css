@@ -1,0 +1,25 @@
+.contact {
+  .form-container {
+    input[type='text'],
+    input[type='email'],
+    select,
+    textarea {
+      width: 100%;
+      padding: 1em;
+      border: 0.1em solid silver;
+      border-radius: 0.3em;
+      box-sizing: border-box;
+      margin-top: 0.5em;
+      margin-bottom: 1.5em;
+      resize: vertical;
+    }
+
+    textarea {
+      height: 20em;
+    }
+
+    button.submit {
+      cursor: pointer;
+    }
+  }
+}

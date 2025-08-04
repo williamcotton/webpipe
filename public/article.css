@@ -1,0 +1,9 @@
+article {
+  h2 {
+    margin-bottom: 0.1em;
+  }
+
+  p.published-date {
+    font-size: 0.9em;
+  }
+}

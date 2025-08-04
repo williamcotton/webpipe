@@ -6,3 +6,4 @@ wp_runtime_debug
 build/
 *dSYM/
 .env
+.DS_Store

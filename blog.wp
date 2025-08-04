@@ -10,15 +10,36 @@ mustache baseLayout = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{$title}}William Cotton{{/title}}</title>
-  {{$metaTags}}{{/metaTags}}
-  {{$headExtras}}{{/headExtras}}
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1"/>
+    <link rel="preload" href="LigaMenlo-Regular.woff" as="font" type="font/woff" crossorigin>
+    <title>{{$title}}William Cotton{{/title}}</title>
+    <link rel="stylesheet" href="/app.css"/>
+    {{$metaTags}}<meta name="description" content="William Cotton">{{/metaTags}}
+    {{$headExtras}}{{/headExtras}}
 </head>
 <body>
-  {{$content}}Default content{{/content}}
-  {{$footerScripts}}{{/footerScripts}}
+    <div id="app">
+        <div class="sitewrapper">
+            <header>
+                <h1>
+                    <a href="/">williamcotton.com</a>
+                </h1>
+                <nav>
+                    <a href="/about">About</a>
+                    <a href="/bio">Bio</a>
+                    <a href="/contact">Contact</a>
+                </nav>
+            </header>
+            <div class="content">
+                {{$content}}Default content{{/content}}
+            </div>
+            <footer>
+                <p>© 2024 William Cotton</p>
+            </footer>
+        </div>
+    </div>
+    {{$footerScripts}}{{/footerScripts}}
 </body>
 </html>
 `
@@ -26,24 +47,21 @@ mustache baseLayout = `
 mustache blogLayout = `
 {{<baseLayout}}
   {{$title}}{{#pageTitle}}{{pageTitle}} - {{/pageTitle}}William Cotton{{/title}}
-  {{$metaTags}}
-    {{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}
-    {{#author}}<meta name="author" content="{{author}}">{{/author}}
-  {{/metaTags}}
+  {{$metaTags}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/metaTags}}
   {{$headExtras}}
-    <link rel="preload" href="https://williamcotton.com/LigaMenlo-Regular.woff" as="font" type="font/woff">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/styles/github.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/fsharp.min.js"></script>
     <script src="/hljs-wp.js"></script>
-    <link rel="stylesheet" href="/app.css">
   {{/headExtras}}
   {{$content}}
     {{$pageContent}}Default page content{{/pageContent}}
   {{/content}}
+  {{$footerScripts}}
+  {{/footerScripts}}
 {{/baseLayout}}
 `
 
-## All blog articles (matching F# allArticles function)
+## Front page with site structure
 GET /
   |> cache: `
     ttl: 30
@@ -99,6 +117,33 @@ GET /
         end
         processedFields.body = trimmedBody
         
+        -- Render the trimmed body content for preview
+        processedFields.bodyPreview = contentful.renderRichText(trimmedBody, request.data.response.includes)
+        
+        -- Format published date
+        local publishedDate = fields.publishedDate or ""
+        if publishedDate ~= "" then
+          -- Convert ISO date to readable format (simplified)
+          local year, month, day = publishedDate:match("(%d+)-(%d+)-(%d+)")
+          if year and month and day then
+            local months = {"January", "February", "March", "April", "May", "June", 
+                          "July", "August", "September", "October", "November", "December"}
+            local monthName = months[tonumber(month)] or month
+            local dayNum = tonumber(day)
+            local suffix = "th"
+            if dayNum % 10 == 1 and dayNum ~= 11 then
+              suffix = "st"
+            elseif dayNum % 10 == 2 and dayNum ~= 12 then
+              suffix = "nd"
+            elseif dayNum % 10 == 3 and dayNum ~= 13 then
+              suffix = "rd"
+            end
+            processedFields.formattedDate = monthName .. " " .. dayNum .. suffix .. ", " .. year
+          else
+            processedFields.formattedDate = publishedDate
+          end
+        end
+        
         table.insert(processedEntries, {
           fields = processedFields,
           sys = entry.sys
@@ -119,40 +164,30 @@ GET /
   `
   |> mustache: `
     {{<blogLayout}}
-      {{$title}}William Cotton - Blog Articles{{/title}}
+      {{$title}}William Cotton{{/title}}
       {{$pageContent}}
-        <header>
-          <h1>William Cotton - Blog</h1>
-          <p>{{total}} articles</p>
-        </header>
-        
         {{#error}}
           <div class="error">{{error}}</div>
         {{/error}}
         
-        <div class="article-list">
-          {{#articles}}
-            <article class="article-preview">
-              <h2><a href="/article/{{fields.slug}}" class="read-more">{{fields.title}}</a></h2>
-              <div class="article-meta">
-                Published: {{fields.publishedDate}}<br>
-                {{#fields.author}}Author: {{fields.author}}<br>{{/fields.author}}
-                {{#fields.tags}}Tags: {{fields.tags}}<br>{{/fields.tags}}
-              </div>
-              {{#fields.excerpt}}<p>{{fields.excerpt}}</p>{{/fields.excerpt}}
-              <a href="/article/{{fields.slug}}" class="read-more">Read More →</a>
-            </article>
-          {{/articles}}
-          {{^articles}}
-            <p>No articles found.</p>
-          {{/articles}}
-        </div>
+        {{#articles}}
+        <article>
+            <h2>
+                <a href="/articles/{{fields.slug}}">{{fields.title}}</a>
+            </h2>
+            {{#fields.formattedDate}}<p class="published-date">{{fields.formattedDate}}</p>{{/fields.formattedDate}}
+            {{#fields.bodyPreview}}{{{fields.bodyPreview}}}{{/fields.bodyPreview}}
+        </article>
+        {{/articles}}
+        {{^articles}}
+          <p>No articles found.</p>
+        {{/articles}}
       {{/pageContent}}
     {{/blogLayout}}
   `
 
-## Blog article by slug (matching F# article function)  
-GET /article/:slug
+## Blog article by slug
+GET /articles/:slug
   |> cache: `
     keyTemplate: contentful-article-{params.slug}
     ttl: 30
@@ -187,11 +222,34 @@ GET /article/:slug
         local entry = items[1]
         local fields = entry.fields or {}
         
+        -- Format published date
+        local publishedDate = fields.publishedDate or ""
+        local formattedDate = publishedDate
+        if publishedDate ~= "" then
+          local year, month, day = publishedDate:match("(%d+)-(%d+)-(%d+)")
+          if year and month and day then
+            local months = {"January", "February", "March", "April", "May", "June", 
+                          "July", "August", "September", "October", "November", "December"}
+            local monthName = months[tonumber(month)] or month
+            local dayNum = tonumber(day)
+            local suffix = "th"
+            if dayNum % 10 == 1 and dayNum ~= 11 then
+              suffix = "st"
+            elseif dayNum % 10 == 2 and dayNum ~= 12 then
+              suffix = "nd"
+            elseif dayNum % 10 == 3 and dayNum ~= 13 then
+              suffix = "rd"
+            end
+            formattedDate = monthName .. " " .. dayNum .. suffix .. ", " .. year
+          end
+        end
+        
         return {
           title = fields.title or "Untitled",
           bodyHtml = contentful.renderRichText(fields.body, request.data.response.includes),
           slug = fields.slug or "",
           publishedDate = fields.publishedDate or entry.sys.createdAt,
+          formattedDate = formattedDate,
           author = fields.author or "William Cotton",
           excerpt = fields.excerpt or "",
           tags = fields.tags or {},
@@ -214,49 +272,35 @@ GET /article/:slug
   `
   |> mustache: `
     {{<blogLayout}}
-      {{$title}}{{#found}}{{title}} - William Cotton{{/found}}{{^found}}Article Not Found{{/found}}{{/title}}
-      {{$metaTags}}
-        {{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}
-        {{#author}}<meta name="author" content="{{author}}">{{/author}}
-      {{/metaTags}}
+      {{$title}}{{#found}}{{title}} - {{/found}}William Cotton{{/title}}
+      {{$metaTags}}{{#found}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/found}}{{/metaTags}}
       {{$pageContent}}
         {{#found}}
-          <article>
-            <header class="article-header">
-              <h1>{{title}}</h1>
-              <div class="article-meta">
-                By {{author}} on {{publishedDate}}<br>
-                {{#excerpt}}<em>{{excerpt}}</em>{{/excerpt}}
-              </div>
-            </header>
-            
-            <div class="article-content">
-              {{{bodyHtml}}}
-            </div>
-
-            <div style="margin-top: 50px; padding-top: 20px; border-top: 1px solid #eee;">
-              <a href="/" class="back-link">Back to all articles</a>
-            </div>
-          </article>
+        <article>
+            <h2>{{title}}</h2>
+            {{#formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/formattedDate}}
+            {{{bodyHtml}}}
+        </article>
         {{/found}}
         {{^found}}
-          <div class="not-found">
-            <h1>Article Not Found</h1>
+        <article>
+            <h2>Article Not Found</h2>
             <p>{{message}}</p>
-            <a href="/" class="back-link">Back to all articles</a>
-          </div>
+            <p><a href="/">← Back to home</a></p>
+        </article>
         {{/found}}
         {{#error}}
-          <div class="error">
+        <article>
             <h2>Error</h2>
             <p>{{error}}</p>
-          </div>
+            <p><a href="/">← Back to home</a></p>
+        </article>
         {{/error}}
       {{/pageContent}}
     {{/blogLayout}}
   `
 
-## Page by slug (matching F# page function)
+## Page by slug
 GET /:slug
   |> lua: `
     local spaceId = getEnv("CONTENTFUL_SPACE")
@@ -309,31 +353,34 @@ GET /:slug
     end
   `
   |> mustache: `
-    {{<blogLayout}}
-      {{$title}}{{#found}}{{title}} - William Cotton{{/found}}{{^found}}Page Not Found{{/found}}{{/title}}
-      {{$metaTags}}
-        {{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}
-      {{/metaTags}}
-      {{$pageContent}}
+    {{<baseLayout}}
+      {{$title}}{{#found}}{{title}} - {{/found}}William Cotton{{/title}}
+      {{$metaTags}}{{#found}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/found}}{{/metaTags}}
+      {{$content}}
         {{#found}}
-          <div class="page-content">
-            <h1>{{title}}</h1>
-            {{{bodyHtml}}}
-          </div>
+        <h2>{{title}}</h2>
+        {{{bodyHtml}}}
         {{/found}}
         {{^found}}
-          <div class="not-found">
-            <h1>Page Not Found</h1>
-            <p>{{message}}</p>
-            <a href="/" class="back-link">← Back to home</a>
-          </div>
+        <h2>Page Not Found</h2>
+        <p>{{message}}</p>
+        <p><a href="/">← Back to home</a></p>
         {{/found}}
         {{#error}}
-          <div class="error">
-            <h2>Error</h2>
-            <p>{{error}}</p>
-          </div>
+        <h2>Error</h2>
+        <p>{{error}}</p>
+        <p><a href="/">← Back to home</a></p>
         {{/error}}
-      {{/pageContent}}
-    {{/blogLayout}}
+      {{/content}}
+      {{$footerScripts}}
+        <script type="text/javascript" charset="utf-8">
+        window.expressLink = {
+            "queryCache": {},
+            "csrf": "placeholder-csrf-token",
+            "defaultTitle": "William Cotton"
+        };
+        </script>
+        <script src="/app.js" type="text/javascript" charset="utf-8"></script>
+      {{/footerScripts}}
+    {{/baseLayout}}
   `
