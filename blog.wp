@@ -34,109 +34,8 @@ mustache blogLayout = `
     <link rel="preload" href="https://williamcotton.com/LigaMenlo-Regular.woff" as="font" type="font/woff">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/styles/github.min.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.10.0/highlight.min.js"></script>
-    {{>highlightJsScript}}
-    <style>
-      @font-face {
-        font-family: 'LigaMenlo-Regular';
-        src: url('https://williamcotton.com/LigaMenlo-Regular.woff') format('woff');
-        font-display: swap;
-      }
-      body { font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 40px 20px; line-height: 1.6; }
-      .article-header { margin-bottom: 40px; }
-      .article-meta { color: #666; font-size: 14px; margin: 20px 0; }
-      .article-content { font-size: 18px; }
-      .article-content h1, .article-content h2, .article-content h3, .article-content h4, .article-content h5, .article-content h6 { 
-        margin-top: 40px; margin-bottom: 20px; color: #333; line-height: 1.3; 
-      }
-      .article-content h1 { font-size: 2.2em; }
-      .article-content h2 { font-size: 1.8em; }
-      .article-content h3 { font-size: 1.4em; }
-      .article-content h4 { font-size: 1.2em; }
-      .article-content h5 { font-size: 1.1em; }
-      .article-content h6 { font-size: 1em; font-weight: bold; }
-      .article-content blockquote { 
-        border-left: 4px solid #007acc; padding-left: 20px; margin: 30px 0; 
-        font-style: italic; background: #f8f9fa; padding: 20px; border-radius: 4px;
-      }
-      .article-content code { 
-        background: #f5f5f5; padding: 2px 6px; border-radius: 3px; 
-        font-family: 'LigaMenlo-Regular', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace; font-size: 0.9em; 
-      }
-      .article-content pre { 
-        background: #f8f9fa; padding: 20px; border-radius: 6px; 
-        overflow-x: auto; margin: 30px 0; border: 1px solid #e9ecef;
-      }
-      .article-content pre code { 
-        background: none; padding: 0; border-radius: 0; display: block;
-        font-size: 14px; line-height: 1.5;
-        font-family: 'LigaMenlo-Regular', 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-      }
-      .article-content pre.code-block {
-        position: relative;
-      }
-      .article-content pre.code-block::before {
-        content: attr(data-filename);
-        position: absolute;
-        top: -10px;
-        right: 10px;
-        background: #007acc;
-        color: white;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-size: 12px;
-        font-family: sans-serif;
-      }
-      .article-content .embedded-asset {
-        max-width: 100%; height: auto; margin: 30px 0;
-        border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-      }
-      .article-content ul, .article-content ol {
-        margin: 20px 0; padding-left: 30px;
-      }
-      .article-content li {
-        margin: 8px 0;
-      }
-      .article-content table {
-        width: 100%; border-collapse: collapse; margin: 30px 0;
-        border: 1px solid #e9ecef;
-      }
-      .article-content th, .article-content td {
-        padding: 12px; text-align: left; border-bottom: 1px solid #e9ecef;
-      }
-      .article-content th {
-        background: #f8f9fa; font-weight: bold;
-      }
-      .article-content hr {
-        border: none; height: 2px; background: #e9ecef;
-        margin: 40px 0;
-      }
-      .article-content a {
-        color: #007acc; text-decoration: none;
-      }
-      .article-content a:hover {
-        text-decoration: underline;
-      }
-      .article-content strong {
-        font-weight: bold;
-      }
-      .article-content em {
-        font-style: italic;
-      }
-      .article-content u {
-        text-decoration: underline;
-      }
-      .article-list { display: grid; gap: 30px; }
-      .article-preview { border: 1px solid #ddd; padding: 25px; border-radius: 8px; }
-      .article-preview h2 { margin-top: 0; }
-      .read-more { color: #007acc; text-decoration: none; font-weight: bold; }
-      .read-more:hover { text-decoration: underline; }
-      .tags { margin-top: 30px; }
-      .tag { background: #f0f0f0; padding: 4px 8px; margin-right: 8px; border-radius: 3px; font-size: 12px; }
-      .back-link { color: #007acc; text-decoration: none; }
-      .back-link:hover { text-decoration: underline; }
-      .error { color: red; background: #ffe6e6; padding: 20px; border: 1px solid red; }
-      .not-found { text-align: center; padding: 60px 20px; }
-    </style>
+    <script src="/hljs-wp.js"></script>
+    <link rel="stylesheet" href="/app.css">
   {{/headExtras}}
   {{$content}}
     {{$pageContent}}Default page content{{/pageContent}}
@@ -144,150 +43,8 @@ mustache blogLayout = `
 {{/baseLayout}}
 `
 
-mustache highlightJsScript = """
-<script>
-// Register WebPipe language definition
-hljs.registerLanguage('webpipe', function(hljs) {
-  return {
-    name: 'WebPipe',
-    case_insensitive: false,
-    contains: [
-      // Comments
-      hljs.HASH_COMMENT_MODE,
-
-      // HTTP Methods
-      {
-        scope: 'keyword',
-        match: '\\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\b'
-      },
-
-      // Config / pipeline keywords
-      {
-        scope: 'keyword',
-        match: '\\b(config|pipeline)\\b'
-      },
-
-      {
-        scope: 'keyword',
-        match: '^\\s*[a-zA-Z_][a-zA-Z0-9_]*(?=\\s+[a-zA-Z_][a-zA-Z0-9_]*\\s*=)'
-      },
-
-      // Pipeline operator
-      {
-        scope: 'operator',
-        match: '\\|>'
-      },
-
-      // Middleware functions in pipelines (word before colon)
-      {
-        scope: 'keyword',
-        match: '\\b[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*:)'
-      },
-
-      // Route paths
-      {
-        scope: 'string',
-        match: '/[^\\s]*',
-        contains: [
-          {
-            scope: 'variable',
-            match: ':[a-zA-Z_][a-zA-Z0-9_]*'
-          }
-        ]
-      },
-
-      // Lua embedded content
-      {
-        begin: '\\blua:\\s*`',
-        end: '`',
-        subLanguage: 'lua',
-        contains: [
-          {
-            scope: 'variable',
-            match: 'request\\.[a-zA-Z_][a-zA-Z0-9_]*'
-          }
-        ]
-      },
-
-      // JQ embedded content
-      {
-        begin: '\\bjq:\\s*`',
-        end: '`',
-        subLanguage: 'json',
-        contains: [
-          {
-            scope: 'variable',
-            match: '\\.[a-zA-Z_][a-zA-Z0-9_]*'
-          }
-        ]
-      },
-
-      // SQL embedded content
-      {
-        begin: '\\bpg:\\s*`',
-        end: '`',
-        subLanguage: 'sql'
-      },
-
-      // Generic back‑tick strings
-      {
-        scope: 'string',
-        begin: '`',
-        end: '`',
-        contains: [
-          {
-            scope: 'variable',
-            match: '\\.[a-zA-Z_][a-zA-Z0-9_]*'
-          },
-          hljs.QUOTE_STRING_MODE
-        ]
-      },
-
-      // Regular quoted strings
-      hljs.QUOTE_STRING_MODE,
-
-      // Numbers
-      hljs.C_NUMBER_MODE,
-
-      // Environment variables
-      {
-        scope: 'variable',
-        match: '\\$[a-zA-Z_][a-zA-Z0-9_]*'
-      },
-
-      // Boolean literals
-      {
-        scope: 'literal',
-        match: '\\b(true|false)\\b'
-      },
-
-      // BDD test keywords with quoted strings
-      {
-        begin: '\\b(describe|it)\\s+',
-        beginScope: 'keyword',
-        end: '$',
-        contains: [
-          {
-            scope: 'string',
-            match: '"[^"]*"'
-          }
-        ]
-      },
-
-      // Other BDD keywords
-      {
-        scope: 'keyword',
-        match: '\\b(with|when|then|and|executing|calling|input|output|equals|status|mock|returning)\\b'
-      }
-    ]
-  };
-});
-hljs.highlightAll();
-</script>
-"""
-
 ## All blog articles (matching F# allArticles function)
-GET /contentful/articles
+GET /
   |> cache: `
     ttl: 30
     enabled: true
@@ -376,14 +133,14 @@ GET /contentful/articles
         <div class="article-list">
           {{#articles}}
             <article class="article-preview">
-              <h2><a href="/contentful/article/{{fields.slug}}" class="read-more">{{fields.title}}</a></h2>
+              <h2><a href="/article/{{fields.slug}}" class="read-more">{{fields.title}}</a></h2>
               <div class="article-meta">
                 Published: {{fields.publishedDate}}<br>
                 {{#fields.author}}Author: {{fields.author}}<br>{{/fields.author}}
                 {{#fields.tags}}Tags: {{fields.tags}}<br>{{/fields.tags}}
               </div>
               {{#fields.excerpt}}<p>{{fields.excerpt}}</p>{{/fields.excerpt}}
-              <a href="/contentful/article/{{fields.slug}}" class="read-more">Read More →</a>
+              <a href="/article/{{fields.slug}}" class="read-more">Read More →</a>
             </article>
           {{/articles}}
           {{^articles}}
@@ -395,7 +152,7 @@ GET /contentful/articles
   `
 
 ## Blog article by slug (matching F# article function)  
-GET /contentful/article/:slug
+GET /article/:slug
   |> cache: `
     keyTemplate: contentful-article-{params.slug}
     ttl: 30
@@ -478,7 +235,7 @@ GET /contentful/article/:slug
             </div>
 
             <div style="margin-top: 50px; padding-top: 20px; border-top: 1px solid #eee;">
-              <a href="/contentful/articles" class="back-link">Back to all articles</a>
+              <a href="/" class="back-link">Back to all articles</a>
             </div>
           </article>
         {{/found}}
@@ -486,7 +243,7 @@ GET /contentful/article/:slug
           <div class="not-found">
             <h1>Article Not Found</h1>
             <p>{{message}}</p>
-            <a href="/contentful/articles" class="back-link">Back to all articles</a>
+            <a href="/" class="back-link">Back to all articles</a>
           </div>
         {{/found}}
         {{#error}}
@@ -500,7 +257,7 @@ GET /contentful/article/:slug
   `
 
 ## Page by slug (matching F# page function)
-GET /contentful/page/:slug
+GET /:slug
   |> lua: `
     local spaceId = getEnv("CONTENTFUL_SPACE")
     local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
@@ -579,60 +336,4 @@ GET /contentful/page/:slug
         {{/error}}
       {{/pageContent}}
     {{/blogLayout}}
-  `
-
-## Test route for Contentful configuration
-GET /contentful/config
-  |> lua: `
-    local spaceId = getEnv("CONTENTFUL_SPACE")
-    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
-    
-    return {
-      hasSpaceId = (spaceId ~= nil),
-      hasToken = (token ~= nil),
-      spaceId = spaceId,
-      message = "Contentful configuration status"
-    }
-  `
-
-## Debug route to see raw Contentful response
-GET /contentful/debug/:slug
-  |> lua: `
-    local spaceId = getEnv("CONTENTFUL_SPACE")
-    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
-    local slug = request.params.slug
-    
-    if not spaceId or not token then
-      return {
-        errors = {{
-          type = "configError", 
-          message = "Missing Contentful configuration"
-        }}
-      }
-    end
-    
-    return {
-      fetchUrl = "https://cdn.contentful.com/spaces/" .. spaceId .. "/entries?content_type=blogPost&fields.slug[in]=" .. slug,
-      fetchHeaders = {
-        ["Authorization"] = "Bearer " .. token
-      }
-    }
-  `
-  |> fetch: `placeholder`
-  |> lua: `
-    return {
-      rawResponse = request.data.response,
-      message = "Raw Contentful API response for debugging"
-    }
-  `
-  |> mustache: `
-    {{<baseLayout}}
-      {{$title}}Debug: {{message}}{{/title}}
-      {{$content}}
-        <div style="font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 40px 20px;">
-          <h1>{{message}}</h1>
-          <pre style="background: #f5f5f5; padding: 20px; overflow-x: auto; white-space: pre-wrap;">{{rawResponse}}</pre>
-        </div>
-      {{/content}}
-    {{/baseLayout}}
   `
