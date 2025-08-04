@@ -432,7 +432,7 @@ GET /contentful/article/:slug
         
         return {
           title = fields.title or "Untitled",
-          bodyHtml = renderRichText.renderRichText(fields.body, request.data.response.includes),
+          bodyHtml = contentful.renderRichText(fields.body, request.data.response.includes),
           slug = fields.slug or "",
           publishedDate = fields.publishedDate or entry.sys.createdAt,
           author = fields.author or "William Cotton",
@@ -532,7 +532,7 @@ GET /contentful/page/:slug
         
         return {
           title = fields.title or "Untitled",
-          bodyHtml = renderRichText.renderBasicRichText(fields.body, request.data.response.includes),
+          bodyHtml = contentful.renderBasicRichText(fields.body, request.data.response.includes),
           slug = fields.slug or "",
           seoDescription = fields.seoDescription or "",
           contentType = entry.sys.contentType.sys.id,

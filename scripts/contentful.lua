@@ -1,11 +1,11 @@
-local RenderRichText = {}
+local contentful = {}
 
-function RenderRichText.escapeHtml(text)
+function contentful.escapeHtml(text)
   if not text then return "" end
   return text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub("\"", "&quot;"):gsub("'", "&#39;")
 end
 
-function RenderRichText.generateEntryUrl(target)
+function contentful.generateEntryUrl(target)
   if not target or not target.fields then return "#" end
   local contentType = target.sys and target.sys.contentType and target.sys.contentType.sys and target.sys.contentType.sys.id
   local slug = target.fields.slug
@@ -19,10 +19,10 @@ function RenderRichText.generateEntryUrl(target)
   end
 end
 
-function RenderRichText.renderTextWithMarks(textNode)
+function contentful.renderTextWithMarks(textNode)
   if not textNode or textNode.nodeType ~= "text" then return "" end
   
-  local value = RenderRichText.escapeHtml(textNode.value or "")
+  local value = contentful.escapeHtml(textNode.value or "")
   
   if textNode.marks then
     for _, mark in ipairs(textNode.marks) do
@@ -41,7 +41,7 @@ function RenderRichText.renderTextWithMarks(textNode)
   return value
 end
 
-function RenderRichText.renderRichText(richTextObj, includes)
+function contentful.renderRichText(richTextObj, includes)
   if not richTextObj or not richTextObj.content then
     return ""
   end
@@ -74,7 +74,7 @@ function RenderRichText.renderRichText(richTextObj, includes)
         end
         
         html = html .. string.format('<img src="%s" alt="%s" title="%s" class="embedded-asset" loading="lazy" />\n', 
-                                   RenderRichText.escapeHtml(url), RenderRichText.escapeHtml(description), RenderRichText.escapeHtml(title))
+                                   contentful.escapeHtml(url), contentful.escapeHtml(description), contentful.escapeHtml(title))
       end
       
     -- Handle embedded entries (code blocks, etc.)
@@ -87,13 +87,13 @@ function RenderRichText.renderRichText(richTextObj, includes)
           local contentType = resolvedEntry.sys and resolvedEntry.sys.contentType and resolvedEntry.sys.contentType.sys and resolvedEntry.sys.contentType.sys.id
           
           if (contentType == "codeBlock" or contentType == "codeSample") then
-            local code = RenderRichText.escapeHtml(resolvedEntry.fields.code or "")
+            local code = contentful.escapeHtml(resolvedEntry.fields.code or "")
             local lang = resolvedEntry.fields.lang or resolvedEntry.fields.language or "text"
-            local filename = resolvedEntry.fields.filename and (" data-filename=\"" .. RenderRichText.escapeHtml(resolvedEntry.fields.filename) .. "\"") or ""
-            local title = resolvedEntry.fields.title and ("\n<!-- " .. RenderRichText.escapeHtml(resolvedEntry.fields.title) .. " -->\n") or ""
+            local filename = resolvedEntry.fields.filename and (" data-filename=\"" .. contentful.escapeHtml(resolvedEntry.fields.filename) .. "\"") or ""
+            local title = resolvedEntry.fields.title and ("\n<!-- " .. contentful.escapeHtml(resolvedEntry.fields.title) .. " -->\n") or ""
             
             html = html .. title .. string.format('<pre class="code-block"><code class="language-%s"%s>%s</code></pre>\n', 
-                                                 RenderRichText.escapeHtml(lang), filename, code)
+                                                 contentful.escapeHtml(lang), filename, code)
           end
         end
       end
@@ -103,35 +103,35 @@ function RenderRichText.renderRichText(richTextObj, includes)
       html = html .. "<p>"
       for _, inline in ipairs(node.content) do
         if inline.nodeType == "text" then
-          html = html .. RenderRichText.renderTextWithMarks(inline)
+          html = html .. contentful.renderTextWithMarks(inline)
         elseif inline.nodeType == "hyperlink" then
           local linkText = ""
           if inline.content then
             for _, linkContent in ipairs(inline.content) do
-              linkText = linkText .. RenderRichText.renderTextWithMarks(linkContent)
+              linkText = linkText .. contentful.renderTextWithMarks(linkContent)
             end
           end
           local uri = inline.data and inline.data.uri or "#"
           html = html .. string.format('<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>', 
-                                      RenderRichText.escapeHtml(uri), linkText)
+                                      contentful.escapeHtml(uri), linkText)
         elseif inline.nodeType == "entry-hyperlink" then
           local linkText = ""
           if inline.content then
             for _, linkContent in ipairs(inline.content) do
-              linkText = linkText .. RenderRichText.renderTextWithMarks(linkContent)
+              linkText = linkText .. contentful.renderTextWithMarks(linkContent)
             end
           end
           local target = inline.data and inline.data.target
-          local href = RenderRichText.generateEntryUrl(target)
+          local href = contentful.generateEntryUrl(target)
           local title = target and target.fields and target.fields.title or ""
           
           html = html .. string.format('<a href="%s" title="%s">%s</a>', 
-                                      RenderRichText.escapeHtml(href), RenderRichText.escapeHtml(title), linkText)
+                                      contentful.escapeHtml(href), contentful.escapeHtml(title), linkText)
         elseif inline.nodeType == "asset-hyperlink" then
           local linkText = ""
           if inline.content then
             for _, linkContent in ipairs(inline.content) do
-              linkText = linkText .. RenderRichText.renderTextWithMarks(linkContent)
+              linkText = linkText .. contentful.renderTextWithMarks(linkContent)
             end
           end
           local target = inline.data and inline.data.target
@@ -141,7 +141,7 @@ function RenderRichText.renderRichText(richTextObj, includes)
             url = "https:" .. url
           end
           
-          html = html .. string.format('<a href="%s" download>%s</a>', RenderRichText.escapeHtml(url), linkText)
+          html = html .. string.format('<a href="%s" download>%s</a>', contentful.escapeHtml(url), linkText)
         end
       end
       html = html .. "</p>\n"
@@ -150,37 +150,37 @@ function RenderRichText.renderRichText(richTextObj, includes)
     elseif node.nodeType == "heading-1" and node.content then
       html = html .. "<h1>"
       for _, textNode in ipairs(node.content) do
-        html = html .. RenderRichText.renderTextWithMarks(textNode)
+        html = html .. contentful.renderTextWithMarks(textNode)
       end
       html = html .. "</h1>\n"
     elseif node.nodeType == "heading-2" and node.content then
       html = html .. "<h2>"
       for _, textNode in ipairs(node.content) do
-        html = html .. RenderRichText.renderTextWithMarks(textNode)
+        html = html .. contentful.renderTextWithMarks(textNode)
       end
       html = html .. "</h2>\n"
     elseif node.nodeType == "heading-3" and node.content then
       html = html .. "<h3>"
       for _, textNode in ipairs(node.content) do
-        html = html .. RenderRichText.renderTextWithMarks(textNode)
+        html = html .. contentful.renderTextWithMarks(textNode)
       end
       html = html .. "</h3>\n"
     elseif node.nodeType == "heading-4" and node.content then
       html = html .. "<h4>"
       for _, textNode in ipairs(node.content) do
-        html = html .. RenderRichText.renderTextWithMarks(textNode)
+        html = html .. contentful.renderTextWithMarks(textNode)
       end
       html = html .. "</h4>\n"
     elseif node.nodeType == "heading-5" and node.content then
       html = html .. "<h5>"
       for _, textNode in ipairs(node.content) do
-        html = html .. RenderRichText.renderTextWithMarks(textNode)
+        html = html .. contentful.renderTextWithMarks(textNode)
       end
       html = html .. "</h5>\n"
     elseif node.nodeType == "heading-6" and node.content then
       html = html .. "<h6>"
       for _, textNode in ipairs(node.content) do
-        html = html .. RenderRichText.renderTextWithMarks(textNode)
+        html = html .. contentful.renderTextWithMarks(textNode)
       end
       html = html .. "</h6>\n"
       
@@ -193,11 +193,11 @@ function RenderRichText.renderRichText(richTextObj, includes)
           for _, itemContent in ipairs(listItem.content) do
             if itemContent.nodeType == "paragraph" and itemContent.content then
               for _, textNode in ipairs(itemContent.content) do
-                html = html .. RenderRichText.renderTextWithMarks(textNode)
+                html = html .. contentful.renderTextWithMarks(textNode)
               end
             else
               -- Recursively handle nested content
-              html = html .. RenderRichText.renderRichText(itemContent)
+              html = html .. contentful.renderRichText(itemContent)
             end
           end
           html = html .. "</li>\n"
@@ -212,10 +212,10 @@ function RenderRichText.renderRichText(richTextObj, includes)
           for _, itemContent in ipairs(listItem.content) do
             if itemContent.nodeType == "paragraph" and itemContent.content then
               for _, textNode in ipairs(itemContent.content) do
-                html = html .. RenderRichText.renderTextWithMarks(textNode)
+                html = html .. contentful.renderTextWithMarks(textNode)
               end
             else
-              html = html .. RenderRichText.renderRichText(itemContent)
+              html = html .. contentful.renderRichText(itemContent)
             end
           end
           html = html .. "</li>\n"
@@ -230,11 +230,11 @@ function RenderRichText.renderRichText(richTextObj, includes)
         if quoteContent.nodeType == "paragraph" and quoteContent.content then
           html = html .. "<p>"
           for _, textNode in ipairs(quoteContent.content) do
-            html = html .. RenderRichText.renderTextWithMarks(textNode)
+            html = html .. contentful.renderTextWithMarks(textNode)
           end
           html = html .. "</p>\n"
         else
-          html = html .. RenderRichText.renderRichText(quoteContent)
+          html = html .. contentful.renderRichText(quoteContent)
         end
       end
       html = html .. "</blockquote>\n"
@@ -255,7 +255,7 @@ function RenderRichText.renderRichText(richTextObj, includes)
               html = html .. "<" .. tag .. ">"
               if cell.content then
                 for _, cellContent in ipairs(cell.content) do
-                  html = html .. RenderRichText.renderRichText(cellContent)
+                  html = html .. contentful.renderRichText(cellContent)
                 end
               end
               html = html .. "</" .. tag .. ">\n"
@@ -271,7 +271,7 @@ function RenderRichText.renderRichText(richTextObj, includes)
 end
 
 -- Basic rich text processing for pages (simpler version)
-function RenderRichText.renderBasicRichText(richTextObj, includes)
+function contentful.renderBasicRichText(richTextObj, includes)
   if not richTextObj or not richTextObj.content then
     return ""
   end
@@ -307,4 +307,4 @@ function RenderRichText.renderBasicRichText(richTextObj, includes)
   return html
 end
 
-return RenderRichText
+return contentful
