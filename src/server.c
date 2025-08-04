@@ -7,6 +7,8 @@
 #include <sys/stat.h>
 #include <stdbool.h>
 #include <pthread.h>
+#include <ctype.h>
+#include <limits.h>
 #include "wp.h"
 #include "database_registry.h"
 
@@ -967,10 +969,22 @@ static enum MHD_Result process_route(struct MHD_Connection *connection,
     }
 }
 
+// Forward declaration for static file serving
+static enum MHD_Result try_serve_static_file(struct MHD_Connection *connection, const char *url, MemoryArena *arena);
+
 // Helper function to find and process matching route
 static enum MHD_Result find_and_process_route(struct MHD_Connection *connection,
                                              const char *url, const char *method,
                                              json_t *request, MemoryArena *arena) {
+    // NEW: Try static file serving for GET requests
+    if (strcmp(method, "GET") == 0) {
+        enum MHD_Result static_result = try_serve_static_file(connection, url, arena);
+        if (static_result != MHD_NO) {
+            return static_result; // File served successfully or error occurred
+        }
+        // Fall through to route matching if not a static file
+    }
+    
     // Find matching route
     json_incref(request);
     for (int i = 0; i < runtime->program->data.program.statement_count; i++) {
@@ -989,6 +1003,252 @@ static enum MHD_Result find_and_process_route(struct MHD_Connection *connection,
     return send_error_response(connection, 
                              "{\"error\": \"Not found\"}", 
                              MHD_HTTP_NOT_FOUND);
+}
+
+/* ───────────────────── static file serving ──────────────────────────────── */
+
+// Forward declarations  
+static enum MHD_Result serve_static_file(struct MHD_Connection *connection, const char *file_path, MemoryArena *arena);
+static enum MHD_Result try_serve_static_file(struct MHD_Connection *connection, const char *url, MemoryArena *arena);
+
+// MIME type mapping structure
+typedef struct {
+    const char *extension;
+    const char *mime_type;
+} MimeMapping;
+
+// MIME type mappings for static files
+static MimeMapping mime_types[] = {
+    // Web assets
+    {".html", "text/html"},
+    {".htm", "text/html"},
+    {".css", "text/css"},
+    {".js", "application/javascript"},
+    {".json", "application/json"},
+    
+    // Images
+    {".png", "image/png"},
+    {".jpg", "image/jpeg"},
+    {".jpeg", "image/jpeg"},
+    {".gif", "image/gif"},
+    {".svg", "image/svg+xml"},
+    {".webp", "image/webp"},
+    {".ico", "image/x-icon"},
+    {".bmp", "image/bmp"},
+    
+    // Fonts
+    {".woff", "font/woff"},
+    {".woff2", "font/woff2"},
+    {".ttf", "font/ttf"},
+    {".otf", "font/otf"},
+    {".eot", "application/vnd.ms-fontobject"},
+    
+    // Documents
+    {".pdf", "application/pdf"},
+    {".txt", "text/plain"},
+    {".xml", "application/xml"},
+    {".csv", "text/csv"},
+    
+    // Default (must be last)
+    {NULL, "application/octet-stream"}
+};
+
+// Get MIME type based on file extension
+const char *get_mime_type(const char *file_path) {
+    if (!file_path) {
+        return "application/octet-stream";
+    }
+    
+    // Find the last dot in the filename
+    const char *dot = strrchr(file_path, '.');
+    if (!dot) {
+        return "application/octet-stream";
+    }
+    
+    // Convert extension to lowercase for comparison
+    char ext[32];
+    strncpy(ext, dot, sizeof(ext) - 1);
+    ext[sizeof(ext) - 1] = '\0';
+    
+    for (char *p = ext; *p; p++) {
+        *p = (char)tolower(*p);
+    }
+    
+    // Look up MIME type
+    for (int i = 0; mime_types[i].extension; i++) {
+        if (strcmp(ext, mime_types[i].extension) == 0) {
+            return mime_types[i].mime_type;
+        }
+    }
+    
+    return "application/octet-stream";
+}
+
+// Validate file access within public directory
+int validate_file_access(const char *file_path) {
+    struct stat file_stat;
+    
+    // Check file exists and is readable
+    if (stat(file_path, &file_stat) != 0) {
+        return -1; // File not found
+    }
+    
+    // Must be regular file (not directory or special file)
+    if (!S_ISREG(file_stat.st_mode)) {
+        return -1; // Not a regular file
+    }
+    
+    // Resolve symlinks and validate real path is within public/
+    char real_path[PATH_MAX];
+    if (realpath(file_path, real_path) == NULL) {
+        return -1; // Path resolution failed
+    }
+    
+    // Ensure resolved path starts with ./public/
+    char public_real[PATH_MAX];
+    if (realpath("./public", public_real) == NULL) {
+        return -1; // Public directory issue
+    }
+    
+    if (strncmp(real_path, public_real, strlen(public_real)) != 0) {
+        return -1; // Path outside public directory
+    }
+    
+    return 0; // File is safe to serve
+}
+
+// Validate and sanitize static file path
+int validate_static_path(const char *url_path, char *safe_path, size_t path_size) {
+    if (!url_path || !safe_path || path_size == 0) {
+        return -1;
+    }
+    
+    // Remove leading slash
+    if (url_path[0] == '/') {
+        url_path++;
+    }
+    
+    // Check for empty path (serve index.html)
+    if (strlen(url_path) == 0) {
+        snprintf(safe_path, path_size, "./public/index.html");
+        return validate_file_access(safe_path);
+    }
+    
+    // Security checks
+    if (strstr(url_path, "..") ||      // Path traversal
+        strstr(url_path, "\\") ||      // Windows path separators
+        url_path[0] == '.' ||          // Hidden files
+        strlen(url_path) > 255) {      // Overlong paths
+        return -1; // Security violation
+    }
+    
+    // Check for sensitive file extensions
+    const char *dangerous_exts[] = {".wp", ".so", ".c", ".h", ".o", ".a", NULL};
+    size_t url_len = strlen(url_path);
+    for (int i = 0; dangerous_exts[i]; i++) {
+        size_t ext_len = strlen(dangerous_exts[i]);
+        // Check if the URL ends with this dangerous extension
+        if (url_len >= ext_len && 
+            strcmp(url_path + url_len - ext_len, dangerous_exts[i]) == 0) {
+            return -1; // Sensitive file extension
+        }
+    }
+    
+    // Build safe path
+    snprintf(safe_path, path_size, "./public/%s", url_path);
+    
+    // Additional validation
+    return validate_file_access(safe_path);
+}
+
+// Serve static file content
+static enum MHD_Result serve_static_file(struct MHD_Connection *connection, 
+                                       const char *file_path, 
+                                       MemoryArena *arena) {
+    FILE *file = fopen(file_path, "rb");
+    if (!file) {
+        return MHD_NO; // File not found or not readable
+    }
+    
+    // Get file size
+    fseek(file, 0, SEEK_END);
+    long file_size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    
+    // Check file size limit (10MB max)
+    const long MAX_FILE_SIZE = 10 * 1024 * 1024;
+    if (file_size > MAX_FILE_SIZE) {
+        fclose(file);
+        return send_error_response(connection,
+                                 "{\"error\": \"File too large\"}",
+                                 MHD_HTTP_CONTENT_TOO_LARGE);
+    }
+    
+    // Allocate memory for file content using arena
+    char *file_content = (char *)arena_alloc(arena, (size_t)file_size);
+    if (!file_content) {
+        fclose(file);
+        return send_error_response(connection,
+                                 "{\"error\": \"Memory allocation failed\"}",
+                                 MHD_HTTP_INTERNAL_SERVER_ERROR);
+    }
+    
+    // Read file content
+    size_t bytes_read = fread(file_content, 1, (size_t)file_size, file);
+    fclose(file);
+    
+    if (bytes_read != (size_t)file_size) {
+        return send_error_response(connection,
+                                 "{\"error\": \"File read error\"}",
+                                 MHD_HTTP_INTERNAL_SERVER_ERROR);
+    }
+    
+    // Get MIME type
+    const char *mime_type = get_mime_type(file_path);
+    
+    // Create HTTP response
+    struct MHD_Response *response = MHD_create_response_from_buffer(
+        (size_t)file_size, file_content, MHD_RESPMEM_MUST_COPY);
+    
+    if (!response) {
+        return send_error_response(connection,
+                                 "{\"error\": \"Response creation failed\"}",
+                                 MHD_HTTP_INTERNAL_SERVER_ERROR);
+    }
+    
+    // Set Content-Type header
+    MHD_add_response_header(response, "Content-Type", mime_type);
+    
+    // Set cache headers for static assets
+    MHD_add_response_header(response, "Cache-Control", "public, max-age=3600");
+    
+    // Send response
+    enum MHD_Result ret = MHD_queue_response(connection, MHD_HTTP_OK, response);
+    MHD_destroy_response(response);
+    
+    return ret;
+}
+
+// Try to serve static file
+static enum MHD_Result try_serve_static_file(struct MHD_Connection *connection,
+                                           const char *url,
+                                           MemoryArena *arena) {
+    char safe_path[512];
+    
+    // Validate and get safe file path
+    if (validate_static_path(url, safe_path, sizeof(safe_path)) != 0) {
+        // Security violation - return 403 Forbidden
+        if (strstr(url, "..") || url[0] == '.' || strstr(url, ".wp") || strstr(url, ".so")) {
+            return send_error_response(connection,
+                                     "{\"error\": \"Access forbidden\"}",
+                                     MHD_HTTP_FORBIDDEN);
+        }
+        // Not a static file or doesn't exist, continue to route matching
+        return MHD_NO;
+    }
+    
+    // File exists and is safe to serve
+    return serve_static_file(connection, safe_path, arena);
 }
 
 /* ───────────────────── helper utilities ──────────────────────────────── */

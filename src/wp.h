@@ -296,6 +296,11 @@ typedef struct {
 
 // Function declarations
 char *strdup_safe(const char *s);
+
+// Static file serving functions
+const char *get_mime_type(const char *file_path);
+int validate_file_access(const char *file_path);  
+int validate_static_path(const char *url_path, char *safe_path, size_t path_size);
 void set_current_arena(MemoryArena *arena);
 MemoryArena *get_current_arena(void);
 void *jansson_arena_malloc(size_t size);
