@@ -6,6 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <dirent.h>
+#include <sys/stat.h>
+
+#define SCRIPTS_DIR "scripts"
 
 // Arena allocation function types for middlewares
 typedef void* (*arena_alloc_func)(void* arena, size_t size);
@@ -28,12 +32,25 @@ extern WebpipeDatabaseAPI webpipe_db_api;
 // Global database API - will be injected by server if database providers are available
 WebpipeDatabaseAPI webpipe_db_api = {0};
 
+// Simple script registry (no caching for now)
+typedef struct {
+    char **script_names;    // Array of script names (without .lua)
+    char **script_paths;    // Array of full file paths
+    size_t count;
+    size_t capacity;
+} ScriptRegistry;
+
+static ScriptRegistry g_scripts = {0};
+
 // Function prototypes
 static void jansson_to_lua(lua_State *L, json_t *json);
 static json_t *lua_to_jansson(lua_State *L, int index);
 static json_t *lua_to_jansson_with_depth(lua_State *L, int index, int depth);
 static int lua_execute_sql(lua_State *L);
 json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_func, arena_free_func free_func, const char *lua_code, json_t *middleware_config, char **contentType, json_t *variables);
+int middleware_init(json_t *config);
+void middleware_cleanup(void);
+bool scan_custom_scripts_directory(const char *path);
 
 // Conversion functions
 void jansson_to_lua(lua_State *L, json_t *json) {
@@ -175,6 +192,124 @@ static int lua_panic_handler(lua_State *L) {
     const char *msg = lua_tostring(L, -1);
     fprintf(stderr, "Lua PANIC: %s\n", msg ? msg : "unknown error");
     return 0; // Don't call abort()
+}
+
+// Script discovery and loading functions
+static bool scan_scripts_directory_at_path(const char *scripts_dir_path) {
+    DIR *dir = opendir(scripts_dir_path);
+    if (!dir) {
+        // No scripts directory - that's fine
+        return true;
+    }
+    
+    // Count .lua files first
+    size_t script_count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_REG) {
+            const char *ext = strrchr(entry->d_name, '.');
+            if (ext && strcmp(ext, ".lua") == 0) {
+                script_count++;
+            }
+        }
+    }
+    
+    if (script_count == 0) {
+        closedir(dir);
+        return true;
+    }
+    
+    // Allocate arrays
+    g_scripts.script_names = malloc(script_count * sizeof(char*));
+    g_scripts.script_paths = malloc(script_count * sizeof(char*));
+    if (!g_scripts.script_names || !g_scripts.script_paths) {
+        closedir(dir);
+        return false;
+    }
+    
+    // Populate arrays
+    rewinddir(dir);
+    size_t idx = 0;
+    while ((entry = readdir(dir)) != NULL && idx < script_count) {
+        if (entry->d_type == DT_REG) {
+            const char *ext = strrchr(entry->d_name, '.');
+            if (ext && strcmp(ext, ".lua") == 0) {
+                // Store script name without .lua extension
+                size_t name_len = (size_t)(ext - entry->d_name);
+                g_scripts.script_names[idx] = malloc(name_len + 1);
+                if (g_scripts.script_names[idx]) {
+                    memcpy(g_scripts.script_names[idx], entry->d_name, name_len);
+                    g_scripts.script_names[idx][name_len] = '\0';
+                }
+                
+                // Store full path
+                size_t path_len = strlen(scripts_dir_path) + 1 + strlen(entry->d_name);
+                g_scripts.script_paths[idx] = malloc(path_len + 1);
+                if (g_scripts.script_paths[idx]) {
+                    snprintf(g_scripts.script_paths[idx], path_len + 1, "%s/%s", 
+                             scripts_dir_path, entry->d_name);
+                }
+                idx++;
+            }
+        }
+    }
+    
+    g_scripts.count = idx;
+    g_scripts.capacity = script_count;
+    closedir(dir);
+    return true;
+}
+
+static bool scan_scripts_directory(void) {
+    return scan_scripts_directory_at_path(SCRIPTS_DIR);
+}
+
+static bool load_script_into_state(lua_State *L, const char *script_name) {
+    // Find script path
+    const char *script_path = NULL;
+    for (size_t i = 0; i < g_scripts.count; i++) {
+        if (strcmp(g_scripts.script_names[i], script_name) == 0) {
+            script_path = g_scripts.script_paths[i];
+            break;
+        }
+    }
+    
+    if (!script_path) {
+        return false; // Script not found
+    }
+    
+    // Load and execute the script file
+    if (luaL_dofile(L, script_path) != LUA_OK) {
+        return false; // Script error
+    }
+    
+    // If the script returned a value, set it as a global with the script name
+    if (lua_gettop(L) > 0) {
+        lua_setglobal(L, script_name);
+    }
+    
+    return true;
+}
+
+static void load_all_scripts_into_state(lua_State *L) {
+    for (size_t i = 0; i < g_scripts.count; i++) {
+        if (!load_script_into_state(L, g_scripts.script_names[i])) {
+            fprintf(stderr, "Warning: Failed to load script %s\n", g_scripts.script_names[i]);
+        }
+    }
+}
+
+static void cleanup_scripts(void) {
+    for (size_t i = 0; i < g_scripts.count; i++) {
+        free(g_scripts.script_names[i]);
+        free(g_scripts.script_paths[i]);
+    }
+    free(g_scripts.script_names);
+    free(g_scripts.script_paths);
+    g_scripts.script_names = NULL;
+    g_scripts.script_paths = NULL;
+    g_scripts.count = 0;
+    g_scripts.capacity = 0;
 }
 
 // Lua C function for executeSql - callable from Lua scripts
@@ -321,6 +456,9 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
     
     luaL_openlibs(L);
     
+    // Load all available scripts into this state
+    load_all_scripts_into_state(L);
+    
     // Push input as 'request' global variable
     jansson_to_lua(L, input);
     lua_setglobal(L, "request");
@@ -365,4 +503,22 @@ json_t *middleware_execute(json_t *input, void *arena, arena_alloc_func alloc_fu
         free(arena_code);
     }
     return output;
+}
+
+// Middleware initialization function
+int middleware_init(json_t *config) {
+    (void)config; // Unused for now
+    return scan_scripts_directory() ? 0 : -1;
+}
+
+// Test helper function to scan custom scripts directory
+bool scan_custom_scripts_directory(const char *path) {
+    // Clean up any existing scripts first
+    cleanup_scripts();
+    return scan_scripts_directory_at_path(path);
+}
+
+// Middleware cleanup function
+void middleware_cleanup(void) {
+    cleanup_scripts();
 }

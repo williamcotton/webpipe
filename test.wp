@@ -1071,3 +1071,44 @@ GET /test-fetch-error
 GET /test-fetch-timeout
   |> jq: `{ fetchTimeout: 1 }`
   |> fetch: `https://httpbin.org/delay/5`
+
+## Test Scripts Folder with QueryBuilder
+GET /test-scripts/querybuilder
+  |> lua: `
+    local qb = querybuilder.new()
+    local query = qb:select("id", "name", "email", "created_at")
+                    :from("users")
+                    :where_if(request.query.search, "name ILIKE ?", "%" .. (request.query.search or "") .. "%")
+                    :where_if(request.query.status, "status = ?", request.query.status)
+                    :order_by("created_at DESC")
+                    :limit(request.query.limit or 10)
+                    :offset(request.query.offset or 0)
+                    :build()
+    return {
+      message = "QueryBuilder script loaded from scripts folder!",
+      query = query,
+      searchTerm = request.query.search,
+      status = request.query.status,
+      limit = request.query.limit or 10,
+      offset = request.query.offset or 0
+    }
+  `
+
+## Test Scripts Folder with QueryBuilder and Metadata
+GET /test-scripts/querybuilder-meta
+  |> lua: `
+    local qb = querybuilder.new()
+    local query = qb:select("id", "name", "email", "created_at")
+                    :from("users")
+                    :where_if(request.query.search, "name ILIKE ?", "%" .. (request.query.search or "") .. "%")
+                    :with_metadata({ id = "bigint", name = "text", email = "text", created_at = "timestamp" })
+                    :order_by("created_at DESC")
+                    :limit(request.query.limit or 5)
+                    :offset(request.query.offset or 0)
+                    :build()
+    return {
+      message = "QueryBuilder with metadata from scripts folder!",
+      query = query,
+      note = "This query includes metadata for pagination"
+    }
+  `
