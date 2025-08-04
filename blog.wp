@@ -1,13 +1,3 @@
-# Contentful Integration (Phase 2)
-
-config cache {
-  enabled: true
-  defaultTtl: 60
-  maxCacheSize: 10485760
-}
-
-## Reusable Contentful Pipelines
-
 # Base authentication and environment validation
 pipeline contentfulAuth =
   |> lua: `
@@ -55,7 +45,7 @@ pipeline contentfulFetch =
   |> fetch: `placeholder`
 
 # Blog posts list pipeline
-pipeline contentfulBlogPosts =
+pipeline contentfulArticles =
   |> pipeline: contentfulAuth
   |> jq: `. + { contentType: "blogPost", filters: "&fields.hidden=false&order=-fields.publishedDate" }`
   |> pipeline: contentfulFetch
@@ -107,16 +97,19 @@ pipeline contentfulBlogPosts =
       }
     else
       return {
-        error = "Failed to fetch from Contentful",
-        details = request.data
+        errors = {{
+          type = "contentfulError",
+          message = "Failed to fetch articles from Contentful",
+          details = request.data
+        }}
       }
     end
   `
 
 # Single entry by slug pipeline
-pipeline contentfulBySlug =
+pipeline contentfulByArticle =
   |> pipeline: contentfulAuth
-  |> jq: `. + { filters: ("&fields.slug[in]=" + .params.slug) }`
+  |> jq: `. + { filters: ("&fields.slug[in]=" + .params.article) }`
   |> pipeline: contentfulFetch
   |> lua: `
     if request.data and request.data.response and request.data.response.items then
@@ -138,19 +131,24 @@ pipeline contentfulBySlug =
           excerpt = fields.excerpt or "",
           tags = fields.tags or {},
           seoDescription = fields.seoDescription or fields.excerpt or "",
-          contentType = entry.sys.contentType.sys.id,
-          found = true
+          contentType = entry.sys.contentType.sys.id
         }
       else
         return {
-          found = false,
-          message = "Article not found with slug: " .. request.params.slug
+          errors = {{
+            type = "notFound",
+            message = "Article not found with slug: " .. request.params.article,
+            slug = request.params.article
+          }}
         }
       end
     else
       return {
-        error = "Failed to fetch article from Contentful",
-        slug = request.params.slug
+        errors = {{
+          type = "contentfulError",
+          message = "Failed to fetch article from Contentful",
+          slug = request.params.article
+        }}
       }
     end
   `
@@ -158,7 +156,7 @@ pipeline contentfulBySlug =
 # Pages by slug pipeline  
 pipeline contentfulPages =
   |> pipeline: contentfulAuth
-  |> jq: `. + { contentType: "page", filters: ("&fields.slug[in]=" + .params.slug) }`
+  |> jq: `. + { contentType: "page", filters: ("&fields.slug[in]=" + .params.page) }`
   |> pipeline: contentfulFetch
   |> lua: `
     if request.data and request.data.response and request.data.response.items then
@@ -172,19 +170,24 @@ pipeline contentfulPages =
           bodyHtml = contentful.renderBasicRichText(fields.body, request.data.response.includes),
           slug = fields.slug or "",
           seoDescription = fields.seoDescription or "",
-          contentType = entry.sys.contentType.sys.id,
-          found = true
+          contentType = entry.sys.contentType.sys.id
         }
       else
         return {
-          found = false,
-          message = "Page not found with slug: " .. request.params.slug
+          errors = {{
+            type = "notFound",
+            message = "Page not found with slug: " .. request.params.page,
+            slug = request.params.page
+          }}
         }
       end
     else
       return {
-        error = "Failed to fetch page from Contentful",
-        slug = request.params.slug
+        errors = {{
+          type = "contentfulError",
+          message = "Failed to fetch page from Contentful",
+          slug = request.params.page
+        }}
       }
     end
   `
@@ -218,7 +221,7 @@ mustache baseLayout = `
                 {{$content}}Default content{{/content}}
             </div>
             <footer>
-                <p>© 2024 William Cotton</p>
+                <p>© 2025 William Cotton</p>
             </footer>
         </div>
     </div>
@@ -239,112 +242,168 @@ mustache blogLayout = `
   {{$content}}
     {{$pageContent}}Default page content{{/pageContent}}
   {{/content}}
-  {{$footerScripts}}
-  {{/footerScripts}}
 {{/baseLayout}}
 `
 
 ## Front page with site structure
 GET /
-  |> cache: `
-    ttl: 30
-    enabled: true
-  `
-  |> pipeline: contentfulBlogPosts
-  |> mustache: `
-    {{<blogLayout}}
-      {{$title}}William Cotton{{/title}}
-      {{$pageContent}}
-        {{#error}}
-          <div class="error">{{error}}</div>
-        {{/error}}
-        
-        {{#articles}}
-        <article>
-            <h2>
-                <a href="/articles/{{fields.slug}}">{{fields.title}}</a>
-            </h2>
-            {{#fields.formattedDate}}<p class="published-date">{{fields.formattedDate}}</p>{{/fields.formattedDate}}
-            {{#fields.bodyPreview}}{{{fields.bodyPreview}}}{{/fields.bodyPreview}}
-        </article>
-        {{/articles}}
-        {{^articles}}
-          <p>No articles found.</p>
-        {{/articles}}
-      {{/pageContent}}
-    {{/blogLayout}}
-  `
+  |> pipeline: contentfulArticles
+  |> result
+    ok(200):
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}William Cotton{{/title}}
+          {{$pageContent}}
+            {{#articles}}
+            <article>
+                <h2>
+                    <a href="/articles/{{fields.slug}}">{{fields.title}}</a>
+                </h2>
+                {{#fields.formattedDate}}<p class="published-date">{{fields.formattedDate}}</p>{{/fields.formattedDate}}
+                {{#fields.bodyPreview}}{{{fields.bodyPreview}}}{{/fields.bodyPreview}}
+            </article>
+            {{/articles}}
+            {{^articles}}
+              <p>No articles found.</p>
+            {{/articles}}
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+    contentfulError(500):
+      |> jq: `{ errorMessage: .errors[0].message, errorDetails: .errors[0].details }`
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$pageContent}}
+            <div class="error">
+              <h2>Error Loading Articles</h2>
+              <p>{{errorMessage}}</p>
+              <p><a href="/">← Try again</a></p>
+            </div>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+    default(500):
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$pageContent}}
+            <div class="error">
+              <h2>Unexpected Error</h2>
+              <p>Something went wrong while loading the articles.</p>
+              <p><a href="/">← Try again</a></p>
+            </div>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
 
-## Blog article by slug
-GET /articles/:slug
-  |> cache: `
-    keyTemplate: contentful-article-{params.slug}
-    ttl: 30
-    enabled: true
-  `
-  |> pipeline: contentfulBySlug
-  |> mustache: `
-    {{<blogLayout}}
-      {{$title}}{{#found}}{{title}} - {{/found}}William Cotton{{/title}}
-      {{$metaTags}}{{#found}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/found}}{{/metaTags}}
-      {{$pageContent}}
-        {{#found}}
-        <article>
-            <h2>{{title}}</h2>
-            {{#formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/formattedDate}}
-            {{{bodyHtml}}}
-        </article>
-        {{/found}}
-        {{^found}}
-        <article>
-            <h2>Article Not Found</h2>
-            <p>{{message}}</p>
-            <p><a href="/">← Back to home</a></p>
-        </article>
-        {{/found}}
-        {{#error}}
-        <article>
-            <h2>Error</h2>
-            <p>{{error}}</p>
-            <p><a href="/">← Back to home</a></p>
-        </article>
-        {{/error}}
-      {{/pageContent}}
-    {{/blogLayout}}
-  `
+## Blog article by article
+GET /articles/:article
+  |> pipeline: contentfulByArticle
+  |> result
+    ok(200):
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}{{title}} - William Cotton{{/title}}
+          {{$metaTags}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/metaTags}}
+          {{$pageContent}}
+            <article>
+                <h2>{{title}}</h2>
+                {{#formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/formattedDate}}
+                {{{bodyHtml}}}
+            </article>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+    notFound(404):
+      |> jq: `{ articleSlug: .errors[0].slug, errorMessage: .errors[0].message }`
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}Article Not Found - William Cotton{{/title}}
+          {{$pageContent}}
+            <article>
+                <h2>Article Not Found</h2>
+                <p>{{errorMessage}}</p>
+                <p><a href="/">← Back to home</a></p>
+            </article>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+    contentfulError(500):
+      |> jq: `{ articleSlug: .errors[0].slug, errorMessage: .errors[0].message }`
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$pageContent}}
+            <article>
+                <h2>Error Loading Article</h2>
+                <p>{{errorMessage}}</p>
+                <p><a href="/">← Back to home</a></p>
+            </article>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+    default(500):
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$pageContent}}
+            <article>
+                <h2>Unexpected Error</h2>
+                <p>Something went wrong while loading the article.</p>
+                <p><a href="/">← Back to home</a></p>
+            </article>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
 
-## Page by slug
-GET /:slug
+## Page by page
+GET /:page
   |> pipeline: contentfulPages
-  |> mustache: `
-    {{<baseLayout}}
-      {{$title}}{{#found}}{{title}} - {{/found}}William Cotton{{/title}}
-      {{$metaTags}}{{#found}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/found}}{{/metaTags}}
-      {{$content}}
-        {{#found}}
-        <h2>{{title}}</h2>
-        {{{bodyHtml}}}
-        {{/found}}
-        {{^found}}
-        <h2>Page Not Found</h2>
-        <p>{{message}}</p>
-        <p><a href="/">← Back to home</a></p>
-        {{/found}}
-        {{#error}}
-        <h2>Error</h2>
-        <p>{{error}}</p>
-        <p><a href="/">← Back to home</a></p>
-        {{/error}}
-      {{/content}}
-      {{$footerScripts}}
-        <script type="text/javascript" charset="utf-8">
-        window.expressLink = {
-            "queryCache": {},
-            "csrf": "placeholder-csrf-token",
-            "defaultTitle": "William Cotton"
-        };
-        </script>
-        <script src="/app.js" type="text/javascript" charset="utf-8"></script>
-      {{/footerScripts}}
-    {{/baseLayout}}
-  `
+  |> result
+    ok(200):
+      |> mustache: `
+        {{<baseLayout}}
+          {{$title}}{{title}} - William Cotton{{/title}}
+          {{$metaTags}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/metaTags}}
+          {{$content}}
+            <h2>{{title}}</h2>
+            {{{bodyHtml}}}
+          {{/content}}
+        {{/baseLayout}}
+      `
+    notFound(404):
+      |> jq: `{ pageSlug: .errors[0].slug, errorMessage: .errors[0].message }`
+      |> mustache: `
+        {{<baseLayout}}
+          {{$title}}Page Not Found - William Cotton{{/title}}
+          {{$content}}
+            <h2>Page Not Found</h2>
+            <p>{{errorMessage}}</p>
+            <p><a href="/">← Back to home</a></p>
+          {{/content}}
+        {{/baseLayout}}
+      `
+    contentfulError(500):
+      |> jq: `{ pageSlug: .errors[0].slug, errorMessage: .errors[0].message }`
+      |> mustache: `
+        {{<baseLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$content}}
+            <h2>Error Loading Page</h2>
+            <p>{{errorMessage}}</p>
+            <p><a href="/">← Back to home</a></p>
+          {{/content}}
+        {{/baseLayout}}
+      `
+    default(500):
+      |> mustache: `
+        {{<baseLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$content}}
+            <h2>Unexpected Error</h2>
+            <p>Something went wrong while loading the page.</p>
+            <p><a href="/">← Back to home</a></p>
+          {{/content}}
+        {{/baseLayout}}
+      `
