@@ -9,6 +9,9 @@
 #include <pthread.h>
 #include <ctype.h>
 #include <limits.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include "wp.h"
 #include "database_registry.h"
 
@@ -2173,9 +2176,17 @@ int wp_runtime_init(const char *wp_file, int port) {
     printf("Starting HTTP server on port %d...\n", port);
     
     // Try to start the daemon with more detailed error handling
+    // Bind to 0.0.0.0 for Heroku and container compatibility
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    addr.sin_addr.s_addr = INADDR_ANY; // 0.0.0.0
+    
     runtime->daemon = MHD_start_daemon(MHD_USE_THREAD_PER_CONNECTION,
                                       (uint16_t)port, NULL, NULL,
                                       &handle_request, NULL,
+                                      MHD_OPTION_SOCK_ADDR, &addr,
                                       MHD_OPTION_NOTIFY_COMPLETED, request_completed, NULL,
                                       MHD_OPTION_END);
     

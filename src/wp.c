@@ -99,7 +99,7 @@ static void print_usage(const char *program_name) {
     fprintf(stderr, "  --daemon         Run in daemon mode (background service)\n");
     fprintf(stderr, "  --test           Run in test mode (until SIGTERM)\n");
     fprintf(stderr, "  --timeout <sec>  Run for specified seconds then exit\n");
-    fprintf(stderr, "  --port <num>     Port to listen on (default: 8080, env: WP_PORT)\n");
+    fprintf(stderr, "  --port <num>     Port to listen on (default: 8080, env: PORT, WP_PORT)\n");
     fprintf(stderr, "  --watch          Enable file monitoring (default: enabled)\n");
     fprintf(stderr, "  --no-watch       Disable file monitoring\n");
     fprintf(stderr, "  --help           Show this help message\n");
@@ -124,8 +124,11 @@ static wp_execution_mode_t parse_arguments(int argc, char *argv[], char **wp_fil
     *port = 8080; // Default port
     *watch_enabled = 1; // Default: enabled
     
-    // Check for environment variable
-    const char *env_port = getenv("WP_PORT");
+    // Check for environment variables (PORT for Heroku, WP_PORT for custom setups)
+    const char *env_port = getenv("PORT");
+    if (!env_port) {
+        env_port = getenv("WP_PORT");
+    }
     if (env_port) {
         int env_port_num = atoi(env_port);
         if (env_port_num > 0 && env_port_num <= 65535) {
