@@ -2,7 +2,7 @@ name: Test Suite
 
 on:
   push:
-    branches: [ "main", "contentful" ]
+    branches: [ "main", "docker-container" ]
   pull_request:
     branches: [ "main" ]
 
