@@ -12,7 +12,7 @@ ifeq ($(PLATFORM),LINUX)
 	PG_LIBDIR = /usr/lib/x86_64-linux-gnu
 	PG_INCLUDE = -I/usr/include/postgresql
 	SANITIZE_FLAGS = -fsanitize=address,undefined
-	PLATFORM_LIBS = -lm -lpthread -ldl
+	PLATFORM_LIBS = -lm -lpthread -ldl -lbsd
 	CODESIGN_CMD = 
 	TIDY = clang-tidy
 else ifeq ($(PLATFORM),DARWIN)

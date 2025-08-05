@@ -1,0 +1,80 @@
+# Demo Web Pipe Application
+
+GET /
+  |> jq: `{
+    message: "Welcome to Web Pipe Demo!",
+    endpoints: [
+      "GET /",
+      "GET /api/users/:id",
+      "POST /api/echo",
+      "GET /health"
+    ],
+    timestamp: now
+  }`
+
+GET /health
+  |> jq: `{
+    status: "healthy",
+    service: "wp-demo",
+    version: "1.0.0",
+    timestamp: now
+  }`
+
+GET /api/users/:id
+  |> jq: `{
+    id: (.params.id | tonumber),
+    name: ("User " + .params.id),
+    email: ("user" + .params.id + "@example.com"),
+    status: "active",
+    created_at: "2024-01-01T00:00:00Z"
+  }`
+
+POST /api/echo
+  |> jq: `{
+    method: .method,
+    echo: .body,
+    headers: .headers,
+    timestamp: now
+  }`
+
+GET /api/transform/:data
+  |> lua: `
+    local data = request.params.data
+    local reversed = string.reverse(data)
+    local upper = string.upper(data)
+    local lower = string.lower(data)
+    
+    return {
+      original = data,
+      reversed = reversed,
+      uppercase = upper,
+      lowercase = lower,
+      length = string.len(data),
+      transformations = {
+        "Original: " .. data,
+        "Reversed: " .. reversed,
+        "Uppercase: " .. upper,
+        "Lowercase: " .. lower
+      }
+    }
+  `
+
+GET /api/greeting/:name
+  |> jq: `{ name: .params.name, greeting_type: "friendly" }`
+  |> mustache: `
+    <html>
+      <head>
+        <title>Greeting for {{name}}</title>
+        <style>
+          body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
+          .greeting { font-size: 2em; color: #2563eb; }
+          .subtitle { color: #6b7280; margin-top: 10px; }
+        </style>
+      </head>
+      <body>
+        <div class="greeting">Hello, {{name}}! 👋</div>
+        <div class="subtitle">Welcome to the Web Pipe Demo</div>
+        <p><a href="/">← Back to Home</a></p>
+      </body>
+    </html>
+  `
