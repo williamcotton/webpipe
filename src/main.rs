@@ -33,7 +33,7 @@ struct PipelineStep {
 
 impl Display for PipelineStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.name, self.config)
+        write!(f, "{}: `{}`", self.name, self.config)
     }
 }
 
@@ -63,7 +63,11 @@ fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, _) = multispace0(input)?;
     let (input, name) = take_till1(|c| c == ':')(input)?;
     let (input, _) = tag(":")(input)?;
-    let (input, config) = take_till1(|c| c == '\n' || c == ' ' || c == '|')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("`")(input)?;
+    let (input, config) = take_till1(|c| c == '`')(input)?;
+    let (input, _) = tag("`")(input)?;
+    let (input, _) = multispace0(input)?;
     Ok((input, PipelineStep { name: name.to_string(), config: config.to_string() }))
 }
 
@@ -88,10 +92,10 @@ fn parse_program(input: &str) -> IResult<&str, Program> {
 }
 
 const TEST_INPUT: &str = "GET /test\n\
-        |> test:test\n\
-        |> test2:test2\n\
-    GET /test5 |> test2:test2\n\
-    GET /test6 |> test3:test3";
+        |> test: `test`\n\
+        |> test2: `test2\ntest2`\n\
+    GET /test5 |> test2: `test2`\n\
+    GET /test6 |> test3: `test3`";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let (leftover_input, output) = parse_program(TEST_INPUT)?;
