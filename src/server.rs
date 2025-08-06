@@ -1,5 +1,6 @@
 use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep};
 use crate::middleware::MiddlewareRegistry;
+use crate::error::WebPipeError;
 use axum::{
     body::Bytes,
     extract::{Path as AxumPath, Query, State},
@@ -9,7 +10,7 @@ use axum::{
     Router,
 };
 use serde_json::Value;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, pin::Pin, future::Future};
 use tokio::signal;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
@@ -27,11 +28,12 @@ pub struct ServerState {
 }
 
 impl ServerState {
-    pub async fn execute_pipeline(
-        &self,
-        pipeline: &Pipeline,
+    pub fn execute_pipeline<'a>(
+        &'a self,
+        pipeline: &'a Pipeline,
         mut input: Value,
-    ) -> Result<(Value, String), Box<dyn std::error::Error>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(Value, String, Option<u16>), WebPipeError>> + Send + 'a>> {
+        Box::pin(async move {
         let mut content_type = "application/json".to_string();
         
         for step in &pipeline.steps {
@@ -50,18 +52,103 @@ impl ServerState {
                         }
                         Err(e) => {
                             warn!("Middleware {} failed: {}", name, e);
-                            return Err(Box::new(e));
+                            return Err(WebPipeError::MiddlewareExecutionError(e.to_string()));
                         }
                     }
                 }
-                PipelineStep::Result { branches: _branches } => {
-                    // TODO: Implement result step handling
-                    info!("Result step not yet implemented");
+                PipelineStep::Result { branches } => {
+                    return self.handle_result_step(branches, input, content_type).await;
                 }
             }
         }
         
-        Ok((input, content_type))
+        Ok((input, content_type, None))
+        })
+    }
+
+    async fn handle_result_step(
+        &self,
+        branches: &[crate::ast::ResultBranch],
+        input: Value,
+        mut content_type: String,
+    ) -> Result<(Value, String, Option<u16>), WebPipeError> {
+        // Check for errors in the input data
+        let error_type = self.extract_error_type(&input);
+        
+        // Find matching branch
+        let selected_branch = self.select_branch(branches, &error_type);
+        
+        if let Some(branch) = selected_branch {
+            // info!("Executing result branch: {:?} with status {}", branch.branch_type, branch.status_code);
+            
+            // Execute the branch's pipeline
+            let (result, branch_content_type, _) = self.execute_pipeline(&branch.pipeline, input).await?;
+            
+            // Update content type if the branch changed it
+            if branch_content_type != "application/json" {
+                content_type = branch_content_type;
+            }
+            
+            // Return the result with the status code from the branch
+            Ok((result, content_type, Some(branch.status_code)))
+        } else {
+            // No branch matched - should not happen if parser is correct
+            warn!("No matching branch found for error type: {:?}", error_type);
+            Ok((input, content_type, None))
+        }
+    }
+
+    fn extract_error_type(&self, input: &Value) -> Option<String> {
+        // Look for errors array in the input
+        if let Some(errors) = input.get("errors") {
+            if let Some(errors_array) = errors.as_array() {
+                if let Some(first_error) = errors_array.first() {
+                    if let Some(error_type) = first_error.get("type") {
+                        if let Some(type_str) = error_type.as_str() {
+                            return Some(type_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn select_branch<'a>(
+        &self,
+        branches: &'a [crate::ast::ResultBranch],
+        error_type: &Option<String>,
+    ) -> Option<&'a crate::ast::ResultBranch> {
+        use crate::ast::ResultBranchType;
+        
+        // If there's an error, try to match it to a custom branch
+        if let Some(err_type) = error_type {
+            for branch in branches {
+                if let ResultBranchType::Custom(branch_name) = &branch.branch_type {
+                    if branch_name == err_type {
+                        return Some(branch);
+                    }
+                }
+            }
+        }
+        
+        // If no error or no matching custom branch, try to find 'ok' branch
+        if error_type.is_none() {
+            for branch in branches {
+                if matches!(branch.branch_type, ResultBranchType::Ok) {
+                    return Some(branch);
+                }
+            }
+        }
+        
+        // Fall back to default branch
+        for branch in branches {
+            if matches!(branch.branch_type, ResultBranchType::Default) {
+                return Some(branch);
+            }
+        }
+        
+        None
     }
 }
 
@@ -250,20 +337,27 @@ async fn handle_pipeline_request(
     
     // Execute the pipeline
     match state.execute_pipeline(&pipeline, request_json).await {
-        Ok((result, content_type)) => {
+        Ok((result, content_type, status_code)) => {
+            // Determine the HTTP status code
+            let http_status = if let Some(code) = status_code {
+                StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+            } else {
+                StatusCode::OK
+            };
+            
             if content_type.starts_with("text/html") {
                 match result.as_str() {
-                    Some(html) => Html(html.to_string()).into_response(),
+                    Some(html) => (http_status, Html(html.to_string())).into_response(),
                     None => {
                         // If not a string but should be HTML, try to serialize as JSON
                         match serde_json::to_string(&result) {
-                            Ok(json_str) => Html(json_str).into_response(),
-                            Err(_) => Html("".to_string()).into_response()
+                            Ok(json_str) => (http_status, Html(json_str)).into_response(),
+                            Err(_) => (http_status, Html("".to_string())).into_response()
                         }
                     }
                 }
             } else {
-                Json(result).into_response()
+                (http_status, Json(result)).into_response()
             }
         }
         Err(e) => {

@@ -86,6 +86,7 @@ pub struct ResultBranch {
 #[derive(Debug, Clone)]
 pub enum ResultBranchType {
     Ok,
+    Custom(String),
     Default,
 }
 
@@ -234,9 +235,10 @@ impl Display for PipelineStep {
 
 impl Display for ResultBranch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let branch_name = match self.branch_type {
-            ResultBranchType::Ok => "ok",
-            ResultBranchType::Default => "default",
+        let branch_name = match &self.branch_type {
+            ResultBranchType::Ok => "ok".to_string(),
+            ResultBranchType::Custom(name) => name.clone(),
+            ResultBranchType::Default => "default".to_string(),
         };
         writeln!(f, "{}({}):", branch_name, self.status_code)?;
         let pipeline_str = format!("{}", self.pipeline);
@@ -251,6 +253,7 @@ impl Display for ResultBranchType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ResultBranchType::Ok => write!(f, "ok"),
+            ResultBranchType::Custom(name) => write!(f, "{}", name),
             ResultBranchType::Default => write!(f, "default"),
         }
     }
@@ -449,11 +452,11 @@ fn parse_result_step(input: &str) -> IResult<&str, PipelineStep> {
 
 fn parse_result_branch(input: &str) -> IResult<&str, ResultBranch> {
     let (input, _) = multispace0(input)?;
-    let (input, branch_type_str) = alt((tag("ok"), tag("default"))).parse(input)?;
-    let branch_type = match branch_type_str {
+    let (input, branch_type_str) = parse_identifier(input)?;
+    let branch_type = match branch_type_str.as_str() {
         "ok" => ResultBranchType::Ok,
         "default" => ResultBranchType::Default,
-        _ => unreachable!(),
+        _ => ResultBranchType::Custom(branch_type_str),
     };
     let (input, _) = char('(')(input)?;
     let (input, status_code_str) = digit1(input)?;
