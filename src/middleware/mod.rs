@@ -3,7 +3,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use lru::LruCache;
+use handlebars::Handlebars;
 
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
@@ -26,7 +28,7 @@ impl MiddlewareRegistry {
         registry.register("auth", Box::new(AuthMiddleware));
         registry.register("validate", Box::new(ValidateMiddleware));
         registry.register("pg", Box::new(PgMiddleware));
-        registry.register("mustache", Box::new(MustacheMiddleware));
+        registry.register("handlebars", Box::new(HandlebarsMiddleware::new()));
         registry.register("fetch", Box::new(FetchMiddleware));
         registry.register("cache", Box::new(CacheMiddleware));
         registry.register("lua", Box::new(LuaMiddleware));
@@ -110,7 +112,25 @@ pub struct ValidateMiddleware;
 #[derive(Debug)]
 pub struct PgMiddleware;
 #[derive(Debug)]
-pub struct MustacheMiddleware;
+pub struct HandlebarsMiddleware {
+    handlebars: Arc<Mutex<Handlebars<'static>>>,
+}
+
+impl HandlebarsMiddleware {
+    pub fn new() -> Self {
+        Self {
+            handlebars: Arc::new(Mutex::new(Handlebars::new())),
+        }
+    }
+    
+    fn render_template(&self, template: &str, data: &Value) -> Result<String, WebPipeError> {
+        let handlebars = self.handlebars.lock().unwrap();
+        
+        // Render the template directly without registering it
+        handlebars.render_template(template, data)
+            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Handlebars render error: {}", e)))
+    }
+}
 #[derive(Debug)]
 pub struct FetchMiddleware;
 #[derive(Debug)]
@@ -173,14 +193,13 @@ impl Middleware for PgMiddleware {
 }
 
 #[async_trait]
-impl Middleware for MustacheMiddleware {
+impl Middleware for HandlebarsMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
-        // Placeholder implementation
-        Ok(serde_json::json!({
-            "middleware": "mustache",
-            "config": config,
-            "input": input
-        }))
+        // Render the handlebars template with the input data
+        let rendered = self.render_template(config, input)?;
+        
+        // Return the rendered HTML as a JSON string value
+        Ok(Value::String(rendered))
     }
 }
 

@@ -4,7 +4,7 @@ use axum::{
     body::Bytes,
     extract::{Path as AxumPath, Query, State},
     http::{Method, StatusCode, HeaderMap},
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Html},
     routing::{get, on, MethodFilter},
     Router,
 };
@@ -44,7 +44,7 @@ impl ServerState {
                             input = result;
                             
                             // Special handling for content type changes
-                            if name == "mustache" {
+                            if name == "handlebars" {
                                 content_type = "text/html".to_string();
                             }
                         }
@@ -244,7 +244,7 @@ async fn handle_pipeline_request(
                 "error": "Failed to serialize request",
                 "details": e.to_string()
             });
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response));
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
         }
     };
     
@@ -253,11 +253,17 @@ async fn handle_pipeline_request(
         Ok((result, content_type)) => {
             if content_type.starts_with("text/html") {
                 match result.as_str() {
-                    Some(html) => (StatusCode::OK, Json(serde_json::json!({"html": html}))),
-                    None => (StatusCode::OK, Json(result))
+                    Some(html) => Html(html.to_string()).into_response(),
+                    None => {
+                        // If not a string but should be HTML, try to serialize as JSON
+                        match serde_json::to_string(&result) {
+                            Ok(json_str) => Html(json_str).into_response(),
+                            Err(_) => Html("".to_string()).into_response()
+                        }
+                    }
                 }
             } else {
-                (StatusCode::OK, Json(result))
+                Json(result).into_response()
             }
         }
         Err(e) => {
@@ -266,7 +272,7 @@ async fn handle_pipeline_request(
                 "error": "Pipeline execution failed",
                 "details": e.to_string()
             });
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response))
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
         }
     }
 }

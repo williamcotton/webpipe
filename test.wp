@@ -1,6 +1,6 @@
 GET /hello/:world
   |> jq: `{ world: .params.world }`
-  |> mustache: `<p>hello, {{world}}</p>`
+  |> handlebars: `<p>hello, {{world}}</p>`
 
 GET /unit
   |> unit: ``
