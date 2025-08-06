@@ -24,13 +24,6 @@ Web Pipe (wp) is an **experimental** DSL and runtime for building web APIs and a
 
 Fast and loose. Don't use in production.
 
-## Architecture
-
-The system consists of:
-- **Lexer/Parser**: Parses `.wp` files into an Abstract Syntax Tree (AST)
-- **Runtime**: HTTP server built on libmicrohttpd that executes pipeline steps
-- **Middleware System**: Dynamically loaded `.so` files that process JSON data
-
 ## Pipeline Processing
 
 Each HTTP request follows this flow:
@@ -56,13 +49,13 @@ The request object is maintained throughout the pipeline, with each step potenti
 GET /page/:id
   |> jq: `{ id: .params.id }`
   |> lua: `return { sqlParams: { request.id } }`
-  |> pg: `select * from pages where id = $1`
+  |> pg: `SELECT * FROM pages WHERE id = $1`
 ```
 
 ### Variable Assignments
 
 ```wp
-pg articlesQuery = `select * from articles`
+pg articlesQuery = `SELECT * FROM articles`
 
 GET /articles
   |> jq: `{ sqlParams: [] }`
@@ -76,8 +69,8 @@ Define reusable pipeline sequences that can be referenced by name:
 ```wp
 pipeline getPage = 
   |> jq: `{ sqlParams: [.params.id | tostring] }`
-  |> pg: `SELECT * FROM teams WHERE id = $1`
-  |> jq: `{ team: .data.rows[0] }`
+  |> pg: `SELECT * FROM pages WHERE id = $1`
+  |> jq: `{ page: .data.rows[0] }`
 
 GET /page/:id
   |> pipeline: getPage
