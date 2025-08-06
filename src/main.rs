@@ -1,7 +1,5 @@
 use std::error::Error;
-use parser::parse_program;
-
-mod parser;
+use webpipe::ast::parse_program;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let input = std::fs::read_to_string("comprehensive_test.wp")?;
