@@ -3,15 +3,26 @@
 <img src="./wp.png" width="200">
 
 ```wp
-GET /hello
-  |> jq: `{ hello: "world" }`
+GET /hello/:world
+  |> jq: `{ world: .params.world }`
+  |> mustache: `<p>hello, {{world}}</p>`
+
+describe "hello, world"
+  it "calls the route"
+    when calling GET /hello/world
+    then status is 200
+    and output equals `<p>hello, world</p>`
 ```
 
 # Web Pipe
 
 ## Overview
 
-Web Pipe (wp) is a DSL and runtime for building web APIs through pipeline-based request processing. Each HTTP request flows through a series of middleware that transform JSON data, enabling powerful composition of data processing steps.
+Web Pipe (wp) is an **experimental** DSL and runtime for building web APIs and applications through pipeline-based request processing. Each HTTP request flows through a series of middleware that transform JSON data, enabling composition of data processing steps.
+
+## Developement Status
+
+Fast and loose. Don't use in production.
 
 ## Architecture
 
@@ -19,7 +30,6 @@ The system consists of:
 - **Lexer/Parser**: Parses `.wp` files into an Abstract Syntax Tree (AST)
 - **Runtime**: HTTP server built on libmicrohttpd that executes pipeline steps
 - **Middleware System**: Dynamically loaded `.so` files that process JSON data
-- **Memory Management**: Per-request bump allocator arenas for efficient memory usage
 
 ## Pipeline Processing
 
@@ -99,6 +109,68 @@ GET /api/data
       |> jq: `{
         error: "Internal server error"
       }`
+```
+
+## HTTP Methods Support
+
+WebPipe supports all standard HTTP methods with proper request body handling:
+
+### GET Requests
+Standard GET requests with query parameters and URL parameters:
+
+```wp
+GET /users/:id
+  |> jq: `{ userId: .params.id, filters: .query }`
+```
+
+### POST Requests
+POST requests with JSON or form data bodies:
+
+```wp
+POST /users
+  |> jq: `{
+    method: .method,
+    name: .body.name,
+    email: .body.email,
+    action: "create"
+  }`
+```
+
+### PUT Requests
+PUT requests for full resource updates:
+
+```wp
+PUT /users/:id
+  |> jq: `{
+    method: .method,
+    id: (.params.id | tonumber),
+    name: .body.name,
+    email: .body.email,
+    action: "update"
+  }`
+```
+
+### PATCH Requests
+PATCH requests for partial resource updates:
+
+```wp
+PATCH /users/:id
+  |> jq: `{
+    method: .method,
+    id: (.params.id | tonumber),
+    body: .body,
+    action: "partial_update"
+  }`
+```
+
+### DELETE Requests
+DELETE requests for resource removal:
+
+```wp
+DELETE /users/:id
+  |> jq: `{ sqlParams: [.params.id] }`
+  |> pg: `DELETE FROM users WHERE id = $1`
+  |> jq: `{ success: true, message: "User deleted" }`
 ```
 
 ## Built-in Middleware
@@ -181,12 +253,6 @@ config pg {
 - `maxPoolSize`: Maximum number of connections in the pool (default: 10, maximum: 50)
 - Pool sizes are validated and adjusted automatically to ensure `initialPoolSize ≤ maxPoolSize`
 
-**Performance Benefits:**
-- **Concurrent Requests**: Multiple database queries can execute simultaneously using separate pooled connections
-- **Reduced Latency**: Eliminates connection setup overhead by reusing established connections  
-- **Scalability**: Handles concurrent load by distributing queries across multiple connections
-- **Optimal for Multi-Query Routes**: Routes with multiple database operations benefit significantly from parallel execution
-
 **Example Multi-Query Route:**
 ```wp
 # Define reusable queries as variables
@@ -255,65 +321,6 @@ Returns standardized validation errors when constraints are violated:
       "message": "String must be at least 3 characters long"
     }
   ]
-}
-```
-
-### Cache Middleware
-Provides intelligent request-response caching with TTL expiration, LRU eviction, and template-based cache keys.
-
-```wp
-# Basic caching with TTL
-GET /cached-data
-  |> cache: `
-    ttl: 60
-    enabled: true
-  `
-  |> jq: `{
-    message: "This response is cached",
-    timestamp: now,
-    data: "expensive computation result"
-  }`
-
-# Cache with custom key template using request parameters
-GET /user/:id/profile
-  |> cache: `
-    keyTemplate: user-profile-{params.id}
-    ttl: 300
-    enabled: true
-  `
-  |> jq: `{ sqlParams: [.params.id] }`
-  |> pg: `SELECT * FROM users WHERE id = $1`
-
-# Cache with query parameter-based keys
-GET /api/search
-  |> cache: `
-    keyTemplate: search-{query.q}-{query.category}
-    ttl: 60
-    enabled: true
-  `
-  |> jq: `{ search_term: .query.q, category: .query.category }`
-```
-
-**Cache Features:**
-- **TTL Expiration**: Configurable time-to-live for cached responses
-- **LRU Eviction**: Least Recently Used eviction when cache size limits are reached
-- **Template Keys**: Dynamic cache keys using `{object.property}` syntax to incorporate request parameters, query strings, and headers
-- **Memory Management**: Thread-safe operations with automatic memory cleanup
-- **Size Limits**: Configurable maximum cache size with automatic eviction
-- **Pipeline Integration**: Seamless integration with WebPipe's pipeline system
-
-**Configuration Options:**
-- `ttl`: Time-to-live in seconds (default: 300)
-- `enabled`: Enable/disable caching for this step (default: true)
-- `keyTemplate`: Template string for generating cache keys (e.g., `user-{params.id}-{query.type}`)
-- `key`: Static custom cache key (alternative to keyTemplate)
-
-**Global Cache Configuration:**
-```wp
-config cache {
-  enabled: true
-  defaultTtl: 300
-  maxCacheSize: 104857600  # 100MB
 }
 ```
 
@@ -669,66 +676,63 @@ config fetch {
 - **Content Fetching**: Retrieve remote content for processing or templating
 - **Service Communication**: Inter-service communication in microservice architectures
 
-## HTTP Methods Support
-
-WebPipe supports all standard HTTP methods with proper request body handling:
-
-### GET Requests
-Standard GET requests with query parameters and URL parameters:
+### Cache Middleware
+Provides intelligent request-response caching with TTL expiration, LRU eviction, and template-based cache keys.
 
 ```wp
-GET /users/:id
-  |> jq: `{ userId: .params.id, filters: .query }`
-```
-
-### POST Requests
-POST requests with JSON or form data bodies:
-
-```wp
-POST /users
+# Basic caching with TTL
+GET /cached-data
+  |> cache: `
+    ttl: 60
+    enabled: true
+  `
   |> jq: `{
-    method: .method,
-    name: .body.name,
-    email: .body.email,
-    action: "create"
+    message: "This response is cached",
+    timestamp: now,
+    data: "expensive computation result"
   }`
-```
 
-### PUT Requests
-PUT requests for full resource updates:
-
-```wp
-PUT /users/:id
-  |> jq: `{
-    method: .method,
-    id: (.params.id | tonumber),
-    name: .body.name,
-    email: .body.email,
-    action: "update"
-  }`
-```
-
-### PATCH Requests
-PATCH requests for partial resource updates:
-
-```wp
-PATCH /users/:id
-  |> jq: `{
-    method: .method,
-    id: (.params.id | tonumber),
-    body: .body,
-    action: "partial_update"
-  }`
-```
-
-### DELETE Requests
-DELETE requests for resource removal:
-
-```wp
-DELETE /users/:id
+# Cache with custom key template using request parameters
+GET /user/:id/profile
+  |> cache: `
+    keyTemplate: user-profile-{params.id}
+    ttl: 300
+    enabled: true
+  `
   |> jq: `{ sqlParams: [.params.id] }`
-  |> pg: `DELETE FROM users WHERE id = $1`
-  |> jq: `{ success: true, message: "User deleted" }`
+  |> pg: `SELECT * FROM users WHERE id = $1`
+
+# Cache with query parameter-based keys
+GET /api/search
+  |> cache: `
+    keyTemplate: search-{query.q}-{query.category}
+    ttl: 60
+    enabled: true
+  `
+  |> jq: `{ search_term: .query.q, category: .query.category }`
+```
+
+**Cache Features:**
+- **TTL Expiration**: Configurable time-to-live for cached responses
+- **LRU Eviction**: Least Recently Used eviction when cache size limits are reached
+- **Template Keys**: Dynamic cache keys using `{object.property}` syntax to incorporate request parameters, query strings, and headers
+- **Memory Management**: Thread-safe operations with automatic memory cleanup
+- **Size Limits**: Configurable maximum cache size with automatic eviction
+- **Pipeline Integration**: Seamless integration with WebPipe's pipeline system
+
+**Configuration Options:**
+- `ttl`: Time-to-live in seconds (default: 300)
+- `enabled`: Enable/disable caching for this step (default: true)
+- `keyTemplate`: Template string for generating cache keys (e.g., `user-{params.id}-{query.type}`)
+- `key`: Static custom cache key (alternative to keyTemplate)
+
+**Global Cache Configuration:**
+```wp
+config cache {
+  enabled: true
+  defaultTtl: 300
+  maxCacheSize: 104857600  # 100MB
+}
 ```
 
 ## Building and Installation
@@ -1363,18 +1367,6 @@ Each middleware receives:
 - `middleware_config`: Middleware-wide configuration from config blocks
 - `contentType`: Pointer to content type string (can be modified)
 - `variables`: User-defined variables from the WP file
-
-### Automatic Memory Management with Jansson
-
-The runtime automatically configures jansson to use per-request arena allocators at startup by calling `json_set_alloc_funcs()` in `server.c`. This means that **middleware developers can use jansson JSON objects normally** without worrying about memory management - all JSON allocations will automatically use the per-request arena allocator.
-
-When creating, manipulating, or returning `json_t` objects in middleware:
-- Use standard jansson functions (`json_object()`, `json_array()`, `json_string()`, etc.)
-- No need to manually manage memory for JSON objects
-- All JSON memory is automatically freed when the request completes
-- The arena ensures no memory leaks even if middleware don't explicitly decref objects
-
-This seamless integration allows middleware to focus on business logic rather than memory management details.
 
 ### Middleware Initialization
 
