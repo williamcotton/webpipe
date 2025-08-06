@@ -1,0 +1,12 @@
+GET /hello/:world
+  |> jq: `{ world: .params.world }`
+  |> mustache: `<p>hello, {{world}}</p>`
+
+GET /unit
+  |> unit: ``
+
+describe "hello, world"
+  it "calls the route"
+    when calling GET /hello/world
+    then status is 200
+    and output equals `<p>hello, world</p>`

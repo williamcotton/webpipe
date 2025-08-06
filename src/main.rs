@@ -149,22 +149,17 @@ fn parse_program(input: &str) -> IResult<&str, Program> {
     Ok((input, Program { routes, describe }))
 }
 
-const TEST_INPUT: &str = "GET /hello/:world
-  |> jq: `{ world: .params.world }`
-  |> mustache: `<p>hello, {{world}}</p>`
-
-GET /unit
-  |> unit: ``
-
-describe \"hello, world\"
-  it \"calls the route\"
-    when calling GET /hello/world
-    then status is 200
-    and output equals `<p>hello, world</p>`";
-
 fn main() -> Result<(), Box<dyn Error>> {
-    let (leftover_input, output) = parse_program(TEST_INPUT)?;
-    println!("Leftover input: {}", leftover_input);
-    println!("Output: \n{}", output);
-    Ok(())
+    let input = std::fs::read_to_string("test.wp")?;
+    match parse_program(&input) {
+        Ok((leftover_input, output)) => {
+            println!("Leftover input: {}", leftover_input);
+            println!("Output: \n{}", output);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Parse error: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
