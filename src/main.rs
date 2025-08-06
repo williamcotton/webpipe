@@ -1,6 +1,6 @@
 use nom::IResult;
 use std::error::Error;
-pub use nom::{branch::alt, bytes::complete::{tag, take_till1}, character::complete::multispace0, Parser, multi::many0 };
+pub use nom::{branch::alt, bytes::complete::{tag, take_till1, take_till}, character::complete::multispace0, Parser, multi::many0 };
 use std::fmt::Display;
 
 struct Route {
@@ -11,7 +11,7 @@ struct Route {
 
 impl Display for Route {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {} {}", self.method, self.path, self.pipeline)
+        write!(f, "{} {} {}\n", self.method, self.path, self.pipeline)
     }
 }
 
@@ -37,14 +37,43 @@ impl Display for PipelineStep {
     }
 }
 
+struct Describe {
+    name: String,
+    it: Vec<It>,
+}
+
+impl Display for Describe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let it_str: Vec<String> = self.it.iter().map(|i| i.to_string()).collect();
+        write!(f, "describe \"{}\"\n  {}", self.name, it_str.join("\n  "))
+    }
+}
+
+
+struct It {
+    name: String,
+    when: String,
+    then: String,
+    output: String,
+}
+
+impl Display for It {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "it \"{}\"\n    {}\n    {}\n    {}", self.name, self.when, self.then, self.output)
+    }
+}
+
 struct Program {
     routes: Vec<Route>,
+    describe: Vec<Describe>,
 }
 
 impl Display for Program {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let routes_str: Vec<String> = self.routes.iter().map(|r| r.to_string()).collect();
-        write!(f, "{}", routes_str.join("\n"))
+        let describe_str: Vec<String> = self.describe.iter().map(|d| d.to_string()).collect();
+        write!(f, "{}", routes_str.join("\n"))?;
+        write!(f, "\n{}", describe_str.join("\n"))
     }
 }
 
@@ -65,7 +94,7 @@ fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, _) = tag(":")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("`")(input)?;
-    let (input, config) = take_till1(|c| c == '`')(input)?;
+    let (input, config) = take_till(|c| c == '`')(input)?;
     let (input, _) = tag("`")(input)?;
     let (input, _) = multispace0(input)?;
     Ok((input, PipelineStep { name: name.to_string(), config: config.to_string() }))
@@ -86,20 +115,56 @@ fn parse_route(input: &str) -> IResult<&str, Route> {
     Ok((input, Route { method: method.to_string(), path: path.to_string(), pipeline }))
 }
 
-fn parse_program(input: &str) -> IResult<&str, Program> {
-    let (input, routes) = many0(parse_route).parse(input)?;
-    Ok((input, Program { routes }))
+fn parse_it(input: &str) -> IResult<&str, It> {
+    let (input, _) = tag("it")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("\"")(input)?;
+    let (input, name) = take_till1(|c| c == '\"')(input)?;
+    let (input, _) = tag("\"")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, when) = take_till1(|c| c == '\n')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, then) = take_till1(|c| c == '\n')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, output) = take_till1(|c| c == '\n')(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, It { name: name.to_string(), when: when.to_string(), then: then.to_string(), output: output.to_string() }))
 }
 
-const TEST_INPUT: &str = "GET /test\n\
-        |> test: `test`\n\
-        |> test2: `test2\ntest2`\n\
-    GET /test5 |> test2: `test2`\n\
-    GET /test6 |> test3: `test3`";
+fn parse_describe(input: &str) -> IResult<&str, Describe> {
+    let (input, _) = tag("describe")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("\"")(input)?;
+    let (input, name) = take_till1(|c| c == '\"')(input)?;
+    let (input, _) = tag("\"")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, it) = many0(parse_it).parse(input)?;
+    Ok((input, Describe { name: name.to_string(), it }))
+}
+
+
+fn parse_program(input: &str) -> IResult<&str, Program> {
+    let (input, routes) = many0(parse_route).parse(input)?;
+    let (input, describe) = many0(parse_describe).parse(input)?;
+    Ok((input, Program { routes, describe }))
+}
+
+const TEST_INPUT: &str = "GET /hello/:world
+  |> jq: `{ world: .params.world }`
+  |> mustache: `<p>hello, {{world}}</p>`
+
+GET /unit
+  |> unit: ``
+
+describe \"hello, world\"
+  it \"calls the route\"
+    when calling GET /hello/world
+    then status is 200
+    and output equals `<p>hello, world</p>`";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let (leftover_input, output) = parse_program(TEST_INPUT)?;
     println!("Leftover input: {}", leftover_input);
-    println!("Output: {}", output);
+    println!("Output: \n{}", output);
     Ok(())
 }
