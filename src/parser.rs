@@ -71,9 +71,22 @@ pub struct Pipeline {
 }
 
 #[derive(Debug, Clone)]
-pub struct PipelineStep {
-    pub name: String,
-    pub config: String,
+pub enum PipelineStep {
+    Regular { name: String, config: String },
+    Result { branches: Vec<ResultBranch> },
+}
+
+#[derive(Debug, Clone)]
+pub struct ResultBranch {
+    pub branch_type: ResultBranchType,
+    pub status_code: u16,
+    pub pipeline: Pipeline,
+}
+
+#[derive(Debug, Clone)]
+pub enum ResultBranchType {
+    Ok,
+    Default,
 }
 
 #[derive(Debug, Clone)]
@@ -204,7 +217,42 @@ impl Display for Pipeline {
 
 impl Display for PipelineStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "  |> {}: `{}`", self.name, self.config)
+        match self {
+            PipelineStep::Regular { name, config } => {
+                write!(f, "  |> {}: `{}`", name, config)
+            }
+            PipelineStep::Result { branches } => {
+                writeln!(f, "  |> result")?;
+                for branch in branches {
+                    write!(f, "    {}", branch)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Display for ResultBranch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let branch_name = match self.branch_type {
+            ResultBranchType::Ok => "ok",
+            ResultBranchType::Default => "default",
+        };
+        writeln!(f, "{}({}):", branch_name, self.status_code)?;
+        let pipeline_str = format!("{}", self.pipeline);
+        for line in pipeline_str.lines() {
+            writeln!(f, "    {}", line)?;
+        }
+        Ok(())
+    }
+}
+
+impl Display for ResultBranchType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResultBranchType::Ok => write!(f, "ok"),
+            ResultBranchType::Default => write!(f, "default"),
+        }
     }
 }
 
@@ -371,6 +419,13 @@ fn parse_config(input: &str) -> IResult<&str, Config> {
 
 // Pipeline parsing
 fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
+    alt((
+        parse_result_step,
+        parse_regular_step
+    )).parse(input)
+}
+
+fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("|>")(input)?;
     let (input, _) = multispace0(input)?;
@@ -379,7 +434,37 @@ fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, _) = multispace0(input)?;
     let (input, config) = parse_step_config(input)?;
     let (input, _) = multispace0(input)?;
-    Ok((input, PipelineStep { name, config }))
+    Ok((input, PipelineStep::Regular { name, config }))
+}
+
+fn parse_result_step(input: &str) -> IResult<&str, PipelineStep> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("|>")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("result")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, branches) = many0(parse_result_branch).parse(input)?;
+    Ok((input, PipelineStep::Result { branches }))
+}
+
+fn parse_result_branch(input: &str) -> IResult<&str, ResultBranch> {
+    let (input, _) = multispace0(input)?;
+    let (input, branch_type_str) = alt((tag("ok"), tag("default"))).parse(input)?;
+    let branch_type = match branch_type_str {
+        "ok" => ResultBranchType::Ok,
+        "default" => ResultBranchType::Default,
+        _ => unreachable!(),
+    };
+    let (input, _) = char('(')(input)?;
+    let (input, status_code_str) = digit1(input)?;
+    let status_code = status_code_str.parse::<u16>().map_err(|_| {
+        nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::MapRes))
+    })?;
+    let (input, _) = char(')')(input)?;
+    let (input, _) = char(':')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, pipeline) = parse_pipeline(input)?;
+    Ok((input, ResultBranch { branch_type, status_code, pipeline }))
 }
 
 fn parse_pipeline(input: &str) -> IResult<&str, Pipeline> {
