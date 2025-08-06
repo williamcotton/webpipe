@@ -1,11 +1,11 @@
-use crate::ast::{Program, Route, Pipeline, PipelineRef, PipelineStep};
+use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep};
 use crate::middleware::MiddlewareRegistry;
 use axum::{
     body::Bytes,
     extract::{Path as AxumPath, Query, State},
-    http::{Method, StatusCode, HeaderMap, Uri},
+    http::{Method, StatusCode, HeaderMap},
     response::{IntoResponse, Json},
-    routing::{delete, get, post, put},
+    routing::{get, on, MethodFilter},
     Router,
 };
 use serde_json::Value;
@@ -87,44 +87,57 @@ impl WebPipeServer {
     }
 
     pub fn router(self) -> Router {
-        let mut router = Router::new();
+        let mut router = Router::new().route("/health", get(health_check));
 
-        // Add health check endpoint
-        router = router.route("/health", get(health_check));
+        let server_state = ServerState {
+            program: self.program.clone(),
+            middleware_registry: self.middleware_registry.clone(),
+        };
 
-        // Register routes from the AST
         for route in &self.program.routes {
-            let method = route.method.as_str();
-            let path = &route.path;
+            let path = route.path.clone();
+            let pipeline = match &route.pipeline {
+                PipelineRef::Inline(p) => Arc::new(p.clone()),
+                PipelineRef::Named(name) => {
+                    let p = self.program
+                        .pipelines
+                        .iter()
+                        .find(|pl| pl.name == *name)
+                        .expect("pipeline not found")
+                        .pipeline
+                        .clone();
+                    Arc::new(p)
+                }
+            };
+
+            let filter = match route.method.as_str() {
+                "GET" => MethodFilter::GET,
+                "POST" => MethodFilter::POST,
+                "PUT" => MethodFilter::PUT,
+                "DELETE" => MethodFilter::DELETE,
+                other => {
+                    warn!("Unsupported HTTP method: {}", other);
+                    continue;
+                }
+            };
+
+            info!("Registering route: {} {}", route.method, path);
             
-            info!("Registering route: {} {}", method, path);
+            let pipeline_clone = pipeline.clone();
+            let handler = move |
+                state: State<ServerState>,
+                method: Method,
+                headers: HeaderMap,
+                path_params: AxumPath<HashMap<String, String>>,
+                query_params: Query<HashMap<String, String>>,
+                body: Bytes,
+            | async move {
+                handle_pipeline_request(state, method, headers, path_params, query_params, body, pipeline_clone.clone()).await
+            };
             
-            match method {
-                "GET" => {
-                    router = router.route(path, get(handle_route_request));
-                }
-                "POST" => {
-                    router = router.route(path, post(handle_route_request));
-                }
-                "PUT" => {
-                    router = router.route(path, put(handle_route_request));
-                }
-                "DELETE" => {
-                    router = router.route(path, delete(handle_route_request));
-                }
-                _ => {
-                    warn!("Unsupported HTTP method: {}", method);
-                }
-            }
+            router = router.route(&path, on(filter, handler));
         }
 
-        // Add server state
-        let server_state = ServerState {
-            program: self.program,
-            middleware_registry: self.middleware_registry,
-        };
-        
-        // Add middleware layers and state
         router
             .layer(
                 ServiceBuilder::new()
@@ -148,36 +161,16 @@ impl WebPipeServer {
     }
 }
 
-
-async fn handle_route_request(
+async fn handle_pipeline_request(
     State(state): State<ServerState>,
     method: Method,
-    uri: Uri,
     headers: HeaderMap,
     AxumPath(path_params): AxumPath<HashMap<String, String>>,
     Query(query_params): Query<HashMap<String, String>>,
     body: Bytes,
+    pipeline: Arc<Pipeline>,
 ) -> impl IntoResponse {
     let method_str = method.to_string();
-    let path = uri.path().to_string();
-    
-    // info!("Handling request for: {} {}", method_str, path);
-    
-    // Find matching route in the program by method and path pattern
-    let route = match find_matching_route(&state.program.routes, &method_str, &path) {
-        Some(route) => route,
-        None => {
-            warn!("No matching route found for {} {}", method_str, path);
-            let error_response = serde_json::json!({
-                "error": "Route not found",
-                "method": method_str,
-                "path": path
-            });
-            return (StatusCode::NOT_FOUND, Json(error_response));
-        }
-    };
-    
-    // info!("Matched route: {} {}", route.method, route.path);
     
     // Convert headers to HashMap
     let headers_map: HashMap<String, String> = headers
@@ -233,7 +226,7 @@ async fn handle_route_request(
     // Create WebPipe request object
     let webpipe_request = WebPipeRequest {
         method: method_str,
-        path: path.clone(),
+        path: "".to_string(), // Path is handled by Axum routing
         query: query_params,
         params: path_params,
         headers: headers_map,
@@ -255,41 +248,15 @@ async fn handle_route_request(
         }
     };
     
-    // Get the pipeline to execute
-    let pipeline = match &route.pipeline {
-        PipelineRef::Inline(pipeline) => pipeline,
-        PipelineRef::Named(name) => {
-            // Find named pipeline in the program
-            match state.program.pipelines.iter().find(|p| p.name == *name) {
-                Some(named_pipeline) => &named_pipeline.pipeline,
-                None => {
-                    warn!("Named pipeline '{}' not found", name);
-                    let error_response = serde_json::json!({
-                        "error": "Pipeline not found",
-                        "pipeline": name
-                    });
-                    return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response));
-                }
-            }
-        }
-    };
-    
     // Execute the pipeline
-    match state.execute_pipeline(pipeline, request_json).await {
+    match state.execute_pipeline(&pipeline, request_json).await {
         Ok((result, content_type)) => {
-            // info!("Pipeline executed successfully, content-type: {}", content_type);
-            
             if content_type.starts_with("text/html") {
-                // Return HTML response
                 match result.as_str() {
                     Some(html) => (StatusCode::OK, Json(serde_json::json!({"html": html}))),
-                    None => {
-                        // If not a string, return as JSON
-                        (StatusCode::OK, Json(result))
-                    }
+                    None => (StatusCode::OK, Json(result))
                 }
             } else {
-                // Return JSON response
                 (StatusCode::OK, Json(result))
             }
         }
@@ -304,38 +271,6 @@ async fn handle_route_request(
     }
 }
 
-// Find matching route in the program
-fn find_matching_route<'a>(routes: &'a [Route], method: &str, path: &str) -> Option<&'a Route> {
-    routes.iter().find(|route| {
-        route.method == method && routes_match(&route.path, path)
-    })
-}
-
-// Simple route matching - just check if paths are equal for now
-fn routes_match(route_path: &str, request_path: &str) -> bool {
-    if route_path == request_path {
-        return true;
-    }
-    
-    // Simple parameter matching (e.g., /hello/:world matches /hello/test)
-    let route_segments: Vec<&str> = route_path.split('/').collect();
-    let request_segments: Vec<&str> = request_path.split('/').collect();
-    
-    if route_segments.len() != request_segments.len() {
-        return false;
-    }
-    
-    for (route_seg, request_seg) in route_segments.iter().zip(request_segments.iter()) {
-        if route_seg.starts_with(':') {
-            // This is a parameter, it matches any value
-            continue;
-        } else if route_seg != request_seg {
-            return false;
-        }
-    }
-    
-    true
-}
 
 async fn health_check() -> impl IntoResponse {
     let mut status = HashMap::new();
