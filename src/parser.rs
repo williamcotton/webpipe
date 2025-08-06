@@ -278,6 +278,24 @@ fn parse_multiline_string(input: &str) -> IResult<&str, String> {
     ).parse(input)
 }
 
+// Pipeline step configuration parser - handles both backticks and double quotes
+fn parse_step_config(input: &str) -> IResult<&str, String> {
+    alt((
+        // Backtick-delimited multi-line strings
+        delimited(
+            char('`'),
+            map(take_until("`"), |s: &str| s.to_string()),
+            char('`')
+        ),
+        // Double quote-delimited strings
+        delimited(
+            char('"'),
+            map(take_until("\""), |s: &str| s.to_string()),
+            char('"')
+        )
+    )).parse(input)
+}
+
 // Basic parsers
 fn parse_method(input: &str) -> IResult<&str, String> {
     map(
@@ -359,7 +377,7 @@ fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, name) = parse_identifier(input)?;
     let (input, _) = char(':')(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, config) = parse_multiline_string(input)?;
+    let (input, config) = parse_step_config(input)?;
     let (input, _) = multispace0(input)?;
     Ok((input, PipelineStep { name, config }))
 }
