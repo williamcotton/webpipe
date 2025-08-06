@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use lru::LruCache;
 use handlebars::Handlebars;
+use mlua::{Lua, Value as LuaValue, Result as LuaResult};
 
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
@@ -31,7 +32,7 @@ impl MiddlewareRegistry {
         registry.register("handlebars", Box::new(HandlebarsMiddleware::new()));
         registry.register("fetch", Box::new(FetchMiddleware));
         registry.register("cache", Box::new(CacheMiddleware));
-        registry.register("lua", Box::new(LuaMiddleware));
+        registry.register("lua", Box::new(LuaMiddleware::new()));
         registry.register("log", Box::new(LogMiddleware));
         
         registry
@@ -59,6 +60,11 @@ thread_local! {
     static JQ_PROGRAM_CACHE: RefCell<LruCache<String, jq_rs::JqProgram>> = RefCell::new(
         LruCache::new(std::num::NonZeroUsize::new(100).unwrap())
     );
+}
+
+// Thread-local Lua state since Lua is not Send + Sync
+thread_local! {
+    static LUA_STATE: RefCell<Option<Lua>> = RefCell::new(None);
 }
 
 // Placeholder middleware implementations
@@ -137,6 +143,179 @@ pub struct FetchMiddleware;
 pub struct CacheMiddleware;
 #[derive(Debug)]
 pub struct LuaMiddleware;
+
+impl LuaMiddleware {
+    pub fn new() -> Self {
+        Self
+    }
+    
+    fn ensure_lua_initialized() -> Result<(), WebPipeError> {
+        LUA_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            if state.is_none() {
+                let lua = Lua::new();
+                
+                // Set up safe environment by removing dangerous functions
+                if let Err(e) = lua.load(r#"
+                    -- Remove dangerous functions
+                    os.execute = nil
+                    os.exit = nil
+                    io = nil
+                    debug = nil
+                "#).exec() {
+                    return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to initialize Lua environment: {}", e)));
+                }
+                
+                *state = Some(lua);
+            }
+            Ok(())
+        })
+    }
+    
+    fn json_to_lua<'lua>(lua: &'lua Lua, value: &Value) -> LuaResult<LuaValue<'lua>> {
+        match value {
+            Value::Null => Ok(LuaValue::Nil),
+            Value::Bool(b) => Ok(LuaValue::Boolean(*b)),
+            Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Ok(LuaValue::Integer(i))
+                } else if let Some(f) = n.as_f64() {
+                    Ok(LuaValue::Number(f))
+                } else {
+                    Ok(LuaValue::Number(0.0))
+                }
+            },
+            Value::String(s) => lua.create_string(s).map(LuaValue::String),
+            Value::Array(arr) => {
+                let table = lua.create_table()?;
+                for (i, item) in arr.iter().enumerate() {
+                    table.set(i + 1, Self::json_to_lua(lua, item)?)?; // 1-indexed
+                }
+                Ok(LuaValue::Table(table))
+            },
+            Value::Object(obj) => {
+                let table = lua.create_table()?;
+                for (key, val) in obj {
+                    table.set(key.as_str(), Self::json_to_lua(lua, val)?)?;
+                }
+                Ok(LuaValue::Table(table))
+            }
+        }
+    }
+    
+    fn lua_to_json_with_depth(value: LuaValue, depth: u32) -> Result<Value, WebPipeError> {
+        const MAX_DEPTH: u32 = 20;
+        
+        if depth > MAX_DEPTH {
+            return Ok(Value::String("[max depth exceeded]".to_string()));
+        }
+        
+        match value {
+            LuaValue::Nil => Ok(Value::Null),
+            LuaValue::Boolean(b) => Ok(Value::Bool(b)),
+            LuaValue::Integer(i) => Ok(Value::Number(serde_json::Number::from(i))),
+            LuaValue::Number(n) => {
+                if let Some(num) = serde_json::Number::from_f64(n) {
+                    Ok(Value::Number(num))
+                } else {
+                    Ok(Value::Number(serde_json::Number::from(0)))
+                }
+            },
+            LuaValue::String(s) => {
+                match s.to_str() {
+                    Ok(str_val) => Ok(Value::String(str_val.to_string())),
+                    Err(_) => Ok(Value::String("[invalid utf8]".to_string()))
+                }
+            },
+            LuaValue::Table(table) => {
+                // Collect all pairs first to avoid ownership issues
+                let pairs_result: Result<Vec<_>, _> = table.pairs::<LuaValue, LuaValue>().collect();
+                let pairs = match pairs_result {
+                    Ok(p) => p,
+                    Err(_) => return Ok(Value::Object(serde_json::Map::new()))
+                };
+                
+                // Determine if table is array-like or object-like
+                let mut is_array = true;
+                let mut max_index = 0i64;
+                let mut count = 0;
+                
+                for (key, _) in &pairs {
+                    match key {
+                        LuaValue::Integer(i) if *i > 0 => {
+                            max_index = max_index.max(*i);
+                            count += 1;
+                        },
+                        _ => {
+                            is_array = false;
+                            break;
+                        }
+                    }
+                }
+                
+                if is_array && count == max_index && count > 0 {
+                    // Create array - extract values from pairs we already collected
+                    let mut array_items: Vec<(i64, LuaValue)> = pairs.into_iter()
+                        .filter_map(|(key, value)| {
+                            if let LuaValue::Integer(i) = key {
+                                Some((i, value))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    
+                    array_items.sort_by_key(|(i, _)| *i);
+                    
+                    let mut array = Vec::with_capacity(count as usize);
+                    for (_, value) in array_items {
+                        array.push(Self::lua_to_json_with_depth(value, depth + 1)?);
+                    }
+                    Ok(Value::Array(array))
+                } else {
+                    // Create object
+                    let mut object = serde_json::Map::new();
+                    for (key, value) in pairs {
+                        let key_str = match key {
+                            LuaValue::String(s) => s.to_str().unwrap_or("[invalid key]").to_string(),
+                            LuaValue::Integer(i) => i.to_string(),
+                            LuaValue::Number(n) => n.to_string(),
+                            _ => "[unsupported key]".to_string()
+                        };
+                        object.insert(key_str, Self::lua_to_json_with_depth(value, depth + 1)?);
+                    }
+                    Ok(Value::Object(object))
+                }
+            },
+            _ => Ok(Value::String("[unsupported lua type]".to_string()))
+        }
+    }
+    
+    fn execute_lua_script(&self, script: &str, input: &Value) -> Result<Value, WebPipeError> {
+        // Ensure Lua is initialized in this thread
+        Self::ensure_lua_initialized()?;
+        
+        LUA_STATE.with(|state| {
+            let state = state.borrow();
+            let lua = state.as_ref().unwrap();
+            
+            // Convert input to Lua value
+            let lua_input = Self::json_to_lua(lua, input)
+                .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JSON to Lua conversion error: {}", e)))?;
+            
+            // Set request as global variable
+            lua.globals().set("request", lua_input)
+                .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Setting request variable error: {}", e)))?;
+            
+            // Execute the script
+            let result: LuaValue = lua.load(script).eval()
+                .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Lua execution error: {}", e)))?;
+            
+            // Convert result back to JSON
+            Self::lua_to_json_with_depth(result, 0)
+        })
+    }
+}
 #[derive(Debug)]
 pub struct LogMiddleware;
 
@@ -230,12 +409,7 @@ impl Middleware for CacheMiddleware {
 #[async_trait]
 impl Middleware for LuaMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
-        // Placeholder implementation
-        Ok(serde_json::json!({
-            "middleware": "lua",
-            "config": config,
-            "input": input
-        }))
+        self.execute_lua_script(config, input)
     }
 }
 
