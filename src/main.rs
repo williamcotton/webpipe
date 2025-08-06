@@ -4,7 +4,7 @@ use parser::parse_program;
 mod parser;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let input = std::fs::read_to_string("test.wp")?;
+    let input = std::fs::read_to_string("comprehensive_test.wp")?;
     match parse_program(&input) {
         Ok((leftover_input, output)) => {
             println!("Leftover input: {}", leftover_input);

@@ -1,0 +1,117 @@
+# Test App
+
+config pg {
+  host: $WP_PG_HOST || "localhost"
+  port: $WP_PG_PORT || "5432"
+  database: $WP_PG_DATABASE || "express-test"
+  user: $WP_PG_USER || "postgres"
+  password: $WP_PG_PASSWORD || "postgres"
+  ssl: false
+  initialPoolSize: 10
+  maxPoolSize: 20
+}
+
+config auth {
+  sessionTtl: 604800
+  cookieName: "wp_session"
+  cookieSecure: false
+  cookieHttpOnly: true
+  cookieSameSite: "Lax"
+  cookiePath: "/"
+}
+
+pipeline getTeams =
+  |> jq: `{ sqlParams: [.params.id | tostring] }`
+  |> pg: `SELECT * FROM teams WHERE id = $1`
+
+pg teamsQuery = `SELECT * FROM teams`
+
+GET /hello/:world
+  |> jq: `{ world: .params.world }`
+  |> mustache: `<p>hello, {{world}}</p>`
+
+GET /lua/:id/example
+  |> lua: `
+    local id = request.params.id
+    local name = request.query.name
+    return {
+      message = "Hello from Lua!",
+      id = id,
+      name = name
+    }
+  `
+
+GET /hello
+  |> jq: `{ hello: "world" }`
+
+GET /page/:id
+  |> pipeline: getTeams
+  |> jq: `{ team: .data.rows[0] }`
+
+GET /teams
+  |> jq: `{ sqlParams: [] }`
+  |> pg: teamsQuery
+
+describe "hello, world"
+  it "calls the route"
+    when calling GET /hello/world
+    then status is 200
+    and output equals `<p>hello, world</p>`
+
+describe "lua"
+  it "calls the route"
+    when calling GET /lua/123/example?name=example
+    then status is 200
+    and output equals `{
+      "message": "Hello from Lua!",
+      "id": "123",
+      "name": "example"
+    }`
+
+describe "teamsQuery variable"
+  with mock pg.teamsQuery returning `{
+    "rows": [
+      { "id": "1", "name": "Platform", "member_count": 8 },
+      { "id": "2", "name": "Growth", "member_count": 12 },
+      { "id": "3", "name": "Security", "member_count": 5 }
+    ]
+  }`
+
+  it "returns all teams"
+    when executing variable pg teamsQuery
+    with input `{ "sqlParams": [] }`
+    then output equals `{
+      "rows": [
+        { "id": "1", "name": "Platform", "member_count": 8 },
+        { "id": "2", "name": "Growth", "member_count": 12 },
+        { "id": "3", "name": "Security", "member_count": 5 }
+      ]
+    }`
+
+describe "getTeams pipeline"
+  with mock pg returning `{
+    "rows": [{ "id": "2", "name": "Growth", "created_at": "2024-01-20" }]
+  }`
+
+  it "transforms params and queries database"
+    when executing pipeline getTeams
+    with input `{ "params": { "id": "2" } }`
+    then output equals `{
+      "rows": [{ "id": "2", "name": "Growth", "created_at": "2024-01-20" }]
+    }`
+
+  it "handles string id parameter"
+    when executing pipeline getTeams
+    with input `{ "params": { "id": "42" } }`
+    and mock pg returning `{ "rows": [{ "id": "42", "name": "Marketing" }] }`
+    then output equals `{
+      "rows": [{ "id": "42", "name": "Marketing" }]
+    }`
+
+describe "test calling route"
+  it "calls the route"
+    when calling GET /hello
+    then status is 200
+    and output equals `{
+      "hello": "world"
+    }`
