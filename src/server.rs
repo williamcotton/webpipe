@@ -37,7 +37,7 @@ impl ServerState {
         for step in &pipeline.steps {
             match step {
                 PipelineStep::Regular { name, config } => {
-                    info!("Executing middleware: {} with config: {}", name, config);
+                    // info!("Executing middleware: {} with config: {}", name, config);
                     
                     match self.middleware_registry.execute(name, config, &input).await {
                         Ok(result) => {
@@ -161,7 +161,7 @@ async fn handle_route_request(
     let method_str = method.to_string();
     let path = uri.path().to_string();
     
-    info!("Handling request for: {} {}", method_str, path);
+    // info!("Handling request for: {} {}", method_str, path);
     
     // Find matching route in the program by method and path pattern
     let route = match find_matching_route(&state.program.routes, &method_str, &path) {
@@ -177,7 +177,7 @@ async fn handle_route_request(
         }
     };
     
-    info!("Matched route: {} {}", route.method, route.path);
+    // info!("Matched route: {} {}", route.method, route.path);
     
     // Convert headers to HashMap
     let headers_map: HashMap<String, String> = headers
@@ -277,7 +277,7 @@ async fn handle_route_request(
     // Execute the pipeline
     match state.execute_pipeline(pipeline, request_json).await {
         Ok((result, content_type)) => {
-            info!("Pipeline executed successfully, content-type: {}", content_type);
+            // info!("Pipeline executed successfully, content-type: {}", content_type);
             
             if content_type.starts_with("text/html") {
                 // Return HTML response
