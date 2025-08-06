@@ -4,10 +4,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 #[async_trait]
-pub trait Middleware: Send + Sync {
+pub trait Middleware: Send + Sync + std::fmt::Debug {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError>;
 }
 
+#[derive(Debug)]
 pub struct MiddlewareRegistry {
     middlewares: HashMap<String, Box<dyn Middleware>>,
 }
@@ -50,14 +51,23 @@ impl MiddlewareRegistry {
 }
 
 // Placeholder middleware implementations
+#[derive(Debug)]
 pub struct JqMiddleware;
+#[derive(Debug)]
 pub struct AuthMiddleware;
+#[derive(Debug)]
 pub struct ValidateMiddleware;
+#[derive(Debug)]
 pub struct PgMiddleware;
+#[derive(Debug)]
 pub struct MustacheMiddleware;
+#[derive(Debug)]
 pub struct FetchMiddleware;
+#[derive(Debug)]
 pub struct CacheMiddleware;
+#[derive(Debug)]
 pub struct LuaMiddleware;
+#[derive(Debug)]
 pub struct LogMiddleware;
 
 #[async_trait]
