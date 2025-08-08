@@ -1,5 +1,6 @@
 use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep, Variable};
-use crate::middleware::MiddlewareRegistry;
+use crate::middleware::{MiddlewareRegistry, configure_handlebars_partials};
+use crate::config::ConfigManager;
 use crate::error::WebPipeError;
 use axum::{
     body::Bytes,
@@ -15,6 +16,7 @@ use tokio::signal;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
+use std::env as std_env;
 
 fn merge_values_preserving_input(input: &serde_json::Value, result: &serde_json::Value) -> serde_json::Value {
     match (input, result) {
@@ -145,10 +147,19 @@ impl ServerState {
         let selected_branch = self.select_branch(branches, &error_type);
         
         if let Some(branch) = selected_branch {
+            // Preserve any setCookies from input unless branch overwrites it
+            let inherited_cookies = input.get("setCookies").cloned();
             // info!("Executing result branch: {:?} with status {}", branch.branch_type, branch.status_code);
             
             // Execute the branch's pipeline
-            let (result, branch_content_type, _) = self.execute_pipeline(&branch.pipeline, input).await?;
+            let (mut result, branch_content_type, _) = self.execute_pipeline(&branch.pipeline, input).await?;
+            if inherited_cookies.is_some() {
+                if let Some(obj) = result.as_object_mut() {
+                    if !obj.contains_key("setCookies") {
+                        if let Some(c) = inherited_cookies { obj.insert("setCookies".to_string(), c); }
+                    }
+                }
+            }
             
             // Update content type if the branch changed it
             if branch_content_type != "application/json" {
@@ -233,6 +244,11 @@ pub struct WebPipeRequest {
 impl WebPipeServer {
     pub fn from_program(program: Program) -> Self {
         let middleware_registry = Arc::new(MiddlewareRegistry::new());
+        // Initialize partials from variables for handlebars mustache-like behavior
+        configure_handlebars_partials(&program.variables);
+
+        // Configure database env from `config pg` if present
+        configure_pg_from_config(&program);
         Self {
             program,
             middleware_registry,
@@ -322,6 +338,18 @@ impl WebPipeServer {
             
         info!("WebPipe server shutdown complete");
         Ok(())
+    }
+}
+
+fn configure_pg_from_config(program: &Program) {
+    // If a `config pg` block exists, export env vars expected by sqlx URL builder
+    if let Some(cfg) = program.configs.iter().find(|c| c.name == "pg") {
+        let cm = ConfigManager::new(vec![cfg.clone()]);
+        if let Ok(host) = cm.get_string_value("pg", "host") { let _ = std_env::set_var("WP_PG_HOST", host); }
+        if let Ok(port_num) = cm.get_number_value("pg", "port") { let _ = std_env::set_var("WP_PG_PORT", port_num.to_string()); }
+        if let Ok(db) = cm.get_string_value("pg", "database") { let _ = std_env::set_var("WP_PG_DATABASE", db); }
+        if let Ok(user) = cm.get_string_value("pg", "user") { let _ = std_env::set_var("WP_PG_USER", user); }
+        if let Ok(pw) = cm.get_string_value("pg", "password") { let _ = std_env::set_var("WP_PG_PASSWORD", pw); }
     }
 }
 
@@ -467,7 +495,22 @@ async fn respond_with_pipeline(
                     }
                 }
             } else {
-                (http_status, Json(result)).into_response()
+                // If setCookies present, include Set-Cookie headers
+                if let Some(cookies) = result.get("setCookies").and_then(|v| v.as_array()) {
+                    use axum::response::Response as AxumResponse;
+                    use axum::http::header::SET_COOKIE;
+                    use axum::http::HeaderValue;
+                    let mut response: AxumResponse = (http_status, Json(result.clone())).into_response();
+                    let headers = response.headers_mut();
+                    for cookie in cookies.iter().filter_map(|v| v.as_str()) {
+                        if let Ok(val) = HeaderValue::from_str(cookie) {
+                            headers.append(SET_COOKIE, val);
+                        }
+                    }
+                    response
+                } else {
+                    (http_status, Json(result)).into_response()
+                }
             }
         }
         Err(e) => {
