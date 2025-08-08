@@ -1,6 +1,6 @@
 use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep, Variable};
 use crate::middleware::{MiddlewareRegistry, configure_handlebars_partials};
-use crate::config::ConfigManager;
+use crate::config::{self};
 use crate::error::WebPipeError;
 use axum::{
     body::Bytes,
@@ -16,7 +16,6 @@ use tokio::signal;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
-use std::env as std_env;
 
 fn string_to_number_or_string(s: &str) -> Value {
     // Try integer first
@@ -269,8 +268,8 @@ impl WebPipeServer {
         // Initialize partials from variables for handlebars mustache-like behavior
         configure_handlebars_partials(&program.variables);
 
-        // Configure database env from `config pg` if present
-        configure_pg_from_config(&program);
+        // Initialize global config from program configs
+        config::init_global(program.configs.clone());
         Self {
             program,
             middleware_registry,
@@ -363,17 +362,7 @@ impl WebPipeServer {
     }
 }
 
-fn configure_pg_from_config(program: &Program) {
-    // If a `config pg` block exists, export env vars expected by sqlx URL builder
-    if let Some(cfg) = program.configs.iter().find(|c| c.name == "pg") {
-        let cm = ConfigManager::new(vec![cfg.clone()]);
-        if let Ok(host) = cm.get_string_value("pg", "host") { let _ = std_env::set_var("WP_PG_HOST", host); }
-        if let Ok(port_num) = cm.get_number_value("pg", "port") { let _ = std_env::set_var("WP_PG_PORT", port_num.to_string()); }
-        if let Ok(db) = cm.get_string_value("pg", "database") { let _ = std_env::set_var("WP_PG_DATABASE", db); }
-        if let Ok(user) = cm.get_string_value("pg", "user") { let _ = std_env::set_var("WP_PG_USER", user); }
-        if let Ok(pw) = cm.get_string_value("pg", "password") { let _ = std_env::set_var("WP_PG_PASSWORD", pw); }
-    }
-}
+// configure_pg_from_config removed: middleware reads config directly
 
 async fn unified_handler(
     State(state): State<ServerState>,

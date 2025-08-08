@@ -10,7 +10,6 @@ use handlebars::Handlebars;
 use mlua::{Lua, Value as LuaValue, Result as LuaResult};
 use once_cell::sync::OnceCell;
 use sqlx::{self, postgres::PgPoolOptions, PgPool};
-use std::env;
 use std::time::Duration;
 use reqwest::{self, Client, Method};
 use reqwest::header::{HeaderMap as ReqwestHeaderMap, HeaderName, HeaderValue, USER_AGENT};
@@ -821,17 +820,29 @@ async fn get_pg_pool() -> Result<&'static PgPool, WebPipeError> {
         return Ok(pool);
     }
 
-    let database_url = build_database_url_from_env().map_err(|e| WebPipeError::ConfigError(e))?;
+    // Read resolved pg config directly (handles $ENV || default)
+    let cm = crate::config::global();
+    let pg_cfg = cm.resolve_config_as_json("pg")?;
 
-    // Pool sizing via env (falls back to sensible defaults)
-    let max_conns: u32 = env::var("WP_PG_MAX_POOL_SIZE")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(20);
-    let min_conns: u32 = env::var("WP_PG_INITIAL_POOL_SIZE")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(5);
+    let host = pg_cfg.get("host").and_then(|v| v.as_str()).unwrap_or("localhost");
+    let port = pg_cfg.get("port").and_then(|v| v.as_i64()).unwrap_or(5432);
+    let database = pg_cfg.get("database").and_then(|v| v.as_str()).unwrap_or("postgres");
+    let user = pg_cfg.get("user").and_then(|v| v.as_str()).unwrap_or("postgres");
+    let password = pg_cfg.get("password").and_then(|v| v.as_str()).unwrap_or("postgres");
+
+    // Pool sizing from config with sensible defaults
+    let max_conns: u32 = pg_cfg.get("maxPoolSize").and_then(|v| v.as_i64()).unwrap_or(20).max(1) as u32;
+    let mut min_conns: u32 = pg_cfg.get("initialPoolSize").and_then(|v| v.as_i64()).unwrap_or(5).max(1) as u32;
+    if min_conns > max_conns { min_conns = max_conns; }
+
+    let database_url = format!(
+        "postgres://{}:{}@{}:{}/{}",
+        urlencode(user),
+        urlencode(password),
+        host,
+        port,
+        database
+    );
 
     let pool = PgPoolOptions::new()
         .max_connections(max_conns)
@@ -845,26 +856,7 @@ async fn get_pg_pool() -> Result<&'static PgPool, WebPipeError> {
     Ok(PG_POOL.get().expect("PG_POOL just set"))
 }
 
-fn build_database_url_from_env() -> Result<String, String> {
-    if let Ok(url) = env::var("DATABASE_URL") {
-        return Ok(url);
-    }
-
-    let host = env::var("WP_PG_HOST").unwrap_or_else(|_| "localhost".to_string());
-    let port = env::var("WP_PG_PORT").unwrap_or_else(|_| "5432".to_string());
-    let database = env::var("WP_PG_DATABASE").unwrap_or_else(|_| "postgres".to_string());
-    let user = env::var("WP_PG_USER").unwrap_or_else(|_| "postgres".to_string());
-    let password = env::var("WP_PG_PASSWORD").unwrap_or_else(|_| "postgres".to_string());
-
-    Ok(format!(
-        "postgres://{}:{}@{}:{}/{}",
-        urlencode(&user),
-        urlencode(&password),
-        host,
-        port,
-        database
-    ))
-}
+// old env-based URL builder removed; config-driven URL is constructed in get_pg_pool
 
 fn urlencode(input: &str) -> String {
     // Basic percent-encoding for URL components

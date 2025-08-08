@@ -3,10 +3,13 @@ use crate::error::WebPipeError;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
+use once_cell::sync::OnceCell;
 
 pub struct ConfigManager {
     configs: HashMap<String, Config>,
 }
+
+static GLOBAL_CONFIG: OnceCell<ConfigManager> = OnceCell::new();
 
 impl ConfigManager {
     pub fn new(configs: Vec<Config>) -> Self {
@@ -94,4 +97,14 @@ impl ConfigManager {
                 "Number value '{}' not found in config '{}'", key, config_name
             )))
     }
+}
+
+/// Initialize the global ConfigManager once for the process
+pub fn init_global(configs: Vec<Config>) {
+    let _ = GLOBAL_CONFIG.set(ConfigManager::new(configs));
+}
+
+/// Access the global ConfigManager (must be initialized at startup)
+pub fn global() -> &'static ConfigManager {
+    GLOBAL_CONFIG.get().expect("Global ConfigManager not initialized")
 }
