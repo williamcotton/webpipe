@@ -53,6 +53,14 @@ config auth {
 
 ## Tests
 
+GET /test-lua-env
+  |> lua: `
+    local env = getEnv("WP_PG_USER")
+    return {
+      env = env
+    }
+  `
+
 pipeline getTeams =
   |> jq: `{ sqlParams: [.params.id] }`
   |> pg: `SELECT * FROM teams WHERE id = $1`

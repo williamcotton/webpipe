@@ -227,6 +227,19 @@ impl LuaMiddleware {
                     return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to initialize Lua environment: {}", e)));
                 }
                 
+                // Inject getEnv function to read environment variables
+                let get_env_fn = lua
+                    .create_function(|lua, key: String| {
+                        match std::env::var(&key) {
+                            Ok(val) => Ok(LuaValue::String(lua.create_string(&val)?)),
+                            Err(_) => Ok(LuaValue::Nil),
+                        }
+                    })
+                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create getEnv: {}", e)))?;
+                if let Err(e) = lua.globals().set("getEnv", get_env_fn) {
+                    return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to register getEnv: {}", e)));
+                }
+                
                 *state = Some(lua);
             }
             Ok(())
