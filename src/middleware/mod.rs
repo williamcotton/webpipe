@@ -17,6 +17,8 @@ use rand::RngCore;
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use argon2::password_hash::{SaltString, PasswordHash, rand_core::OsRng};
 // no regex needed now
+use std::fs;
+use std::path::Path;
 
 static HANDLEBARS_PARTIALS: OnceCell<std::collections::HashMap<String, String>> = OnceCell::new();
 
@@ -210,6 +212,62 @@ impl LuaMiddleware {
         Self
     }
     
+    fn load_scripts_from_dir(lua: &Lua) -> Result<(), WebPipeError> {
+        let scripts_dir = std::env::var("WEBPIPE_SCRIPTS_DIR").unwrap_or_else(|_| "scripts".to_string());
+        let dir_path = Path::new(&scripts_dir);
+
+        if !dir_path.is_dir() {
+            // Scripts directory is optional; nothing to load
+            return Ok(());
+        }
+
+        let entries = fs::read_dir(dir_path)
+            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to read scripts directory '{}': {}", scripts_dir, e)))?;
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) => {
+                    return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to iterate scripts directory: {}", e)));
+                }
+            };
+            let path = entry.path();
+            if path.is_file() {
+                let is_lua = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("lua"))
+                    .unwrap_or(false);
+                if !is_lua { continue; }
+
+                let module_name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                if module_name.is_empty() { continue; }
+
+                let source = fs::read_to_string(&path)
+                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to read Lua script '{}': {}", path.display(), e)))?;
+
+                // Evaluate file as a chunk; capture returned value and bind to global with module name
+                let chunk = lua.load(&source);
+                let chunk = chunk.set_name(&format!("@{}", module_name));
+
+                let returned: LuaValue = chunk
+                    .eval()
+                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Lua script '{}' execution error: {}", module_name, e)))?;
+
+                lua.globals()
+                    .set(module_name, returned)
+                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to register Lua module as global: {}", e)))?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn ensure_lua_initialized() -> Result<(), WebPipeError> {
         LUA_STATE.with(|state| {
             let mut state = state.borrow_mut();
@@ -240,6 +298,11 @@ impl LuaMiddleware {
                     return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to register getEnv: {}", e)));
                 }
                 
+                // Load all Lua helper scripts from scripts/ directory as globals
+                if let Err(e) = Self::load_scripts_from_dir(&lua) {
+                    return Err(e);
+                }
+
                 *state = Some(lua);
             }
             Ok(())

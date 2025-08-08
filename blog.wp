@@ -1,0 +1,493 @@
+# Base authentication and environment validation
+pipeline contentfulAuth =
+  |> lua: `
+    local spaceId = getEnv("CONTENTFUL_SPACE")
+    local token = getEnv("CONTENTFUL_ACCESS_TOKEN")
+    
+    if not spaceId or not token then
+      return {
+        errors = {{
+          type = "configError",
+          message = "Missing Contentful configuration: CONTENTFUL_SPACE and CONTENTFUL_ACCESS_TOKEN required"
+        }}
+      }
+    end
+    
+    return {
+      contentful = {
+        spaceId = spaceId,
+        token = token
+      },
+      params = request.params or {},
+      query = request.query or {},
+      originalRequest = request
+    }
+  `
+
+# Generic Contentful API fetcher
+pipeline contentfulFetch =
+  |> lua: `
+    local cf = request.contentful
+    local contentType = request.contentType or "blogPost"
+    local filters = request.filters or ""
+    
+    return {
+      fetchUrl = "https://cdn.contentful.com/spaces/" .. cf.spaceId .. "/entries?content_type=" .. contentType .. filters,
+      fetchHeaders = {
+        ["Authorization"] = "Bearer " .. cf.token
+      },
+      contentful = cf,
+      params = request.params,
+      query = request.query,
+      originalRequest = request.originalRequest
+    }
+  `
+  |> fetch: `placeholder`
+
+# Blog posts list pipeline
+pipeline contentfulArticles =
+  |> pipeline: contentfulAuth
+  |> jq: `. + { contentType: "blogPost", filters: "&fields.hidden=false&order=-fields.publishedDate" }`
+  |> pipeline: contentfulFetch
+  |> lua: `
+    if request.data and request.data.response then
+      local entries = request.data.response.items or {}
+
+      local processedEntries = {}
+      for i, entry in ipairs(entries) do
+        local fields = entry.fields or {}
+        local body = fields.body or {}
+        local content = body.content or {}
+        
+        -- Take only first 4 content nodes for preview
+        local trimmedContent = {}
+        for j = 1, math.min(4, #content) do
+          table.insert(trimmedContent, content[j])
+        end
+        
+        local trimmedBody = {
+          content = trimmedContent,
+          nodeType = body.nodeType,
+          data = body.data
+        }
+        
+        local processedFields = {}
+        for k, v in pairs(fields) do
+          processedFields[k] = v
+        end
+        processedFields.body = trimmedBody
+        
+        -- Render the trimmed body content for preview
+        processedFields.bodyPreview = contentful.renderRichText(trimmedBody, request.data.response.includes)
+        
+        -- Format published date
+        processedFields.formattedDate = dateFormatter.formatPublishedDate(fields.publishedDate)
+        
+        table.insert(processedEntries, {
+          fields = processedFields,
+          sys = entry.sys
+        })
+      end
+      
+      return {
+        articles = processedEntries,
+        total = request.data.response.total or 0,
+        message = "Blog articles retrieved successfully"
+      }
+    else
+      return {
+        errors = {{
+          type = "contentfulError",
+          message = "Failed to fetch articles from Contentful",
+          details = request.data
+        }}
+      }
+    end
+  `
+
+# Single entry by article pipeline
+pipeline contentfulByArticle =
+  |> pipeline: contentfulAuth
+  |> jq: `. + { filters: ("&fields.slug[in]=" + .params.article) }`
+  |> pipeline: contentfulFetch
+  |> lua: `
+    if request.data and request.data.response and request.data.response.items then
+      local items = request.data.response.items
+      if #items > 0 then
+        local entry = items[1]
+        local fields = entry.fields or {}
+        
+        -- Format published date
+        local formattedDate = dateFormatter.formatPublishedDate(fields.publishedDate)
+        
+        return {
+          title = fields.title or "Untitled",
+          bodyHtml = contentful.renderRichText(fields.body, request.data.response.includes),
+          slug = fields.slug or "",
+          publishedDate = fields.publishedDate or entry.sys.createdAt,
+          formattedDate = formattedDate,
+          author = fields.author or "William Cotton",
+          excerpt = fields.excerpt or "",
+          tags = fields.tags or {},
+          seoDescription = fields.seoDescription or fields.excerpt or "",
+          contentType = entry.sys.contentType.sys.id
+        }
+      else
+        return {
+          errors = {{
+            type = "notFound",
+            message = "Article not found with slug: " .. request.params.article,
+            slug = request.params.article
+          }}
+        }
+      end
+    else
+      return {
+        errors = {{
+          type = "contentfulError",
+          message = "Failed to fetch article from Contentful",
+          slug = request.params.article
+        }}
+      }
+    end
+  `
+
+# Pages by page pipeline  
+pipeline contentfulPages =
+  |> pipeline: contentfulAuth
+  |> jq: `. + { contentType: "page", filters: ("&fields.slug[in]=" + .params.page) }`
+  |> pipeline: contentfulFetch
+  |> lua: `
+    if request.data and request.data.response and request.data.response.items then
+      local items = request.data.response.items
+      if #items > 0 then
+        local entry = items[1]
+        local fields = entry.fields or {}
+        
+        return {
+          title = fields.title or "Untitled",
+          bodyHtml = contentful.renderBasicRichText(fields.body, request.data.response.includes),
+          slug = fields.slug or "",
+          seoDescription = fields.seoDescription or "",
+          contentType = entry.sys.contentType.sys.id
+        }
+      else
+        return {
+          errors = {{
+            type = "notFound",
+            message = "Page not found with slug: " .. request.params.page,
+            slug = request.params.page
+          }}
+        }
+      end
+    else
+      return {
+        errors = {{
+          type = "contentfulError",
+          message = "Failed to fetch page from Contentful",
+          slug = request.params.page
+        }}
+      }
+    end
+  `
+
+mustache baseLayout = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1"/>
+    <link rel="preload" href="LigaMenlo-Regular.woff" as="font" type="font/woff" crossorigin>
+    <title>{{$title}}William Cotton{{/title}}</title>
+    <link rel="stylesheet" href="/app.css"/>
+    {{$metaTags}}<meta name="description" content="William Cotton">{{/metaTags}}
+    {{$headExtras}}{{/headExtras}}
+</head>
+<body>
+    <div id="app">
+        <div class="sitewrapper">
+            <header>
+                <h1>
+                    <a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">williamcotton.com</a>
+                </h1>
+                <nav>
+                    <a href="/about" hx-get="/htmx/about" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/about">About</a>
+                    <a href="/bio" hx-get="/htmx/bio" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/bio">Bio</a>
+                    <a href="/contact" hx-get="/htmx/contact" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/contact">Contact</a>
+                </nav>
+            </header>
+            <div class="content" id="main-content">
+                {{$content}}Default content{{/content}}
+            </div>
+            <footer>
+                <p>© 2025 William Cotton</p>
+            </footer>
+        </div>
+    </div>
+    {{$footerScripts}}{{/footerScripts}}
+</body>
+</html>
+`
+
+mustache blogLayout = `
+{{<baseLayout}}
+  {{$title}}{{#pageTitle}}{{pageTitle}} - {{/pageTitle}}William Cotton{{/title}}
+  {{$metaTags}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/metaTags}}
+  {{$headExtras}}
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.6/dist/htmx.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/fsharp.min.js"></script>
+    <script src="/hljs-wp.js"></script>
+  {{/headExtras}}
+  {{$content}}
+    {{$pageContent}}Default page content{{/pageContent}}
+  {{/content}}
+{{/baseLayout}}
+`
+
+mustache articleListItem = `
+<article>
+    <h2>
+        <a href="/articles/{{fields.slug}}" 
+           hx-get="/htmx/articles/{{fields.slug}}" 
+           hx-target="#main-content" 
+           hx-swap="innerHTML show:window:top"
+           hx-push-url="/articles/{{fields.slug}}">{{fields.title}}</a>
+    </h2>
+    {{#fields.formattedDate}}<p class="published-date">{{fields.formattedDate}}</p>{{/fields.formattedDate}}
+    {{#fields.bodyPreview}}{{{fields.bodyPreview}}}{{/fields.bodyPreview}}
+</article>
+`
+
+## Front page with site structure
+GET /
+  |> pipeline: contentfulArticles
+  |> result
+    ok(200):
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}William Cotton{{/title}}
+          {{$pageContent}}
+            {{#articles}}
+            {{>articleListItem}}
+            {{/articles}}
+            {{^articles}}
+              <p>No articles found.</p>
+            {{/articles}}
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+    contentfulError(500):
+      |> jq: `{ errorMessage: .errors[0].message, errorDetails: .errors[0].details }`
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$pageContent}}
+            <div class="error">
+              <h2>Error Loading Articles</h2>
+              <p>{{errorMessage}}</p>
+              <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Try again</a></p>
+            </div>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+    default(500):
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$pageContent}}
+            <div class="error">
+              <h2>Unexpected Error</h2>
+              <p>Something went wrong while loading the articles.</p>
+              <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Try again</a></p>
+            </div>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+
+## Blog article
+GET /articles/:article
+  |> pipeline: contentfulByArticle
+  |> result
+    ok(200):
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}{{title}} - William Cotton{{/title}}
+          {{$metaTags}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/metaTags}}
+          {{$pageContent}}
+            <article>
+                <h2>{{title}}</h2>
+                {{#formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/formattedDate}}
+                {{{bodyHtml}}}
+            </article>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+    notFound(404):
+      |> jq: `{ articleSlug: .errors[0].slug, errorMessage: .errors[0].message }`
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}Article Not Found - William Cotton{{/title}}
+          {{$pageContent}}
+            <article>
+                <h2>Article Not Found</h2>
+                <p>{{errorMessage}}</p>
+                <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+            </article>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+    contentfulError(500):
+      |> jq: `{ articleSlug: .errors[0].slug, errorMessage: .errors[0].message }`
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$pageContent}}
+            <article>
+                <h2>Error Loading Article</h2>
+                <p>{{errorMessage}}</p>
+                <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+            </article>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+    default(500):
+      |> mustache: `
+        {{<blogLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$pageContent}}
+            <article>
+                <h2>Unexpected Error</h2>
+                <p>Something went wrong while loading the article.</p>
+                <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+            </article>
+          {{/pageContent}}
+        {{/blogLayout}}
+      `
+
+## HTMX Homepage endpoint (returns just content)
+GET /htmx/
+  |> pipeline: contentfulArticles
+  |> result
+    ok(200):
+      |> mustache: `
+        {{#articles}}
+        {{>articleListItem}}
+        {{/articles}}
+        {{^articles}}
+          <p>No articles found.</p>
+        {{/articles}}
+        <script>hljs.highlightAll();</script>
+      `
+    default(500):
+      |> mustache: `
+        <div class="error">
+          <h2>Error Loading Articles</h2>
+          <p>Something went wrong while loading the articles.</p>
+        </div>
+      `
+
+## HTMX Article endpoint (returns just article content)
+GET /htmx/articles/:article
+  |> pipeline: contentfulByArticle
+  |> result
+    ok(200):
+      |> mustache: `
+        <article>
+            <h2>{{title}}</h2>
+            {{#formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/formattedDate}}
+            {{{bodyHtml}}}
+        </article>
+        <script>hljs.highlightAll();</script>
+      `
+    notFound(404):
+      |> jq: `{ articleSlug: .errors[0].slug, errorMessage: .errors[0].message }`
+      |> mustache: `
+        <article>
+            <h2>Article Not Found</h2>
+            <p>{{errorMessage}}</p>
+            <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+        </article>
+      `
+    default(500):
+      |> mustache: `
+        <article>
+            <h2>Error Loading Article</h2>
+            <p>Something went wrong while loading the article.</p>
+            <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+        </article>
+      `
+
+## HTMX Page endpoint (returns just page content)
+GET /htmx/:page
+  |> pipeline: contentfulPages
+  |> result
+    ok(200):
+      |> mustache: `
+        <h2>{{title}}</h2>
+        {{{bodyHtml}}}
+      `
+    notFound(404):
+      |> jq: `{ pageSlug: .errors[0].slug, errorMessage: .errors[0].message }`
+      |> mustache: `
+        <h2>Page Not Found</h2>
+        <p>{{errorMessage}}</p>
+        <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+      `
+    default(500):
+      |> mustache: `
+        <h2>Error Loading Page</h2>
+        <p>Something went wrong while loading the page.</p>
+        <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+      `
+
+## Page
+GET /:page
+  |> pipeline: contentfulPages
+  |> result
+    ok(200):
+      |> mustache: `
+        {{<baseLayout}}
+          {{$title}}{{title}} - William Cotton{{/title}}
+          {{$metaTags}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/metaTags}}
+          {{$content}}
+            <h2>{{title}}</h2>
+            {{{bodyHtml}}}
+          {{/content}}
+        {{/baseLayout}}
+      `
+    notFound(404):
+      |> jq: `{ pageSlug: .errors[0].slug, errorMessage: .errors[0].message }`
+      |> mustache: `
+        {{<baseLayout}}
+          {{$title}}Page Not Found - William Cotton{{/title}}
+          {{$content}}
+            <h2>Page Not Found</h2>
+            <p>{{errorMessage}}</p>
+            <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+          {{/content}}
+        {{/baseLayout}}
+      `
+    contentfulError(500):
+      |> jq: `{ pageSlug: .errors[0].slug, errorMessage: .errors[0].message }`
+      |> mustache: `
+        {{<baseLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$content}}
+            <h2>Error Loading Page</h2>
+            <p>{{errorMessage}}</p>
+            <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+          {{/content}}
+        {{/baseLayout}}
+      `
+    default(500):
+      |> mustache: `
+        {{<baseLayout}}
+          {{$title}}Error - William Cotton{{/title}}
+          {{$content}}
+            <h2>Unexpected Error</h2>
+            <p>Something went wrong while loading the page.</p>
+            <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+          {{/content}}
+        {{/baseLayout}}
+      `
