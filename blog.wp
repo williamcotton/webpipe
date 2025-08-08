@@ -221,7 +221,9 @@ handlebars baseLayout = `
                     <a href="/contact" hx-get="/htmx/contact" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/contact">Contact</a>
                 </nav>
             </header>
-            <div class="content" id="main-content">{{> @partial-block}}</div>
+            <div class="content" id="main-content">
+{{> @partial-block}}
+            </div>
             <footer>
                 <p>© 2025 William Cotton</p>
             </footer>
@@ -243,7 +245,10 @@ handlebars blogLayout = `
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/fsharp.min.js"></script>
     <script src="/hljs-wp.js"></script>
   {{/inline}}
-  {{> @partial-block}}
+  {{#*inline "footerScripts"}}
+    <script>try{hljs.highlightAll();}catch(e){}</script>
+  {{/inline}}
+{{> @partial-block}}
 {{/baseLayout}}
 `
 
@@ -257,7 +262,7 @@ handlebars articleListItem = `
            hx-push-url="/articles/{{fields.slug}}">{{fields.title}}</a>
     </h2>
     {{#if fields.formattedDate}}<p class="published-date">{{fields.formattedDate}}</p>{{/if}}
-    {{#if fields.bodyPreview}}{{{fields.bodyPreview}}}{{/if}}
+{{#if fields.bodyPreview}} {{{fields.bodyPreview}}} {{/if}}
     
 </article>
 `
@@ -268,14 +273,14 @@ GET /
   |> result
     ok(200):
       |> handlebars: `
-        {{#> blogLayout}}
-          {{#*inline "title"}}William Cotton{{/inline}}
-          {{#each articles}}
-            {{> articleListItem}}
-          {{else}}
-            <p>No articles found.</p>
-          {{/each}}
-        {{/blogLayout}}
+{{#> blogLayout}}
+  {{#*inline "title"}}William Cotton{{/inline}}
+  {{#each articles}}
+{{> articleListItem}}
+  {{else}}
+    <p>No articles found.</p>
+  {{/each}}
+{{/blogLayout}}
       `
     contentfulError(500):
       |> jq: `{ errorMessage: .errors[0].message, errorDetails: .errors[0].details }`
@@ -313,7 +318,7 @@ GET /articles/:article
           <article>
               <h2>{{title}}</h2>
               {{#if formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/if}}
-              {{{bodyHtml}}}
+{{{bodyHtml}}}
           </article>
         {{/blogLayout}}
       `
@@ -383,7 +388,7 @@ GET /htmx/articles/:article
         <article>
             <h2>{{title}}</h2>
             {{#if formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/if}}
-            {{{bodyHtml}}}
+{{{bodyHtml}}}
         </article>
         <script>hljs.highlightAll();</script>
       `
@@ -412,7 +417,7 @@ GET /htmx/:page
     ok(200):
       |> handlebars: `
         <h2>{{title}}</h2>
-        {{{bodyHtml}}}
+{{{bodyHtml}}}
       `
     notFound(404):
       |> jq: `{ pageSlug: .errors[0].slug, errorMessage: .errors[0].message }`
@@ -438,7 +443,7 @@ GET /:page
           {{#*inline "title"}}{{title}} - William Cotton{{/inline}}
           {{#*inline "metaTags"}}{{#if seoDescription}}<meta name="description" content="{{seoDescription}}">{{/if}}{{/inline}}
           <h2>{{title}}</h2>
-          {{{bodyHtml}}}
+{{{bodyHtml}}}
         {{/baseLayout}}
       `
     notFound(404):
