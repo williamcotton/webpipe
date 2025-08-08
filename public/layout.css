@@ -1,0 +1,76 @@
+:root {
+  --responsive-margin: 1em;
+  --desktop-margin: 3em;
+}
+
+.sitewrapper {
+  background-color: white;
+  min-height: 100%;
+  box-shadow: 0px 6px 12px 3px rgba(0, 0, 0, 0.2);
+
+  @media (min-width: 790px) {
+    margin: 0 auto;
+    max-width: var(--desktop-width);
+  }
+}
+
+header {
+  padding-top: 1em;
+  margin: 0 var(--responsive-margin);
+
+  @media (min-width: 480px) {
+    display: flex;
+    align-items: flex-end;
+  }
+
+  @media (min-width: 790px) {
+    margin: 0 var(--desktop-margin);
+  }
+
+  h1 {
+    font-weight: bold;
+    font-size: 1.6em;
+    margin-right: 1em;
+
+    a {
+      text-decoration: none;
+      color: black;
+    }
+  }
+
+  nav {
+    margin-top: 0.5em;
+    margin-bottom: 0.1em;
+
+    a {
+      margin-right: 1em;
+      text-decoration: none;
+      color: black;
+    }
+  }
+}
+
+.content {
+  padding: 1em 0 1em 0;
+  margin: 0 var(--responsive-margin);
+  height: 100%;
+  min-height: calc(100vh - 3em);
+
+  @media (min-width: 790px) {
+    margin: 0 var(--desktop-margin);
+  }
+}
+
+footer {
+  background-color: black;
+  padding: 0 1em;
+  height: 5em;
+  color: white;
+  display: flex;
+  justify-content: right;
+  align-items: center;
+  p {
+    line-height: 1em;
+    margin: 0 1em 0 0;
+  }
+}

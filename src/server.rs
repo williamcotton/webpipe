@@ -3,7 +3,7 @@ use crate::middleware::{MiddlewareRegistry, configure_handlebars_partials};
 use crate::config::{self};
 use crate::error::WebPipeError;
 use axum::{
-    body::Bytes,
+    body::{Bytes, Body},
     extract::{Query, State, OriginalUri},
     http::{Method, StatusCode, HeaderMap},
     response::{IntoResponse, Json, Html, Response},
@@ -16,6 +16,8 @@ use tokio::signal;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
+use tokio::fs as tokio_fs;
+use std::path::{Path, PathBuf};
 
 fn string_to_number_or_string(s: &str) -> Value {
     // Try integer first
@@ -356,6 +358,7 @@ impl WebPipeServer {
 
         // Single catch-all per method
         router = router
+            .route("/", on(MethodFilter::GET, unified_handler))
             .route("/*path", on(MethodFilter::GET, unified_handler))
             .route("/*path", on(MethodFilter::POST, unified_handler))
             .route("/*path", on(MethodFilter::PUT, unified_handler))
@@ -416,10 +419,18 @@ async fn unified_handler(
 ) -> impl IntoResponse {
     // Select router based on method
     let path = orig_uri.path().to_string();
+
+    // Try static first on GET so dynamic catch-alls don't shadow assets
+    if method == Method::GET {
+        if let Some(resp) = try_serve_static(&path).await { return resp; }
+    }
     let (pipeline, path_params) = match method.as_str() {
         "GET" => match state.get_router.at(&path) {
             Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
-            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+            Err(_) => {
+                if let Some(resp) = try_serve_static(&path).await { return resp; }
+                return StatusCode::NOT_FOUND.into_response();
+            },
         },
         "POST" => match state.post_router.at(&path) {
             Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
@@ -616,4 +627,69 @@ async fn shutdown_signal() {
     }
 
     info!("Shutdown signal received, starting graceful shutdown");
+}
+
+// --- Static file serving (public/ directory) ---
+
+fn public_dir_path() -> PathBuf {
+    std::env::var("WEBPIPE_PUBLIC_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("public"))
+}
+
+fn normalize_static_path(request_path: &str) -> Option<PathBuf> {
+    if !request_path.starts_with('/') { return None; }
+    let mut rel = request_path.trim_start_matches('/');
+    if rel.is_empty() { rel = "index.html"; }
+    if rel.contains("..") { return None; }
+    let mut full = public_dir_path();
+    full.push(rel);
+    Some(full)
+}
+
+fn guess_content_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" => "application/javascript; charset=utf-8",
+        "mjs" => "application/javascript; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        "otf" => "font/otf",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn try_serve_static(request_path: &str) -> Option<Response> {
+    let mut candidate = normalize_static_path(request_path)?;
+
+    if request_path.ends_with('/') {
+        candidate.push("index.html");
+    }
+
+    if !candidate.exists() {
+        if Path::new(request_path).extension().is_none() {
+            let mut idx = candidate.clone();
+            idx.push("index.html");
+            if idx.exists() { candidate = idx; }
+        }
+    }
+
+    let data = match tokio_fs::read(&candidate).await {
+        Ok(bytes) => bytes,
+        Err(_) => return None,
+    };
+
+    let ct = guess_content_type(&candidate);
+    let mut resp = Response::new(Body::from(data));
+    let _ = resp.headers_mut().insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static(ct));
+    Some(resp)
 }

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use lru::LruCache;
 use handlebars::Handlebars;
 use mlua::{Lua, Value as LuaValue, Result as LuaResult};
-use once_cell::sync::OnceCell;
+use once_cell::sync::{OnceCell, Lazy};
 use sqlx::{self, postgres::PgPoolOptions, PgPool};
 use std::time::Duration;
 use reqwest::{self, Client, Method};
@@ -20,7 +20,7 @@ use argon2::password_hash::{SaltString, PasswordHash, rand_core::OsRng};
 use std::fs;
 use std::path::Path;
 
-static HANDLEBARS_PARTIALS: OnceCell<std::collections::HashMap<String, String>> = OnceCell::new();
+static HANDLEBARS_PARTIALS: Lazy<Mutex<std::collections::HashMap<String, String>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
 pub fn configure_handlebars_partials(variables: &[Variable]) {
     let mut map = std::collections::HashMap::new();
@@ -29,7 +29,9 @@ pub fn configure_handlebars_partials(variables: &[Variable]) {
             map.insert(v.name.clone(), v.value.clone());
         }
     }
-    let _ = HANDLEBARS_PARTIALS.set(map);
+    if let Ok(mut locked) = HANDLEBARS_PARTIALS.lock() {
+        *locked = map;
+    }
 }
 
 #[async_trait]
@@ -166,16 +168,11 @@ impl HandlebarsMiddleware {
 
         let mut handlebars = self.handlebars.lock().unwrap();
 
-        // One-time registration of global partials
-        if let Ok(mut flag) = self.partials_registered.lock() {
-            if !*flag {
-                if let Some(partials) = HANDLEBARS_PARTIALS.get() {
-                    for (name, tpl) in partials {
-                        let n = name.trim();
-                        let _ = handlebars.register_partial(n, tpl);
-                    }
-                }
-                *flag = true;
+        // Always (re)register global partials to support hot reload of templates
+        if let Ok(partials) = HANDLEBARS_PARTIALS.lock() {
+            for (name, tpl) in partials.iter() {
+                let n = name.trim();
+                let _ = handlebars.register_partial(n, tpl);
             }
         }
 
@@ -296,6 +293,28 @@ impl LuaMiddleware {
                     .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create getEnv: {}", e)))?;
                 if let Err(e) = lua.globals().set("getEnv", get_env_fn) {
                     return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to register getEnv: {}", e)));
+                }
+                
+                // Provide requireScript(name) to load a single Lua file from scripts/ by name if needed
+                // Note: avoid capturing Lua by clone (Lua is not Clone); use the current 'lua' reference
+                let require_fn = lua
+                    .create_function(|lua, name: String| {
+                        let mut path = std::env::var("WEBPIPE_SCRIPTS_DIR").unwrap_or_else(|_| "scripts".to_string());
+                        if !path.ends_with('/') { path.push('/'); }
+                        let full = format!("{}{}.lua", path, name);
+                        match std::fs::read_to_string(&full) {
+                            Ok(src) => {
+                                let chunk = lua.load(&src).set_name(&format!("@{}", name));
+                                let val: LuaValue = chunk.eval().map_err(|e| mlua::Error::external(e.to_string()))?;
+                                lua.globals().set(name, val.clone())?;
+                                Ok(val)
+                            },
+                            Err(_) => Ok(LuaValue::Nil)
+                        }
+                    })
+                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create requireScript: {}", e)))?;
+                if let Err(e) = lua.globals().set("requireScript", require_fn) {
+                    return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to register requireScript: {}", e)));
                 }
                 
                 // Load all Lua helper scripts from scripts/ directory as globals

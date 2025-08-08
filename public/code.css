@@ -1,0 +1,22 @@
+@import "github.css";
+
+@font-face {
+  font-family: 'Liga Menlo';
+  src: url('LigaMenlo-Regular.woff') format('woff');
+}
+
+code {
+  font-family: 'Liga Menlo', Menlo, Monaco, monospace;
+}
+
+pre {
+  font-family: 'Liga Menlo', Menlo, Monaco, monospace;
+  font-size: 0.75em;
+  border-radius: 0.25em;
+  padding: 1.25em 1.25em;
+  border: 1px solid lightgray;
+  margin-bottom: 1.25em;
+  line-height: 1.3em;
+  overflow: scroll;
+}
+

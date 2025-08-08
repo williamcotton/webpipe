@@ -1,0 +1,83 @@
+@import "reset.css";
+@import "code.css";
+@import "variables.css";
+@import "article.css";
+@import "front-page.css";
+@import "layout.css";
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+  background-color: gainsboro;
+}
+
+h2,
+h3,
+h4,
+h5,
+img,
+p {
+  margin-bottom: 1em;
+}
+
+p {
+  line-height: 1.618em;
+  font-size: 1em;
+
+  @media (min-width: 790px) {
+    font-size: 1.1em;
+  }
+}
+
+h2,
+h3,
+h4,
+h5 {
+  font-weight: bold;
+}
+
+h2 {
+  font-size: 1.33em;
+  line-height: 1.25;
+
+  @media (min-width: 790px) {
+    font-size: 1.8em;
+  }
+
+  a {
+    text-decoration: none;
+    color: black;
+  }
+}
+
+h3 {
+  font-size: 1.25em;
+}
+
+h4 {
+  font-size: 1.125em;
+}
+
+h5 {
+  font-size: 1.05em;
+}
+
+blockquote {
+  color: dimgrey;
+  border-left: 0.1em solid lightgray;
+  padding-left: 1em;
+}
+
+b {
+  font-weight: bold;
+}
+
+img {
+  max-width: 100%;
+}

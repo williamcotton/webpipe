@@ -191,12 +191,12 @@ pipeline contentfulPages =
     end
   `
 
+handlebars title = `William Cotton`
+handlebars metaTags = `<meta name="description" content="William Cotton">`
+handlebars headExtras = ``
+handlebars footerScripts = ``
+
 handlebars baseLayout = `
-{{#*inline "title"}}William Cotton{{/inline}}
-{{#*inline "metaTags"}}<meta name="description" content="William Cotton">{{/inline}}
-{{#*inline "headExtras"}}{{/inline}}
-{{#*inline "content"}}Default content{{/inline}}
-{{#*inline "footerScripts"}}{{/inline}}
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -221,9 +221,7 @@ handlebars baseLayout = `
                     <a href="/contact" hx-get="/htmx/contact" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/contact">Contact</a>
                 </nav>
             </header>
-            <div class="content" id="main-content">
-                {{> content}}
-            </div>
+            <div class="content" id="main-content">{{> @partial-block}}</div>
             <footer>
                 <p>© 2025 William Cotton</p>
             </footer>
@@ -245,7 +243,7 @@ handlebars blogLayout = `
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/fsharp.min.js"></script>
     <script src="/hljs-wp.js"></script>
   {{/inline}}
-  {{#*inline "content"}}{{> @partial-block}}{{/inline}}
+  {{> @partial-block}}
 {{/baseLayout}}
 `
 
@@ -272,13 +270,11 @@ GET /
       |> handlebars: `
         {{#> blogLayout}}
           {{#*inline "title"}}William Cotton{{/inline}}
-          {{#*inline "content"}}
-            {{#each articles}}
-              {{> articleListItem}}
-            {{else}}
-              <p>No articles found.</p>
-            {{/each}}
-          {{/inline}}
+          {{#each articles}}
+            {{> articleListItem}}
+          {{else}}
+            <p>No articles found.</p>
+          {{/each}}
         {{/blogLayout}}
       `
     contentfulError(500):
@@ -286,26 +282,22 @@ GET /
       |> handlebars: `
         {{#> blogLayout}}
           {{#*inline "title"}}Error - William Cotton{{/inline}}
-          {{#*inline "content"}}
-            <div class="error">
-              <h2>Error Loading Articles</h2>
-              <p>{{errorMessage}}</p>
-              <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Try again</a></p>
-            </div>
-          {{/inline}}
+          <div class="error">
+            <h2>Error Loading Articles</h2>
+            <p>{{errorMessage}}</p>
+            <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Try again</a></p>
+          </div>
         {{/blogLayout}}
       `
     default(500):
       |> handlebars: `
         {{#> blogLayout}}
           {{#*inline "title"}}Error - William Cotton{{/inline}}
-          {{#*inline "content"}}
-            <div class="error">
-              <h2>Unexpected Error</h2>
-              <p>Something went wrong while loading the articles.</p>
-              <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Try again</a></p>
-            </div>
-          {{/inline}}
+          <div class="error">
+            <h2>Unexpected Error</h2>
+            <p>Something went wrong while loading the articles.</p>
+            <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Try again</a></p>
+          </div>
         {{/blogLayout}}
       `
 
@@ -318,13 +310,11 @@ GET /articles/:article
         {{#> blogLayout}}
           {{#*inline "title"}}{{title}} - William Cotton{{/inline}}
           {{#*inline "metaTags"}}{{#if seoDescription}}<meta name="description" content="{{seoDescription}}">{{/if}}{{/inline}}
-          {{#*inline "content"}}
-            <article>
-                <h2>{{title}}</h2>
-                {{#if formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/if}}
-                {{{bodyHtml}}}
-            </article>
-          {{/inline}}
+          <article>
+              <h2>{{title}}</h2>
+              {{#if formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/if}}
+              {{{bodyHtml}}}
+          </article>
         {{/blogLayout}}
       `
     notFound(404):
@@ -332,13 +322,11 @@ GET /articles/:article
       |> handlebars: `
         {{#> blogLayout}}
           {{#*inline "title"}}Article Not Found - William Cotton{{/inline}}
-          {{#*inline "content"}}
-            <article>
-                <h2>Article Not Found</h2>
-                <p>{{errorMessage}}</p>
-                <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
-            </article>
-          {{/inline}}
+          <article>
+              <h2>Article Not Found</h2>
+              <p>{{errorMessage}}</p>
+              <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+          </article>
         {{/blogLayout}}
       `
     contentfulError(500):
@@ -346,26 +334,22 @@ GET /articles/:article
       |> handlebars: `
         {{#> blogLayout}}
           {{#*inline "title"}}Error - William Cotton{{/inline}}
-          {{#*inline "content"}}
-            <article>
-                <h2>Error Loading Article</h2>
-                <p>{{errorMessage}}</p>
-                <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
-            </article>
-          {{/inline}}
+          <article>
+              <h2>Error Loading Article</h2>
+              <p>{{errorMessage}}</p>
+              <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+          </article>
         {{/blogLayout}}
       `
     default(500):
       |> handlebars: `
         {{#> blogLayout}}
           {{#*inline "title"}}Error - William Cotton{{/inline}}
-          {{#*inline "content"}}
-            <article>
-                <h2>Unexpected Error</h2>
-                <p>Something went wrong while loading the article.</p>
-                <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
-            </article>
-          {{/inline}}
+          <article>
+              <h2>Unexpected Error</h2>
+              <p>Something went wrong while loading the article.</p>
+              <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
+          </article>
         {{/blogLayout}}
       `
 
@@ -453,10 +437,8 @@ GET /:page
         {{#> baseLayout}}
           {{#*inline "title"}}{{title}} - William Cotton{{/inline}}
           {{#*inline "metaTags"}}{{#if seoDescription}}<meta name="description" content="{{seoDescription}}">{{/if}}{{/inline}}
-          {{#*inline "content"}}
-            <h2>{{title}}</h2>
-            {{{bodyHtml}}}
-          {{/inline}}
+          <h2>{{title}}</h2>
+          {{{bodyHtml}}}
         {{/baseLayout}}
       `
     notFound(404):
@@ -464,11 +446,9 @@ GET /:page
       |> handlebars: `
         {{#> baseLayout}}
           {{#*inline "title"}}Page Not Found - William Cotton{{/inline}}
-          {{#*inline "content"}}
-            <h2>Page Not Found</h2>
-            <p>{{errorMessage}}</p>
-            <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
-          {{/inline}}
+          <h2>Page Not Found</h2>
+          <p>{{errorMessage}}</p>
+          <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
         {{/baseLayout}}
       `
     contentfulError(500):
@@ -476,21 +456,17 @@ GET /:page
       |> handlebars: `
         {{#> baseLayout}}
           {{#*inline "title"}}Error - William Cotton{{/inline}}
-          {{#*inline "content"}}
-            <h2>Error Loading Page</h2>
-            <p>{{errorMessage}}</p>
-            <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
-          {{/inline}}
+          <h2>Error Loading Page</h2>
+          <p>{{errorMessage}}</p>
+          <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
         {{/baseLayout}}
       `
     default(500):
       |> handlebars: `
         {{#> baseLayout}}
           {{#*inline "title"}}Error - William Cotton{{/inline}}
-          {{#*inline "content"}}
-            <h2>Unexpected Error</h2>
-            <p>Something went wrong while loading the page.</p>
-            <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
-          {{/inline}}
+          <h2>Unexpected Error</h2>
+          <p>Something went wrong while loading the page.</p>
+          <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
         {{/baseLayout}}
       `

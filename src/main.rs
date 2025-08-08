@@ -49,6 +49,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Determine the directory for .env files (same directory as the WebPipe file)
     let env_dir = Path::new(file_path).parent().unwrap_or(Path::new("."));
 
+    // Point public dir to <webpipe_dir>/public if not explicitly set
+    if std::env::var("WEBPIPE_PUBLIC_DIR").is_err() {
+        let public_path = env_dir.join("public");
+        if let Some(s) = public_path.to_str() {
+            std::env::set_var("WEBPIPE_PUBLIC_DIR", s);
+        }
+    }
+
     // Initial load of .env files (do not override already-set process vars)
     load_env_files(env_dir, false);
 
