@@ -365,7 +365,7 @@ GET /htmx/
     ok(200):
       |> handlebars: `
         {{#each articles}}
-          {{> articleListItem}}
+{{> articleListItem}}
         {{else}}
           <p>No articles found.</p>
         {{/each}}
