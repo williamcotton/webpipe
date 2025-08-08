@@ -31,3 +31,4 @@ argon2 = "0.5"
 hex = "0.4"
 chrono = { version = "0.4", features = ["clock"] }
 regex = "1.10"
+notify = { version = "6.1", default-features = false, features = ["macos_fsevent"] }

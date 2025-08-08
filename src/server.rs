@@ -360,6 +360,26 @@ impl WebPipeServer {
         info!("WebPipe server shutdown complete");
         Ok(())
     }
+
+    pub async fn serve_with_shutdown<Sh>(
+        self,
+        addr: SocketAddr,
+        shutdown: Sh,
+    ) -> Result<(), Box<dyn std::error::Error>>
+    where
+        Sh: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+
+        info!("WebPipe server starting on {}", addr);
+
+        axum::serve(listener, self.router())
+            .with_graceful_shutdown(shutdown)
+            .await?;
+
+        info!("WebPipe server shutdown complete");
+        Ok(())
+    }
 }
 
 // configure_pg_from_config removed: middleware reads config directly
