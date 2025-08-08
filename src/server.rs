@@ -18,6 +18,28 @@ use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 use std::env as std_env;
 
+fn string_to_number_or_string(s: &str) -> Value {
+    // Try integer first
+    if let Ok(i) = s.parse::<i64>() {
+        return Value::Number(i.into());
+    }
+    // Then float
+    if let Ok(f) = s.parse::<f64>() {
+        if let Some(n) = serde_json::Number::from_f64(f) {
+            return Value::Number(n);
+        }
+    }
+    Value::String(s.to_string())
+}
+
+fn string_map_to_json_with_number_coercion(map: &HashMap<String, String>) -> Value {
+    let mut obj = serde_json::Map::new();
+    for (k, v) in map {
+        obj.insert(k.clone(), string_to_number_or_string(v));
+    }
+    Value::Object(obj)
+}
+
 fn merge_values_preserving_input(input: &serde_json::Value, result: &serde_json::Value) -> serde_json::Value {
     match (input, result) {
         (serde_json::Value::Object(base), serde_json::Value::Object(patch)) => {
@@ -442,7 +464,7 @@ async fn respond_with_pipeline(
                         Some((key, value))
                     })
                     .collect();
-                serde_json::to_value(form_data).unwrap_or(Value::Null)
+                string_map_to_json_with_number_coercion(&form_data)
             }
             _ => Value::String(String::from_utf8_lossy(&body).to_string()),
         }
@@ -452,8 +474,8 @@ async fn respond_with_pipeline(
     let webpipe_request = WebPipeRequest {
         method: method_str,
         path: "".to_string(), // Path is handled by Axum routing
-        query: query_params,
-        params: path_params,
+        query: query_params.clone(),
+        params: path_params.clone(),
         headers: headers_map,
         cookies,
         body: parsed_body,
@@ -461,7 +483,7 @@ async fn respond_with_pipeline(
     };
     
     // Convert to JSON for pipeline processing
-    let request_json = match serde_json::to_value(&webpipe_request) {
+    let mut request_json = match serde_json::to_value(&webpipe_request) {
         Ok(json) => json,
         Err(e) => {
             warn!("Failed to serialize request: {}", e);
@@ -472,6 +494,12 @@ async fn respond_with_pipeline(
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
         }
     };
+
+    // Coerce numeric-looking strings in params and query into numbers
+    if let Some(obj) = request_json.as_object_mut() {
+        obj.insert("params".to_string(), string_map_to_json_with_number_coercion(&path_params));
+        obj.insert("query".to_string(), string_map_to_json_with_number_coercion(&query_params));
+    }
     
     // Execute the pipeline
     match state.execute_pipeline(&pipeline, request_json).await {
