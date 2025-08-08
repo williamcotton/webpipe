@@ -57,6 +57,7 @@ impl MiddlewareRegistry {
         registry.register("cache", Box::new(CacheMiddleware));
         registry.register("lua", Box::new(LuaMiddleware::new()));
         registry.register("log", Box::new(LogMiddleware));
+         registry.register("debug", Box::new(DebugMiddleware));
         
         registry
     }
@@ -351,6 +352,8 @@ impl LuaMiddleware {
 }
 #[derive(Debug)]
 pub struct LogMiddleware;
+#[derive(Debug)]
+pub struct DebugMiddleware;
 
 // --- Auth helpers and implementation ---
 
@@ -703,12 +706,14 @@ impl Middleware for PgMiddleware {
             .unwrap_or_default();
 
         // Detect SELECT queries (very simple heuristic)
-        let is_select = sql.to_lowercase().trim_start().starts_with("select");
+        let lowered = sql.to_lowercase();
+        let is_select = lowered.trim_start().starts_with("select");
+        let has_returning = lowered.contains(" returning ");
 
-        if is_select {
-            // Wrap query to get JSON array result using row_to_json/json_agg
+        if is_select || has_returning {
+            // Use CTE to support SELECT and DML with RETURNING
             let wrapped_sql = format!(
-                "SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) AS rows FROM ({}) t",
+                "WITH t AS ({}) SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) AS rows FROM t",
                 sql
             );
 
@@ -1123,6 +1128,22 @@ impl Middleware for LogMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
         // Placeholder implementation
         println!("LOG: {} -> {:?}", config, input);
+        Ok(input.clone())
+    }
+}
+
+#[async_trait]
+impl Middleware for DebugMiddleware {
+    async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
+        let label = {
+            let trimmed = config.trim();
+            if trimmed.is_empty() { "debug" } else { trimmed }
+        };
+        println!("{}", label);
+        match serde_json::to_string_pretty(input) {
+            Ok(pretty) => println!("{}", pretty),
+            Err(_) => println!("{}", input),
+        }
         Ok(input.clone())
     }
 }
