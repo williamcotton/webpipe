@@ -950,7 +950,7 @@ POST /todos/:id/toggle
   |> auth: "required"
   |> result
     ok(200):
-      |> jq: `{ sqlParams: [.params.id, .user.id | tostring], todoId: .params.id }`
+      |> jq: `{ sqlParams: [(.params.id | tonumber), (.user.id | tonumber)], todoId: .params.id | tonumber }`
       |> pg: `SELECT * FROM todos WHERE id = $1 AND user_id = $2`
       |> jq: `{ 
         sqlParams: [(.data.rows[0].completed | not), .todoId],
@@ -958,7 +958,7 @@ POST /todos/:id/toggle
       }`
       |> pg: `UPDATE todos SET completed = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *`
       |> jq: `(.data.rows[0] | . + {id: (.id | tostring)})`
-       |> handlebars: `{{> todoItemPartial}}`
+      |> handlebars: `{{> todoItemPartial}}`
     authError(401):
        |> handlebars: `
         {{#*inline "errorTitle"}}Authentication Required{{/inline}}
@@ -970,7 +970,7 @@ DELETE /todos/:id
   |> auth: "required"
   |> result
     ok(200):
-      |> jq: `{ sqlParams: [.params.id, .user.id] }`
+      |> jq: `{ sqlParams: [(.params.id | tonumber), (.user.id | tonumber)] }`
       |> pg: `DELETE FROM todos WHERE id = $1 AND user_id = $2`
       |> handlebars: ``
     authError(401):
