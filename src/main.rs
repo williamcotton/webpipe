@@ -4,6 +4,21 @@ use tokio::{sync::{mpsc as tokio_mpsc, oneshot}, signal};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use webpipe::{ast::parse_program, WebPipeServer};
 
+fn load_env_files(env_dir: &Path, override_existing: bool) {
+    // Load .env files located next to the WebPipe file
+    let files = [".env", ".env.local"];
+    for fname in files.iter() {
+        let p = env_dir.join(fname);
+        if p.exists() {
+            if override_existing {
+                let _ = dotenvy::from_filename_override(&p);
+            } else {
+                let _ = dotenvy::from_filename(&p);
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize tracing
@@ -29,6 +44,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Parse the address
     let addr: SocketAddr = addr_str.parse()?;
 
+    // Determine the directory for .env files (same directory as the WebPipe file)
+    let env_dir = Path::new(file_path).parent().unwrap_or(Path::new("."));
+
+    // Initial load of .env files (do not override already-set process vars)
+    load_env_files(env_dir, false);
+
     // File change notification: bridge notify (std thread) -> tokio
     let (raw_tx, raw_rx): (std_mpsc::Sender<notify::Result<notify::Event>>, std_mpsc::Receiver<notify::Result<notify::Event>>) = std_mpsc::channel();
     let (change_tx, mut change_rx) = tokio_mpsc::unbounded_channel::<()>();
@@ -45,8 +66,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let _ = raw_tx.send(res);
     })?;
     watcher.watch(Path::new(file_path), RecursiveMode::NonRecursive)?;
+    // Also watch the directory for .env changes (creation/modification)
+    let _ = watcher.watch(env_dir, RecursiveMode::NonRecursive);
 
     loop {
+        // Reload .env files each iteration so edits take effect on hot-reload
+        load_env_files(env_dir, true);
+
         // Parse the WebPipe file
         let input = std::fs::read_to_string(file_path)?;
         let (_leftover_input, program) = parse_program(&input)

@@ -3128,6 +3128,7 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
+ "dotenvy",
  "handlebars",
  "hex",
  "jq-rs",
