@@ -7,6 +7,9 @@ use std::sync::{Arc, Mutex};
 use lru::LruCache;
 use handlebars::Handlebars;
 use mlua::{Lua, Value as LuaValue, Result as LuaResult};
+use once_cell::sync::OnceCell;
+use sqlx::{self, postgres::PgPoolOptions, PgPool};
+use std::env;
 
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
@@ -362,13 +365,190 @@ impl Middleware for ValidateMiddleware {
 #[async_trait]
 impl Middleware for PgMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
-        // Placeholder implementation
-        Ok(serde_json::json!({
-            "middleware": "pg",
-            "config": config,
-            "input": input
-        }))
+        let sql = config.trim();
+        if sql.is_empty() {
+            return Err(WebPipeError::DatabaseError("Empty SQL config for pg middleware".to_string()));
+        }
+
+        let pool = get_pg_pool().await?;
+
+        // Build parameter list from input.sqlParams
+        let params: Vec<String> = input
+            .get("sqlParams")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().map(json_value_to_bind_string).collect())
+            .unwrap_or_default();
+
+        // Detect SELECT queries (very simple heuristic)
+        let is_select = sql.to_lowercase().trim_start().starts_with("select");
+
+        if is_select {
+            // Wrap query to get JSON array result using row_to_json/json_agg
+            let wrapped_sql = format!(
+                "SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) AS rows FROM ({}) t",
+                sql
+            );
+
+            let mut query = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql);
+            for p in &params {
+                query = query.bind(p);
+            }
+
+            let rows_json = match query.fetch_one(pool).await {
+                Ok(json) => json.0,
+                Err(e) => {
+                    return Ok(build_sql_error_value(&e, sql));
+                }
+            };
+
+            let row_count = rows_json.as_array().map(|a| a.len()).unwrap_or(0);
+
+            let mut output = input.clone();
+            let result_name = input.get("resultName").and_then(|v| v.as_str());
+            let result_value = serde_json::json!({
+                "rows": rows_json,
+                "rowCount": row_count,
+            });
+
+            match result_name {
+                Some(name) => {
+                    // Ensure .data is an object
+                    let data_obj = output
+                        .as_object_mut()
+                        .expect("input must be a JSON object for pg middleware");
+                    let data_entry = data_obj.entry("data").or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if !data_entry.is_object() {
+                        *data_entry = Value::Object(serde_json::Map::new());
+                    }
+                    if let Some(map) = data_entry.as_object_mut() {
+                        map.insert(name.to_string(), result_value);
+                    }
+                    Ok(output)
+                }
+                None => {
+                    // Set/replace top-level data
+                    if let Some(obj) = output.as_object_mut() {
+                        obj.insert("data".to_string(), result_value);
+                    }
+                    Ok(output)
+                }
+            }
+        } else {
+            // Non-SELECT: execute and return affected row count
+            let mut query = sqlx::query(sql);
+            for p in &params {
+                query = query.bind(p);
+            }
+
+            let result = match query.execute(pool).await {
+                Ok(res) => res,
+                Err(e) => {
+                    return Ok(build_sql_error_value(&e, sql));
+                }
+            };
+
+            let mut output = input.clone();
+            let result_value = serde_json::json!({
+                "rows": [],
+                "rowCount": result.rows_affected(),
+            });
+            if let Some(obj) = output.as_object_mut() {
+                obj.insert("data".to_string(), result_value);
+            }
+            Ok(output)
+        }
     }
+}
+
+// --- PG pool management and helpers ---
+
+static PG_POOL: OnceCell<PgPool> = OnceCell::new();
+
+async fn get_pg_pool() -> Result<&'static PgPool, WebPipeError> {
+    if let Some(pool) = PG_POOL.get() {
+        return Ok(pool);
+    }
+
+    let database_url = build_database_url_from_env().map_err(|e| WebPipeError::ConfigError(e))?;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&database_url)
+        .await
+        .map_err(|e| WebPipeError::DatabaseError(format!("Failed to connect to database: {}", e)))?;
+
+    let _ = PG_POOL.set(pool);
+    Ok(PG_POOL.get().expect("PG_POOL just set"))
+}
+
+fn build_database_url_from_env() -> Result<String, String> {
+    if let Ok(url) = env::var("DATABASE_URL") {
+        return Ok(url);
+    }
+
+    let host = env::var("WP_PG_HOST").unwrap_or_else(|_| "localhost".to_string());
+    let port = env::var("WP_PG_PORT").unwrap_or_else(|_| "5432".to_string());
+    let database = env::var("WP_PG_DATABASE").unwrap_or_else(|_| "postgres".to_string());
+    let user = env::var("WP_PG_USER").unwrap_or_else(|_| "postgres".to_string());
+    let password = env::var("WP_PG_PASSWORD").unwrap_or_else(|_| "postgres".to_string());
+
+    Ok(format!(
+        "postgres://{}:{}@{}:{}/{}",
+        urlencode(&user),
+        urlencode(&password),
+        host,
+        port,
+        database
+    ))
+}
+
+fn urlencode(input: &str) -> String {
+    // Basic percent-encoding for URL components
+    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+    utf8_percent_encode(input, NON_ALPHANUMERIC).to_string()
+}
+
+fn json_value_to_bind_string(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(v).unwrap_or_default(),
+    }
+}
+
+fn build_sql_error_value(e: &sqlx::Error, query: &str) -> Value {
+    use serde_json::Map;
+    let mut err_obj = Map::new();
+    err_obj.insert("type".to_string(), Value::String("sqlError".to_string()));
+
+    let mut message = e.to_string();
+    let mut sqlstate: Option<String> = None;
+    let mut severity: Option<String> = None;
+
+    if let Some(db_err) = e.as_database_error() {
+        message = db_err.message().to_string();
+        if let Some(code) = db_err.code() {
+            sqlstate = Some(code.to_string());
+        }
+        // Try to get severity for Postgres
+        #[allow(unused_imports)]
+        use sqlx::postgres::PgDatabaseError;
+        if let Some(pg_err) = db_err.try_downcast_ref::<PgDatabaseError>() {
+            severity = Some(format!("{:?}", pg_err.severity()));
+        }
+    }
+
+    err_obj.insert("message".to_string(), Value::String(message));
+    if let Some(code) = sqlstate { err_obj.insert("sqlstate".to_string(), Value::String(code)); }
+    if let Some(sev) = severity { err_obj.insert("severity".to_string(), Value::String(sev)); }
+    err_obj.insert("query".to_string(), Value::String(query.to_string()));
+
+    let errors = Value::Array(vec![Value::Object(err_obj)]);
+    let mut root = Map::new();
+    root.insert("errors".to_string(), errors);
+    Value::Object(root)
 }
 
 #[async_trait]
