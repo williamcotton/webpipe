@@ -50,7 +50,7 @@ impl ServerState {
         middleware_name: &str,
         step_config: &str,
         input: &serde_json::Value,
-    ) -> (String, serde_json::Value) {
+    ) -> (String, serde_json::Value, bool) {
         // Try to find a variable matching this middleware and config
         if let Some(var) = self
             .variables
@@ -62,18 +62,20 @@ impl ServerState {
 
             // If input is an object and resultName is missing, set it to the variable name
             let mut new_input = input.clone();
+            let mut auto_named = false;
             if let Some(obj) = new_input.as_object_mut() {
                 let has_result_name = obj.get("resultName").is_some();
                 if !has_result_name {
                     obj.insert("resultName".to_string(), serde_json::Value::String(var.name.clone()));
+                    auto_named = true;
                 }
             }
 
-            return (resolved_config, new_input);
+            return (resolved_config, new_input, auto_named);
         }
 
         // No variable resolution; return as-is
-        (step_config.to_string(), input.clone())
+        (step_config.to_string(), input.clone(), false)
     }
 
     pub fn execute_pipeline<'a>(
@@ -91,17 +93,23 @@ impl ServerState {
                     // info!("Executing middleware: {} with config: {}", name, config);
                     
                     // Resolve variables and auto-name if applicable
-                    let (effective_config, effective_input) =
+                    let (effective_config, effective_input, auto_named) =
                         self.resolve_config_and_autoname(name, config, &input);
 
                     match self.middleware_registry.execute(name, &effective_config, &effective_input).await {
                         Ok(result) => {
-                            input = if is_last_step {
+                            let mut next_input = if is_last_step {
                                 // final step controls output
                                 result
                             } else {
                                 merge_values_preserving_input(&effective_input, &result)
                             };
+                            if auto_named {
+                                if let Some(obj) = next_input.as_object_mut() {
+                                    obj.remove("resultName");
+                                }
+                            }
+                            input = next_input;
                             
                             // Special handling for content type changes
                             if name == "handlebars" {

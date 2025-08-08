@@ -65,17 +65,24 @@ impl WebPipeRuntime {
                 match step {
                     PipelineStep::Regular { name, config } => {
                         // Resolve variable reference and set resultName if using a named variable
-                        let (effective_config, effective_input) =
+                        let (effective_config, effective_input, auto_named) =
                             self.resolve_config_and_autoname(name, config, &current_input);
                         let result = self.middleware_registry
                             .execute(name, &effective_config, &effective_input)
                             .await?;
-                        current_input = if is_last_step {
+                        let mut next_input = if is_last_step {
                             // Do not merge on the final step; allow last middleware to control output
                             result
                         } else {
                             merge_values_preserving_input(&effective_input, &result)
                         };
+                        // If we auto-injected resultName, remove it for subsequent steps
+                        if auto_named {
+                            if let Some(obj) = next_input.as_object_mut() {
+                                obj.remove("resultName");
+                            }
+                        }
+                        current_input = next_input;
                     }
                     PipelineStep::Result { branches } => {
                         return self.execute_result_branches(branches, current_input).await;
@@ -132,7 +139,7 @@ impl WebPipeRuntime {
         middleware_name: &str,
         step_config: &str,
         input: &Value,
-    ) -> (String, Value) {
+    ) -> (String, Value, bool) {
         if let Some(var) = self
             .program
             .variables
@@ -141,13 +148,15 @@ impl WebPipeRuntime {
         {
             let resolved_config = var.value.clone();
             let mut new_input = input.clone();
+            let mut auto_named = false;
             if let Some(obj) = new_input.as_object_mut() {
                 if !obj.contains_key("resultName") {
                     obj.insert("resultName".to_string(), Value::String(var.name.clone()));
+                    auto_named = true;
                 }
             }
-            return (resolved_config, new_input);
+            return (resolved_config, new_input, auto_named);
         }
-        (step_config.to_string(), input.clone())
+        (step_config.to_string(), input.clone(), false)
     }
 }

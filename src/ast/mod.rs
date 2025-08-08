@@ -343,7 +343,9 @@ fn parse_step_config(input: &str) -> IResult<&str, String> {
             char('"'),
             map(take_until("\""), |s: &str| s.to_string()),
             char('"')
-        )
+        ),
+        // Bare identifier (variable reference like: pg: getUserQuery)
+        parse_identifier
     )).parse(input)
 }
 
