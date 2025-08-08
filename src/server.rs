@@ -1,4 +1,4 @@
-use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep};
+use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep, Variable};
 use crate::middleware::MiddlewareRegistry;
 use crate::error::WebPipeError;
 use axum::{
@@ -16,6 +16,19 @@ use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
+fn merge_values_preserving_input(input: &serde_json::Value, result: &serde_json::Value) -> serde_json::Value {
+    match (input, result) {
+        (serde_json::Value::Object(base), serde_json::Value::Object(patch)) => {
+            let mut merged = base.clone();
+            for (k, v) in patch {
+                merged.insert(k.clone(), v.clone());
+            }
+            serde_json::Value::Object(merged)
+        }
+        _ => result.clone(),
+    }
+}
+
 pub struct WebPipeServer {
     program: Program,
     middleware_registry: Arc<MiddlewareRegistry>,
@@ -28,9 +41,41 @@ pub struct ServerState {
     post_router: Arc<matchit::Router<Arc<Pipeline>>>,
     put_router: Arc<matchit::Router<Arc<Pipeline>>>,
     delete_router: Arc<matchit::Router<Arc<Pipeline>>>,
+    variables: Arc<Vec<Variable>>, // for resolving middleware variables and auto-naming
 }
 
 impl ServerState {
+    fn resolve_config_and_autoname(
+        &self,
+        middleware_name: &str,
+        step_config: &str,
+        input: &serde_json::Value,
+    ) -> (String, serde_json::Value) {
+        // Try to find a variable matching this middleware and config
+        if let Some(var) = self
+            .variables
+            .iter()
+            .find(|v| v.var_type == middleware_name && v.name == step_config)
+        {
+            // Use the variable's value as config
+            let resolved_config = var.value.clone();
+
+            // If input is an object and resultName is missing, set it to the variable name
+            let mut new_input = input.clone();
+            if let Some(obj) = new_input.as_object_mut() {
+                let has_result_name = obj.get("resultName").is_some();
+                if !has_result_name {
+                    obj.insert("resultName".to_string(), serde_json::Value::String(var.name.clone()));
+                }
+            }
+
+            return (resolved_config, new_input);
+        }
+
+        // No variable resolution; return as-is
+        (step_config.to_string(), input.clone())
+    }
+
     pub fn execute_pipeline<'a>(
         &'a self,
         pipeline: &'a Pipeline,
@@ -39,14 +84,24 @@ impl ServerState {
         Box::pin(async move {
         let mut content_type = "application/json".to_string();
         
-        for step in &pipeline.steps {
+        for (idx, step) in pipeline.steps.iter().enumerate() {
+            let is_last_step = idx + 1 == pipeline.steps.len();
             match step {
                 PipelineStep::Regular { name, config } => {
                     // info!("Executing middleware: {} with config: {}", name, config);
                     
-                    match self.middleware_registry.execute(name, config, &input).await {
+                    // Resolve variables and auto-name if applicable
+                    let (effective_config, effective_input) =
+                        self.resolve_config_and_autoname(name, config, &input);
+
+                    match self.middleware_registry.execute(name, &effective_config, &effective_input).await {
                         Ok(result) => {
-                            input = result;
+                            input = if is_last_step {
+                                // final step controls output
+                                result
+                            } else {
+                                merge_values_preserving_input(&effective_input, &result)
+                            };
                             
                             // Special handling for content type changes
                             if name == "handlebars" {
@@ -229,6 +284,7 @@ impl WebPipeServer {
             post_router: Arc::new(post_router),
             put_router: Arc::new(put_router),
             delete_router: Arc::new(delete_router),
+            variables: Arc::new(self.program.variables.clone()),
         };
 
         // Single catch-all per method

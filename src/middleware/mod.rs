@@ -10,6 +10,9 @@ use mlua::{Lua, Value as LuaValue, Result as LuaResult};
 use once_cell::sync::OnceCell;
 use sqlx::{self, postgres::PgPoolOptions, PgPool};
 use std::env;
+use std::time::Duration;
+use reqwest::{self, Client, Method};
+use reqwest::header::{HeaderMap as ReqwestHeaderMap, HeaderName, HeaderValue, USER_AGENT};
 
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
@@ -341,24 +344,18 @@ impl Middleware for JqMiddleware {
 #[async_trait]
 impl Middleware for AuthMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
-        // Placeholder implementation
-        Ok(serde_json::json!({
-            "middleware": "auth",
-            "config": config,
-            "input": input
-        }))
+        // Placeholder: pass-through to avoid clobbering accumulated data
+        let _ = config; // suppress unused warning
+        Ok(input.clone())
     }
 }
 
 #[async_trait]
 impl Middleware for ValidateMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
-        // Placeholder implementation
-        Ok(serde_json::json!({
-            "middleware": "validate",
-            "config": config,
-            "input": input
-        }))
+        // Placeholder: pass-through to avoid clobbering accumulated data
+        let _ = config; // suppress unused warning
+        Ok(input.clone())
     }
 }
 
@@ -565,24 +562,200 @@ impl Middleware for HandlebarsMiddleware {
 #[async_trait]
 impl Middleware for FetchMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
-        // Placeholder implementation
-        Ok(serde_json::json!({
-            "middleware": "fetch",
-            "config": config,
-            "input": input
-        }))
+        // Determine URL (input.fetchUrl overrides config)
+        let url = input
+            .get("fetchUrl")
+            .and_then(|v| v.as_str())
+            .unwrap_or(config)
+            .trim()
+            .to_string();
+
+        if url.is_empty() {
+            return Ok(build_fetch_error_object(
+                "networkError",
+                serde_json::json!({
+                    "message": "Missing URL for fetch middleware",
+                }),
+            ));
+        }
+
+        // HTTP method (default GET)
+        let method_str = input
+            .get("fetchMethod")
+            .and_then(|v| v.as_str())
+            .unwrap_or("GET");
+        let method = Method::from_bytes(method_str.as_bytes())
+            .unwrap_or(Method::GET);
+
+        // Build client and request
+        let client = get_http_client();
+        let mut req_builder = client.request(method, &url);
+
+        // Per-request timeout
+        if let Some(timeout_secs) = input.get("fetchTimeout").and_then(|v| v.as_u64()) {
+            req_builder = req_builder.timeout(Duration::from_secs(timeout_secs));
+        }
+
+        // Headers (ensure a default User-Agent)
+        let mut headers = ReqwestHeaderMap::new();
+        if let Some(headers_obj) = input.get("fetchHeaders").and_then(|v| v.as_object()) {
+            for (k, v) in headers_obj {
+                if let Some(val_str) = v.as_str() {
+                    if let (Ok(name), Ok(value)) = (
+                        HeaderName::from_bytes(k.as_bytes()),
+                        HeaderValue::from_str(val_str),
+                    ) {
+                        headers.insert(name, value);
+                    }
+                }
+            }
+        }
+        if !headers.contains_key(USER_AGENT) {
+            headers.insert(USER_AGENT, HeaderValue::from_static("WebPipe/1.0"));
+        }
+        req_builder = req_builder.headers(headers);
+
+        // Body
+        if let Some(body) = input.get("fetchBody") {
+            req_builder = req_builder.json(body);
+        }
+
+        // Execute request
+        let response = match req_builder.send().await {
+            Ok(resp) => resp,
+            Err(err) => {
+                if err.is_timeout() {
+                    return Ok(build_fetch_error_object(
+                        "timeoutError",
+                        serde_json::json!({
+                            "message": err.to_string(),
+                        }),
+                    ));
+                } else {
+                    return Ok(build_fetch_error_object(
+                        "networkError",
+                        serde_json::json!({
+                            "message": err.to_string(),
+                            "url": url,
+                        }),
+                    ));
+                }
+            }
+        };
+
+        let status = response.status();
+        let status_code = status.as_u16();
+        let headers_map: HashMap<String, String> = response
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+
+        let body_text = match response.text().await {
+            Ok(t) => t,
+            Err(err) => {
+                return Ok(build_fetch_error_object(
+                    "networkError",
+                    serde_json::json!({
+                        "message": format!("Failed to read response body: {}", err),
+                        "url": url,
+                    }),
+                ));
+            }
+        };
+
+        if !status.is_success() {
+            // HTTP error path
+            return Ok(build_fetch_error_object(
+                "httpError",
+                serde_json::json!({
+                    "status": status_code,
+                    "message": body_text,
+                    "url": url,
+                }),
+            ));
+        }
+
+        // Parse response body as JSON, fallback to string
+        let response_body: Value = serde_json::from_str(&body_text)
+            .unwrap_or(Value::String(body_text));
+
+        // Prepare output format
+        let mut output = input.clone();
+        let result_name_opt = input.get("resultName").and_then(|v| v.as_str());
+        let result_payload = serde_json::json!({
+            "response": response_body,
+            "status": status_code,
+            "headers": headers_map
+        });
+
+        match result_name_opt {
+            Some(name) => {
+                // Ensure .data is an object
+                if let Some(obj) = output.as_object_mut() {
+                    let data_entry = obj.entry("data").or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if !data_entry.is_object() {
+                        *data_entry = Value::Object(serde_json::Map::new());
+                    }
+                    if let Some(data_obj) = data_entry.as_object_mut() {
+                        data_obj.insert(name.to_string(), result_payload);
+                    }
+                }
+            }
+            None => {
+                if let Some(obj) = output.as_object_mut() {
+                    obj.insert("data".to_string(), result_payload);
+                }
+            }
+        }
+
+        Ok(output)
     }
+}
+
+// --- Fetch helpers ---
+
+fn build_fetch_error_object(error_type: &str, mut details: Value) -> Value {
+    // Ensure details is an object to which we can add fields
+    if !details.is_object() {
+        details = serde_json::json!({ "message": details.to_string() });
+    }
+    let mut err_obj = serde_json::Map::new();
+    err_obj.insert("type".to_string(), Value::String(error_type.to_string()));
+    if let Some(map) = details.as_object() {
+        for (k, v) in map {
+            err_obj.insert(k.clone(), v.clone());
+        }
+    }
+
+    Value::Object(
+        [
+            (
+                "errors".to_string(),
+                Value::Array(vec![Value::Object(err_obj)]),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    )
+}
+
+fn get_http_client() -> &'static Client {
+    static CLIENT: OnceCell<Client> = OnceCell::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            // Do not set a global timeout; allow per-request overrides
+            .build()
+            .expect("failed to build reqwest client")
+    })
 }
 
 #[async_trait]
 impl Middleware for CacheMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
-        // Placeholder implementation
-        Ok(serde_json::json!({
-            "middleware": "cache",
-            "config": config,
-            "input": input
-        }))
+        // Placeholder: pass-through to avoid clobbering accumulated data
+        let _ = config; // suppress unused warning
+        Ok(input.clone())
     }
 }
 
