@@ -2,7 +2,7 @@ use crate::error::WebPipeError;
 use crate::ast::Variable;
 use async_trait::async_trait;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use lru::LruCache;
@@ -144,28 +144,56 @@ pub struct PgMiddleware;
 #[derive(Debug)]
 pub struct HandlebarsMiddleware {
     handlebars: Arc<Mutex<Handlebars<'static>>>,
+    // Register global partials only once per process
+    partials_registered: Arc<Mutex<bool>>,
+    // Track templates we've compiled/registered by a stable id
+    registered_templates: Arc<Mutex<HashSet<String>>>,
 }
 
 impl HandlebarsMiddleware {
     pub fn new() -> Self {
         Self {
             handlebars: Arc::new(Mutex::new(Handlebars::new())),
+            partials_registered: Arc::new(Mutex::new(false)),
+            registered_templates: Arc::new(Mutex::new(HashSet::new())),
         }
     }
     
     fn render_template(&self, template: &str, data: &Value) -> Result<String, WebPipeError> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
         let mut handlebars = self.handlebars.lock().unwrap();
-        // Register variables as partials each render to ensure availability
-        if let Some(partials) = HANDLEBARS_PARTIALS.get() {
-            for (name, tpl) in partials {
-                // Ensure partial name normalization (trim and use exact name)
-                let n = name.trim();
-                let _ = handlebars.register_partial(n, tpl);
+
+        // One-time registration of global partials
+        if let Ok(mut flag) = self.partials_registered.lock() {
+            if !*flag {
+                if let Some(partials) = HANDLEBARS_PARTIALS.get() {
+                    for (name, tpl) in partials {
+                        let n = name.trim();
+                        let _ = handlebars.register_partial(n, tpl);
+                    }
+                }
+                *flag = true;
             }
         }
-        
+
+        // Compile/register this template string only once, render by id thereafter
         let tpl = template.trim().to_string();
-        handlebars.render_template(&tpl, data)
+        let mut hasher = DefaultHasher::new();
+        tpl.hash(&mut hasher);
+        let id = format!("tpl_{:x}", hasher.finish());
+
+        let mut compiled = self.registered_templates.lock().unwrap();
+        if !compiled.contains(&id) {
+            if let Err(e) = handlebars.register_template_string(&id, &tpl) {
+                return Err(WebPipeError::MiddlewareExecutionError(format!("Handlebars template compile error: {}", e)));
+            }
+            compiled.insert(id.clone());
+        }
+
+        handlebars
+            .render(&id, data)
             .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Handlebars render error: {}", e)))
     }
 }
@@ -795,8 +823,20 @@ async fn get_pg_pool() -> Result<&'static PgPool, WebPipeError> {
 
     let database_url = build_database_url_from_env().map_err(|e| WebPipeError::ConfigError(e))?;
 
+    // Pool sizing via env (falls back to sensible defaults)
+    let max_conns: u32 = env::var("WP_PG_MAX_POOL_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(20);
+    let min_conns: u32 = env::var("WP_PG_INITIAL_POOL_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(5);
+
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(max_conns)
+        .min_connections(min_conns)
+        .acquire_timeout(Duration::from_secs(3))
         .connect(&database_url)
         .await
         .map_err(|e| WebPipeError::DatabaseError(format!("Failed to connect to database: {}", e)))?;
