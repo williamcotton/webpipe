@@ -162,6 +162,48 @@ impl HandlebarsMiddleware {
         }
     }
     
+    fn dedent_multiline(input: &str) -> String {
+        // Trim outer whitespace first to normalize leading/trailing blank lines
+        let trimmed = input.trim_matches(['\n', '\r', ' ', '\t'].as_ref());
+        let lines: Vec<&str> = trimmed.lines().collect();
+        if lines.is_empty() {
+            return String::new();
+        }
+
+        let mut min_indent: Option<usize> = None;
+        for line in &lines {
+            // Skip completely empty lines when computing common indent
+            if line.trim().is_empty() { continue; }
+            let indent = line.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+            min_indent = Some(match min_indent {
+                Some(current) => current.min(indent),
+                None => indent,
+            });
+        }
+
+        let common = min_indent.unwrap_or(0);
+        if common == 0 { return trimmed.to_string(); }
+
+        let mut out = String::with_capacity(trimmed.len());
+        for (i, line) in lines.iter().enumerate() {
+            // Remove up to `common` leading spaces/tabs
+            let mut to_strip = common;
+            let mut byte_idx = 0;
+            for ch in line.chars() {
+                if to_strip > 0 && (ch == ' ' || ch == '\t') {
+                    to_strip -= 1;
+                    byte_idx += ch.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            out.push_str(&line[byte_idx..]);
+            if i < lines.len() - 1 { out.push('\n'); }
+        }
+
+        out
+    }
+
     fn render_template(&self, template: &str, data: &Value) -> Result<String, WebPipeError> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -172,12 +214,14 @@ impl HandlebarsMiddleware {
         if let Ok(partials) = HANDLEBARS_PARTIALS.lock() {
             for (name, tpl) in partials.iter() {
                 let n = name.trim();
-                let _ = handlebars.register_partial(n, tpl);
+                // Dedent partials to avoid unintended leading whitespace from config indentation
+                let dedented = Self::dedent_multiline(tpl);
+                let _ = handlebars.register_partial(n, &dedented);
             }
         }
 
         // Compile/register this template string only once, render by id thereafter
-        let tpl = template.trim().to_string();
+        let tpl = Self::dedent_multiline(template);
         let mut hasher = DefaultHasher::new();
         tpl.hash(&mut hasher);
         let id = format!("tpl_{:x}", hasher.finish());

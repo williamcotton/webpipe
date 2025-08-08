@@ -318,7 +318,7 @@ GET /articles/:article
           <article>
               <h2>{{title}}</h2>
               {{#if formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/if}}
-{{{bodyHtml}}}
+              {{{bodyHtml}}}
           </article>
         {{/blogLayout}}
       `
@@ -365,7 +365,7 @@ GET /htmx/
     ok(200):
       |> handlebars: `
         {{#each articles}}
-{{> articleListItem}}
+          {{> articleListItem}}
         {{else}}
           <p>No articles found.</p>
         {{/each}}
@@ -388,7 +388,7 @@ GET /htmx/articles/:article
         <article>
             <h2>{{title}}</h2>
             {{#if formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/if}}
-{{{bodyHtml}}}
+            {{{bodyHtml}}}
         </article>
         <script>hljs.highlightAll();</script>
       `
@@ -417,7 +417,7 @@ GET /htmx/:page
     ok(200):
       |> handlebars: `
         <h2>{{title}}</h2>
-{{{bodyHtml}}}
+        {{{bodyHtml}}}
       `
     notFound(404):
       |> jq: `{ pageSlug: .errors[0].slug, errorMessage: .errors[0].message }`
@@ -443,7 +443,7 @@ GET /:page
           {{#*inline "title"}}{{title}} - William Cotton{{/inline}}
           {{#*inline "metaTags"}}{{#if seoDescription}}<meta name="description" content="{{seoDescription}}">{{/if}}{{/inline}}
           <h2>{{title}}</h2>
-{{{bodyHtml}}}
+          {{{bodyHtml}}}
         {{/baseLayout}}
       `
     notFound(404):
