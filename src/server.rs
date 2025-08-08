@@ -23,7 +23,6 @@ pub struct WebPipeServer {
 
 #[derive(Debug, Clone)]
 pub struct ServerState {
-    program: Program,
     middleware_registry: Arc<MiddlewareRegistry>,
 }
 
@@ -177,7 +176,6 @@ impl WebPipeServer {
         let mut router = Router::new().route("/health", get(health_check));
 
         let server_state = ServerState {
-            program: self.program.clone(),
             middleware_registry: self.middleware_registry.clone(),
         };
 
