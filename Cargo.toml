@@ -22,3 +22,4 @@ lru = "0.12"
 once_cell = "1.19"
 handlebars = "6.2"
 mlua = { version = "0.9", features = ["lua54"] }
+matchit = "0.7"

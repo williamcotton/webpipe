@@ -1394,6 +1394,7 @@ dependencies = [
  "handlebars",
  "jq-rs",
  "lru",
+ "matchit",
  "mlua",
  "nom",
  "once_cell",

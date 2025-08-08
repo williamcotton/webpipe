@@ -3,9 +3,9 @@ use crate::middleware::MiddlewareRegistry;
 use crate::error::WebPipeError;
 use axum::{
     body::Bytes,
-    extract::{Path as AxumPath, Query, State},
+    extract::{Query, State, OriginalUri},
     http::{Method, StatusCode, HeaderMap},
-    response::{IntoResponse, Json, Html},
+    response::{IntoResponse, Json, Html, Response},
     routing::{get, on, MethodFilter},
     Router,
 };
@@ -21,9 +21,13 @@ pub struct WebPipeServer {
     middleware_registry: Arc<MiddlewareRegistry>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerState {
     middleware_registry: Arc<MiddlewareRegistry>,
+    get_router: Arc<matchit::Router<Arc<Pipeline>>>,
+    post_router: Arc<matchit::Router<Arc<Pipeline>>>,
+    put_router: Arc<matchit::Router<Arc<Pipeline>>>,
+    delete_router: Arc<matchit::Router<Arc<Pipeline>>>,
 }
 
 impl ServerState {
@@ -175,9 +179,11 @@ impl WebPipeServer {
     pub fn router(self) -> Router {
         let mut router = Router::new().route("/health", get(health_check));
 
-        let server_state = ServerState {
-            middleware_registry: self.middleware_registry.clone(),
-        };
+        // Build method-specific matchers
+        let mut get_router = matchit::Router::new();
+        let mut post_router = matchit::Router::new();
+        let mut put_router = matchit::Router::new();
+        let mut delete_router = matchit::Router::new();
 
         for route in &self.program.routes {
             let path = route.path.clone();
@@ -195,33 +201,42 @@ impl WebPipeServer {
                 }
             };
 
-            let filter = match route.method.as_str() {
-                "GET" => MethodFilter::GET,
-                "POST" => MethodFilter::POST,
-                "PUT" => MethodFilter::PUT,
-                "DELETE" => MethodFilter::DELETE,
+            match route.method.as_str() {
+                "GET" => {
+                    let _ = get_router.insert(path.clone(), pipeline.clone());
+                }
+                "POST" => {
+                    let _ = post_router.insert(path.clone(), pipeline.clone());
+                }
+                "PUT" => {
+                    let _ = put_router.insert(path.clone(), pipeline.clone());
+                }
+                "DELETE" => {
+                    let _ = delete_router.insert(path.clone(), pipeline.clone());
+                }
                 other => {
                     warn!("Unsupported HTTP method: {}", other);
                     continue;
                 }
-            };
+            }
 
-            info!("Registering route: {} {}", route.method, path);
-            
-            let pipeline_clone = pipeline.clone();
-            let handler = move |
-                state: State<ServerState>,
-                method: Method,
-                headers: HeaderMap,
-                path_params: AxumPath<HashMap<String, String>>,
-                query_params: Query<HashMap<String, String>>,
-                body: Bytes,
-            | async move {
-                handle_pipeline_request(state, method, headers, path_params, query_params, body, pipeline_clone.clone()).await
-            };
-            
-            router = router.route(&path, on(filter, handler));
+            info!("Registered route: {} {}", route.method, path);
         }
+
+        let server_state = ServerState {
+            middleware_registry: self.middleware_registry.clone(),
+            get_router: Arc::new(get_router),
+            post_router: Arc::new(post_router),
+            put_router: Arc::new(put_router),
+            delete_router: Arc::new(delete_router),
+        };
+
+        // Single catch-all per method
+        router = router
+            .route("/*path", on(MethodFilter::GET, unified_handler))
+            .route("/*path", on(MethodFilter::POST, unified_handler))
+            .route("/*path", on(MethodFilter::PUT, unified_handler))
+            .route("/*path", on(MethodFilter::DELETE, unified_handler));
 
         router
             .layer(
@@ -246,15 +261,48 @@ impl WebPipeServer {
     }
 }
 
-async fn handle_pipeline_request(
+async fn unified_handler(
     State(state): State<ServerState>,
     method: Method,
     headers: HeaderMap,
-    AxumPath(path_params): AxumPath<HashMap<String, String>>,
+    OriginalUri(orig_uri): OriginalUri,
     Query(query_params): Query<HashMap<String, String>>,
     body: Bytes,
-    pipeline: Arc<Pipeline>,
 ) -> impl IntoResponse {
+    // Select router based on method
+    let path = orig_uri.path().to_string();
+    let (pipeline, path_params) = match method.as_str() {
+        "GET" => match state.get_router.at(&path) {
+            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        },
+        "POST" => match state.post_router.at(&path) {
+            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        },
+        "PUT" => match state.put_router.at(&path) {
+            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        },
+        "DELETE" => match state.delete_router.at(&path) {
+            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        },
+        _ => return StatusCode::METHOD_NOT_ALLOWED.into_response(),
+    };
+
+    respond_with_pipeline(state, method, headers, path_params, query_params, body, pipeline).await
+}
+
+async fn respond_with_pipeline(
+    state: ServerState,
+    method: Method,
+    headers: HeaderMap,
+    path_params: HashMap<String, String>,
+    query_params: HashMap<String, String>,
+    body: Bytes,
+    pipeline: Arc<Pipeline>,
+) -> Response {
     let method_str = method.to_string();
     
     // Convert headers to HashMap
