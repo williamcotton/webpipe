@@ -191,17 +191,22 @@ pipeline contentfulPages =
     end
   `
 
-mustache baseLayout = `
+handlebars baseLayout = `
+{{#*inline "title"}}William Cotton{{/inline}}
+{{#*inline "metaTags"}}<meta name="description" content="William Cotton">{{/inline}}
+{{#*inline "headExtras"}}{{/inline}}
+{{#*inline "content"}}Default content{{/inline}}
+{{#*inline "footerScripts"}}{{/inline}}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1"/>
     <link rel="preload" href="LigaMenlo-Regular.woff" as="font" type="font/woff" crossorigin>
-    <title>{{$title}}William Cotton{{/title}}</title>
+    <title>{{> title}}</title>
     <link rel="stylesheet" href="/app.css"/>
-    {{$metaTags}}<meta name="description" content="William Cotton">{{/metaTags}}
-    {{$headExtras}}{{/headExtras}}
+    {{> metaTags}}
+    {{> headExtras}}
 </head>
 <body>
     <div id="app">
@@ -217,35 +222,34 @@ mustache baseLayout = `
                 </nav>
             </header>
             <div class="content" id="main-content">
-                {{$content}}Default content{{/content}}
+                {{> content}}
             </div>
             <footer>
                 <p>© 2025 William Cotton</p>
             </footer>
         </div>
     </div>
-    {{$footerScripts}}{{/footerScripts}}
+    {{> footerScripts}}
+
 </body>
 </html>
 `
 
-mustache blogLayout = `
-{{<baseLayout}}
-  {{$title}}{{#pageTitle}}{{pageTitle}} - {{/pageTitle}}William Cotton{{/title}}
-  {{$metaTags}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/metaTags}}
-  {{$headExtras}}
+handlebars blogLayout = `
+{{#> baseLayout}}
+  {{#*inline "title"}}{{#if pageTitle}}{{pageTitle}} - {{/if}}William Cotton{{/inline}}
+  {{#*inline "metaTags"}}{{#if seoDescription}}<meta name="description" content="{{seoDescription}}">{{/if}}{{/inline}}
+  {{#*inline "headExtras"}}
     <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.6/dist/htmx.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/languages/fsharp.min.js"></script>
     <script src="/hljs-wp.js"></script>
-  {{/headExtras}}
-  {{$content}}
-    {{$pageContent}}Default page content{{/pageContent}}
-  {{/content}}
+  {{/inline}}
+  {{#*inline "content"}}{{> @partial-block}}{{/inline}}
 {{/baseLayout}}
 `
 
-mustache articleListItem = `
+handlebars articleListItem = `
 <article>
     <h2>
         <a href="/articles/{{fields.slug}}" 
@@ -254,8 +258,9 @@ mustache articleListItem = `
            hx-swap="innerHTML show:window:top"
            hx-push-url="/articles/{{fields.slug}}">{{fields.title}}</a>
     </h2>
-    {{#fields.formattedDate}}<p class="published-date">{{fields.formattedDate}}</p>{{/fields.formattedDate}}
-    {{#fields.bodyPreview}}{{{fields.bodyPreview}}}{{/fields.bodyPreview}}
+    {{#if fields.formattedDate}}<p class="published-date">{{fields.formattedDate}}</p>{{/if}}
+    {{#if fields.bodyPreview}}{{{fields.bodyPreview}}}{{/if}}
+    
 </article>
 `
 
@@ -264,44 +269,43 @@ GET /
   |> pipeline: contentfulArticles
   |> result
     ok(200):
-      |> mustache: `
-        {{<blogLayout}}
-          {{$title}}William Cotton{{/title}}
-          {{$pageContent}}
-            {{#articles}}
-            {{>articleListItem}}
-            {{/articles}}
-            {{^articles}}
+      |> handlebars: `
+        {{#> blogLayout}}
+          {{#*inline "title"}}William Cotton{{/inline}}
+          {{#*inline "content"}}
+            {{#each articles}}
+              {{> articleListItem}}
+            {{else}}
               <p>No articles found.</p>
-            {{/articles}}
-          {{/pageContent}}
+            {{/each}}
+          {{/inline}}
         {{/blogLayout}}
       `
     contentfulError(500):
       |> jq: `{ errorMessage: .errors[0].message, errorDetails: .errors[0].details }`
-      |> mustache: `
-        {{<blogLayout}}
-          {{$title}}Error - William Cotton{{/title}}
-          {{$pageContent}}
+      |> handlebars: `
+        {{#> blogLayout}}
+          {{#*inline "title"}}Error - William Cotton{{/inline}}
+          {{#*inline "content"}}
             <div class="error">
               <h2>Error Loading Articles</h2>
               <p>{{errorMessage}}</p>
               <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Try again</a></p>
             </div>
-          {{/pageContent}}
+          {{/inline}}
         {{/blogLayout}}
       `
     default(500):
-      |> mustache: `
-        {{<blogLayout}}
-          {{$title}}Error - William Cotton{{/title}}
-          {{$pageContent}}
+      |> handlebars: `
+        {{#> blogLayout}}
+          {{#*inline "title"}}Error - William Cotton{{/inline}}
+          {{#*inline "content"}}
             <div class="error">
               <h2>Unexpected Error</h2>
               <p>Something went wrong while loading the articles.</p>
               <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Try again</a></p>
             </div>
-          {{/pageContent}}
+          {{/inline}}
         {{/blogLayout}}
       `
 
@@ -310,58 +314,58 @@ GET /articles/:article
   |> pipeline: contentfulByArticle
   |> result
     ok(200):
-      |> mustache: `
-        {{<blogLayout}}
-          {{$title}}{{title}} - William Cotton{{/title}}
-          {{$metaTags}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/metaTags}}
-          {{$pageContent}}
+      |> handlebars: `
+        {{#> blogLayout}}
+          {{#*inline "title"}}{{title}} - William Cotton{{/inline}}
+          {{#*inline "metaTags"}}{{#if seoDescription}}<meta name="description" content="{{seoDescription}}">{{/if}}{{/inline}}
+          {{#*inline "content"}}
             <article>
                 <h2>{{title}}</h2>
-                {{#formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/formattedDate}}
+                {{#if formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/if}}
                 {{{bodyHtml}}}
             </article>
-          {{/pageContent}}
+          {{/inline}}
         {{/blogLayout}}
       `
     notFound(404):
       |> jq: `{ articleSlug: .errors[0].slug, errorMessage: .errors[0].message }`
-      |> mustache: `
-        {{<blogLayout}}
-          {{$title}}Article Not Found - William Cotton{{/title}}
-          {{$pageContent}}
+      |> handlebars: `
+        {{#> blogLayout}}
+          {{#*inline "title"}}Article Not Found - William Cotton{{/inline}}
+          {{#*inline "content"}}
             <article>
                 <h2>Article Not Found</h2>
                 <p>{{errorMessage}}</p>
                 <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
             </article>
-          {{/pageContent}}
+          {{/inline}}
         {{/blogLayout}}
       `
     contentfulError(500):
       |> jq: `{ articleSlug: .errors[0].slug, errorMessage: .errors[0].message }`
-      |> mustache: `
-        {{<blogLayout}}
-          {{$title}}Error - William Cotton{{/title}}
-          {{$pageContent}}
+      |> handlebars: `
+        {{#> blogLayout}}
+          {{#*inline "title"}}Error - William Cotton{{/inline}}
+          {{#*inline "content"}}
             <article>
                 <h2>Error Loading Article</h2>
                 <p>{{errorMessage}}</p>
                 <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
             </article>
-          {{/pageContent}}
+          {{/inline}}
         {{/blogLayout}}
       `
     default(500):
-      |> mustache: `
-        {{<blogLayout}}
-          {{$title}}Error - William Cotton{{/title}}
-          {{$pageContent}}
+      |> handlebars: `
+        {{#> blogLayout}}
+          {{#*inline "title"}}Error - William Cotton{{/inline}}
+          {{#*inline "content"}}
             <article>
                 <h2>Unexpected Error</h2>
                 <p>Something went wrong while loading the article.</p>
                 <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
             </article>
-          {{/pageContent}}
+          {{/inline}}
         {{/blogLayout}}
       `
 
@@ -370,17 +374,16 @@ GET /htmx/
   |> pipeline: contentfulArticles
   |> result
     ok(200):
-      |> mustache: `
-        {{#articles}}
-        {{>articleListItem}}
-        {{/articles}}
-        {{^articles}}
+      |> handlebars: `
+        {{#each articles}}
+          {{> articleListItem}}
+        {{else}}
           <p>No articles found.</p>
-        {{/articles}}
+        {{/each}}
         <script>hljs.highlightAll();</script>
       `
     default(500):
-      |> mustache: `
+      |> handlebars: `
         <div class="error">
           <h2>Error Loading Articles</h2>
           <p>Something went wrong while loading the articles.</p>
@@ -392,17 +395,17 @@ GET /htmx/articles/:article
   |> pipeline: contentfulByArticle
   |> result
     ok(200):
-      |> mustache: `
+      |> handlebars: `
         <article>
             <h2>{{title}}</h2>
-            {{#formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/formattedDate}}
+            {{#if formattedDate}}<p class="published-date">{{formattedDate}}</p>{{/if}}
             {{{bodyHtml}}}
         </article>
         <script>hljs.highlightAll();</script>
       `
     notFound(404):
       |> jq: `{ articleSlug: .errors[0].slug, errorMessage: .errors[0].message }`
-      |> mustache: `
+      |> handlebars: `
         <article>
             <h2>Article Not Found</h2>
             <p>{{errorMessage}}</p>
@@ -410,7 +413,7 @@ GET /htmx/articles/:article
         </article>
       `
     default(500):
-      |> mustache: `
+      |> handlebars: `
         <article>
             <h2>Error Loading Article</h2>
             <p>Something went wrong while loading the article.</p>
@@ -423,19 +426,19 @@ GET /htmx/:page
   |> pipeline: contentfulPages
   |> result
     ok(200):
-      |> mustache: `
+      |> handlebars: `
         <h2>{{title}}</h2>
         {{{bodyHtml}}}
       `
     notFound(404):
       |> jq: `{ pageSlug: .errors[0].slug, errorMessage: .errors[0].message }`
-      |> mustache: `
+      |> handlebars: `
         <h2>Page Not Found</h2>
         <p>{{errorMessage}}</p>
         <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
       `
     default(500):
-      |> mustache: `
+      |> handlebars: `
         <h2>Error Loading Page</h2>
         <p>Something went wrong while loading the page.</p>
         <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
@@ -446,48 +449,48 @@ GET /:page
   |> pipeline: contentfulPages
   |> result
     ok(200):
-      |> mustache: `
-        {{<baseLayout}}
-          {{$title}}{{title}} - William Cotton{{/title}}
-          {{$metaTags}}{{#seoDescription}}<meta name="description" content="{{seoDescription}}">{{/seoDescription}}{{/metaTags}}
-          {{$content}}
+      |> handlebars: `
+        {{#> baseLayout}}
+          {{#*inline "title"}}{{title}} - William Cotton{{/inline}}
+          {{#*inline "metaTags"}}{{#if seoDescription}}<meta name="description" content="{{seoDescription}}">{{/if}}{{/inline}}
+          {{#*inline "content"}}
             <h2>{{title}}</h2>
             {{{bodyHtml}}}
-          {{/content}}
+          {{/inline}}
         {{/baseLayout}}
       `
     notFound(404):
       |> jq: `{ pageSlug: .errors[0].slug, errorMessage: .errors[0].message }`
-      |> mustache: `
-        {{<baseLayout}}
-          {{$title}}Page Not Found - William Cotton{{/title}}
-          {{$content}}
+      |> handlebars: `
+        {{#> baseLayout}}
+          {{#*inline "title"}}Page Not Found - William Cotton{{/inline}}
+          {{#*inline "content"}}
             <h2>Page Not Found</h2>
             <p>{{errorMessage}}</p>
             <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
-          {{/content}}
+          {{/inline}}
         {{/baseLayout}}
       `
     contentfulError(500):
       |> jq: `{ pageSlug: .errors[0].slug, errorMessage: .errors[0].message }`
-      |> mustache: `
-        {{<baseLayout}}
-          {{$title}}Error - William Cotton{{/title}}
-          {{$content}}
+      |> handlebars: `
+        {{#> baseLayout}}
+          {{#*inline "title"}}Error - William Cotton{{/inline}}
+          {{#*inline "content"}}
             <h2>Error Loading Page</h2>
             <p>{{errorMessage}}</p>
             <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
-          {{/content}}
+          {{/inline}}
         {{/baseLayout}}
       `
     default(500):
-      |> mustache: `
-        {{<baseLayout}}
-          {{$title}}Error - William Cotton{{/title}}
-          {{$content}}
+      |> handlebars: `
+        {{#> baseLayout}}
+          {{#*inline "title"}}Error - William Cotton{{/inline}}
+          {{#*inline "content"}}
             <h2>Unexpected Error</h2>
             <p>Something went wrong while loading the page.</p>
             <p><a href="/" hx-get="/htmx/" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="/">← Back to home</a></p>
-          {{/content}}
+          {{/inline}}
         {{/baseLayout}}
       `
