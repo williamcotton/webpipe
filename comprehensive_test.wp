@@ -26,7 +26,7 @@ describe "lua"
     then status is 200
     and output equals `{
       "message": "Hello from Lua!",
-      "id": "123",
+      "id": 123,
       "name": "example"
     }`
 
@@ -54,7 +54,7 @@ config auth {
 ## Tests
 
 pipeline getTeams =
-  |> jq: `{ sqlParams: [.params.id | tostring] }`
+  |> jq: `{ sqlParams: [.params.id] }`
   |> pg: `SELECT * FROM teams WHERE id = $1`
 
 GET /hello
@@ -106,10 +106,10 @@ describe "getTeams pipeline"
 
   it "handles string id parameter"
     when executing pipeline getTeams
-    with input `{ "params": { "id": "42" } }`
-    and mock pg returning `{ "rows": [{ "id": "42", "name": "Marketing" }] }`
+    with input `{ "params": { "id": 42 } }`
+    and mock pg returning `{ "rows": [{ "id": 42, "name": "Marketing" }] }`
     then output equals `{
-      "rows": [{ "id": "42", "name": "Marketing" }]
+      "rows": [{ "id": 42, "name": "Marketing" }]
     }`
 
 describe "test calling route"

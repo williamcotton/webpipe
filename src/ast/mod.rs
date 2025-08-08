@@ -490,16 +490,16 @@ fn parse_named_pipeline(input: &str) -> IResult<&str, NamedPipeline> {
 
 fn parse_pipeline_ref(input: &str) -> IResult<&str, PipelineRef> {
     alt((
-        // Named pipeline reference
+        // Inline pipeline (prefer inline so routes can chain steps after a pipeline call)
+        map(parse_pipeline, PipelineRef::Inline),
+        // Named pipeline reference (single step)
         map(
             preceded(
                 (multispace0, tag("|>"), multispace0, tag("pipeline:"), multispace0),
                 parse_identifier
             ),
             PipelineRef::Named
-        ),
-        // Inline pipeline
-        map(parse_pipeline, PipelineRef::Inline)
+        )
     )).parse(input)
 }
 
@@ -582,18 +582,47 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
     let (input, _) = multispace0(input)?;
     let (input, comparison) = take_till1(|c| c == ' ')(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, value) = take_till1(|c| c == '\n')(input)?;
+    // Value can be a backtick-delimited multi-line string, a quoted string, or the rest of the line
+    let (input, value) = alt((
+        // backtick multi-line
+        map(parse_multiline_string, |s| s.to_string()),
+        // quoted on the same line
+        map(
+            delimited(char('"'), take_until("\""), char('"')),
+            |s: &str| s.to_string()
+        ),
+        // bare until end of line
+        map(take_till1(|c| c == '\n'), |s: &str| s.to_string()),
+    )).parse(input)?;
     Ok((input, Condition {
         condition_type,
         field: field.to_string(),
         comparison: comparison.to_string(),
-        value: value.to_string(),
+        value,
     }))
 }
 
 fn parse_mock(input: &str) -> IResult<&str, Mock> {
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("with")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("mock")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, target) = take_till1(|c| c == ' ')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("returning")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, return_value) = parse_multiline_string(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, Mock { 
+        target: target.to_string(), 
+        return_value 
+    }))
+}
+
+fn parse_and_mock(input: &str) -> IResult<&str, Mock> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("and")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("mock")(input)?;
     let (input, _) = multispace0(input)?;
@@ -635,11 +664,19 @@ fn parse_it(input: &str) -> IResult<&str, It> {
     ).parse(input)?;
     let (input, _) = multispace0(input)?;
     
+    // Parse optional additional mocks starting with 'and mock'
+    let (input, extra_mocks) = many0(parse_and_mock).parse(input)?;
+    let (input, _) = multispace0(input)?;
+
+    // Parse remaining conditions
     let (input, conditions) = many0(parse_condition).parse(input)?;
+    
+    let mut all_mocks = mocks;
+    all_mocks.extend(extra_mocks);
     
     Ok((input, It { 
         name: name.to_string(), 
-        mocks, 
+        mocks: all_mocks, 
         when, 
         input: input_opt, 
         conditions 

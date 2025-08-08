@@ -65,6 +65,7 @@ pub struct ServerState {
     put_router: Arc<matchit::Router<Arc<Pipeline>>>,
     delete_router: Arc<matchit::Router<Arc<Pipeline>>>,
     variables: Arc<Vec<Variable>>, // for resolving middleware variables and auto-naming
+    named_pipelines: Arc<std::collections::HashMap<String, Arc<Pipeline>>>,
 }
 
 impl ServerState {
@@ -108,6 +109,7 @@ impl ServerState {
     ) -> Pin<Box<dyn Future<Output = Result<(Value, String, Option<u16>), WebPipeError>> + Send + 'a>> {
         Box::pin(async move {
         let mut content_type = "application/json".to_string();
+        let mut status_code_out: Option<u16> = None;
         
         for (idx, step) in pipeline.steps.iter().enumerate() {
             let is_last_step = idx + 1 == pipeline.steps.len();
@@ -119,8 +121,22 @@ impl ServerState {
                     let (effective_config, effective_input, auto_named) =
                         self.resolve_config_and_autoname(name, config, &input);
 
-                    match self.middleware_registry.execute(name, &effective_config, &effective_input).await {
-                        Ok(result) => {
+                    // Support a virtual middleware step for named pipelines: `pipeline: <name>`
+                    let exec_result: Result<(Value, Option<u16>, String), WebPipeError> = if name == "pipeline" {
+                        let name = effective_config.trim();
+                        if let Some(p) = self.named_pipelines.get(name) {
+                            let (val, ct, st) = self.execute_pipeline(p, effective_input.clone()).await?;
+                            Ok((val, st, ct))
+                        } else {
+                            Err(WebPipeError::PipelineNotFound(name.to_string()))
+                        }
+                    } else {
+                        let val = self.middleware_registry.execute(name, &effective_config, &effective_input).await?;
+                        Ok((val, None, content_type.clone()))
+                    };
+
+                    match exec_result {
+                        Ok((result, sub_status, sub_content_type)) => {
                             let mut next_input = if is_last_step {
                                 // final step controls output
                                 result
@@ -137,6 +153,11 @@ impl ServerState {
                             // Special handling for content type changes
                             if name == "handlebars" {
                                 content_type = "text/html".to_string();
+                            } else if name == "pipeline" && is_last_step {
+                                content_type = sub_content_type;
+                            }
+                            if is_last_step {
+                                if let Some(s) = sub_status { status_code_out = Some(s); }
                             }
                         }
                         Err(e) => {
@@ -151,7 +172,7 @@ impl ServerState {
             }
         }
         
-        Ok((input, content_type, None))
+        Ok((input, content_type, status_code_out))
         })
     }
 
@@ -330,6 +351,7 @@ impl WebPipeServer {
             put_router: Arc::new(put_router),
             delete_router: Arc::new(delete_router),
             variables: Arc::new(self.program.variables.clone()),
+            named_pipelines: Arc::new(self.program.pipelines.iter().map(|p| (p.name.clone(), Arc::new(p.pipeline.clone()))).collect()),
         };
 
         // Single catch-all per method
