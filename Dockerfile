@@ -20,8 +20,11 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# Build release binary
-RUN cargo build --release && strip target/release/webpipe
+# Build release binary (ensure jq-sys finds libjq via multiarch path)
+RUN JQ_LIB_DIR=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
+    JQ_INCLUDE_DIR=/usr/include \
+    cargo build --release && \
+    strip target/release/webpipe
 
 # ---------- Runtime ----------
 FROM ubuntu:22.04
