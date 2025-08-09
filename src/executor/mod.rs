@@ -1,0 +1,195 @@
+use std::{collections::HashMap, pin::Pin, sync::Arc, future::Future};
+
+use async_trait::async_trait;
+use serde_json::Value;
+
+use crate::{
+    ast::{Pipeline, PipelineStep, Variable},
+    error::WebPipeError,
+    middleware::MiddlewareRegistry,
+};
+
+#[async_trait]
+pub trait MiddlewareInvoker: Send + Sync {
+    async fn call(&self, name: &str, cfg: &str, input: &Value) -> Result<Value, WebPipeError>;
+}
+
+#[derive(Clone)]
+pub struct ExecutionEnv {
+    pub variables: Arc<Vec<Variable>>, // for variable resolution and auto-naming
+    pub named_pipelines: Arc<HashMap<String, Arc<Pipeline>>>,
+    pub invoker: Arc<dyn MiddlewareInvoker>,
+}
+
+#[derive(Clone)]
+pub struct RealInvoker {
+    registry: Arc<MiddlewareRegistry>,
+}
+
+impl RealInvoker {
+    pub fn new(registry: Arc<MiddlewareRegistry>) -> Self { Self { registry } }
+}
+
+#[async_trait]
+impl MiddlewareInvoker for RealInvoker {
+    async fn call(&self, name: &str, cfg: &str, input: &Value) -> Result<Value, WebPipeError> {
+        self.registry.execute(name, cfg, input).await
+    }
+}
+
+fn merge_values_preserving_input(input: &Value, result: &Value) -> Value {
+    match (input, result) {
+        (Value::Object(base), Value::Object(patch)) => {
+            let mut merged = base.clone();
+            for (k, v) in patch {
+                merged.insert(k.clone(), v.clone());
+            }
+            Value::Object(merged)
+        }
+        _ => result.clone(),
+    }
+}
+
+fn resolve_config_and_autoname(
+    variables: &[Variable],
+    middleware_name: &str,
+    step_config: &str,
+    input: &Value,
+) -> (String, Value, bool) {
+    if let Some(var) = variables.iter().find(|v| v.var_type == middleware_name && v.name == step_config) {
+        let resolved_config = var.value.clone();
+        let mut new_input = input.clone();
+        let mut auto_named = false;
+        if let Some(obj) = new_input.as_object_mut() {
+            if !obj.contains_key("resultName") {
+                obj.insert("resultName".to_string(), Value::String(var.name.clone()));
+                auto_named = true;
+            }
+        }
+        return (resolved_config, new_input, auto_named);
+    }
+    (step_config.to_string(), input.clone(), false)
+}
+
+fn extract_error_type(input: &Value) -> Option<String> {
+    if let Some(errors) = input.get("errors") {
+        if let Some(errors_array) = errors.as_array() {
+            if let Some(first_error) = errors_array.first() {
+                if let Some(error_type) = first_error.get("type").and_then(|v| v.as_str()) {
+                    return Some(error_type.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn select_branch<'a>(
+    branches: &'a [crate::ast::ResultBranch],
+    error_type: &Option<String>,
+) -> Option<&'a crate::ast::ResultBranch> {
+    use crate::ast::ResultBranchType;
+
+    if let Some(err_type) = error_type {
+        for branch in branches {
+            if let ResultBranchType::Custom(name) = &branch.branch_type {
+                if name == err_type { return Some(branch); }
+            }
+        }
+    }
+    if error_type.is_none() {
+        for branch in branches {
+            if matches!(branch.branch_type, ResultBranchType::Ok) { return Some(branch); }
+        }
+    }
+    for branch in branches {
+        if matches!(branch.branch_type, ResultBranchType::Default) { return Some(branch); }
+    }
+    None
+}
+
+async fn handle_result_step<'a>(
+    env: &'a ExecutionEnv,
+    branches: &'a [crate::ast::ResultBranch],
+    input: Value,
+    mut content_type: String,
+) -> Result<(Value, String, Option<u16>), WebPipeError> {
+    let error_type = extract_error_type(&input);
+    let selected = select_branch(branches, &error_type);
+    if let Some(branch) = selected {
+        let inherited_cookies = input.get("setCookies").cloned();
+        let (mut result, branch_content_type, _status) = execute_pipeline(env, &branch.pipeline, input).await?;
+        if inherited_cookies.is_some() {
+            if let Some(obj) = result.as_object_mut() {
+                if !obj.contains_key("setCookies") {
+                    if let Some(c) = inherited_cookies { obj.insert("setCookies".to_string(), c); }
+                }
+            }
+        }
+        if branch_content_type != "application/json" { content_type = branch_content_type; }
+        Ok((result, content_type, Some(branch.status_code)))
+    } else {
+        Ok((input, content_type, None))
+    }
+}
+
+pub fn execute_pipeline<'a>(
+    env: &'a ExecutionEnv,
+    pipeline: &'a Pipeline,
+    mut input: Value,
+) -> Pin<Box<dyn Future<Output = Result<(Value, String, Option<u16>), WebPipeError>> + Send + 'a>> {
+    Box::pin(async move {
+        let mut content_type = "application/json".to_string();
+        let mut status_code_out: Option<u16> = None;
+
+        for (idx, step) in pipeline.steps.iter().enumerate() {
+            let is_last_step = idx + 1 == pipeline.steps.len();
+            match step {
+                PipelineStep::Regular { name, config } => {
+                    let (effective_config, effective_input, auto_named) =
+                        resolve_config_and_autoname(&env.variables, name, config, &input);
+
+                    let exec_result: Result<(Value, Option<u16>, String), WebPipeError> = if name == "pipeline" {
+                        let name = effective_config.trim();
+                        if let Some(p) = env.named_pipelines.get(name) {
+                            let (val, ct, st) = execute_pipeline(env, p, effective_input.clone()).await?;
+                            Ok((val, st, ct))
+                        } else {
+                            Err(WebPipeError::PipelineNotFound(name.to_string()))
+                        }
+                    } else {
+                        let val = env.invoker.call(name, &effective_config, &effective_input).await?;
+                        Ok((val, None, content_type.clone()))
+                    };
+
+                    match exec_result {
+                        Ok((result, sub_status, sub_content_type)) => {
+                            let mut next_input = if is_last_step { result } else { merge_values_preserving_input(&effective_input, &result) };
+                            if auto_named {
+                                if let Some(obj) = next_input.as_object_mut() { obj.remove("resultName"); }
+                            }
+                            input = next_input;
+
+                            if name == "handlebars" {
+                                content_type = "text/html".to_string();
+                            } else if name == "pipeline" && is_last_step {
+                                content_type = sub_content_type;
+                            }
+                            if is_last_step { if let Some(s) = sub_status { status_code_out = Some(s); } }
+                        }
+                        Err(e) => {
+                            return Err(WebPipeError::MiddlewareExecutionError(e.to_string()));
+                        }
+                    }
+                }
+                PipelineStep::Result { branches } => {
+                    return handle_result_step(env, branches, input, content_type).await;
+                }
+            }
+        }
+
+        Ok((input, content_type, status_code_out))
+    })
+}
+
+

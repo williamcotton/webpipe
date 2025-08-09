@@ -1,4 +1,4 @@
-use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep, Variable};
+use crate::ast::{Program, Pipeline, PipelineRef};
 use crate::middleware::MiddlewareRegistry;
 use crate::config;
 use crate::error::WebPipeError;
@@ -19,6 +19,7 @@ use tracing::{info, warn};
 use tokio::fs as tokio_fs;
 use std::path::{Path, PathBuf};
 use crate::runtime::Context;
+use crate::executor::{ExecutionEnv, RealInvoker};
 
 fn string_to_number_or_string(s: &str) -> Value {
     // Try integer first
@@ -42,18 +43,7 @@ fn string_map_to_json_with_number_coercion(map: &HashMap<String, String>) -> Val
     Value::Object(obj)
 }
 
-fn merge_values_preserving_input(input: &serde_json::Value, result: &serde_json::Value) -> serde_json::Value {
-    match (input, result) {
-        (serde_json::Value::Object(base), serde_json::Value::Object(patch)) => {
-            let mut merged = base.clone();
-            for (k, v) in patch {
-                merged.insert(k.clone(), v.clone());
-            }
-            serde_json::Value::Object(merged)
-        }
-        _ => result.clone(),
-    }
-}
+// merge helper moved to shared executor
 
 pub struct WebPipeServer {
     program: Program,
@@ -67,211 +57,21 @@ pub struct ServerState {
     post_router: Arc<matchit::Router<Arc<Pipeline>>>,
     put_router: Arc<matchit::Router<Arc<Pipeline>>>,
     delete_router: Arc<matchit::Router<Arc<Pipeline>>>,
-    variables: Arc<Vec<Variable>>, // for resolving middleware variables and auto-naming
-    named_pipelines: Arc<std::collections::HashMap<String, Arc<Pipeline>>>,
+    env: Arc<ExecutionEnv>,
 }
 
 impl ServerState {
-    fn resolve_config_and_autoname(
-        &self,
-        middleware_name: &str,
-        step_config: &str,
-        input: &serde_json::Value,
-    ) -> (String, serde_json::Value, bool) {
-        // Try to find a variable matching this middleware and config
-        if let Some(var) = self
-            .variables
-            .iter()
-            .find(|v| v.var_type == middleware_name && v.name == step_config)
-        {
-            // Use the variable's value as config
-            let resolved_config = var.value.clone();
-
-            // If input is an object and resultName is missing, set it to the variable name
-            let mut new_input = input.clone();
-            let mut auto_named = false;
-            if let Some(obj) = new_input.as_object_mut() {
-                let has_result_name = obj.get("resultName").is_some();
-                if !has_result_name {
-                    obj.insert("resultName".to_string(), serde_json::Value::String(var.name.clone()));
-                    auto_named = true;
-                }
-            }
-
-            return (resolved_config, new_input, auto_named);
-        }
-
-        // No variable resolution; return as-is
-        (step_config.to_string(), input.clone(), false)
-    }
+    // variable resolution now handled by shared executor
 
     pub fn execute_pipeline<'a>(
         &'a self,
         pipeline: &'a Pipeline,
-        mut input: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(Value, String, Option<u16>), WebPipeError>> + Send + 'a>> {
-        Box::pin(async move {
-        let mut content_type = "application/json".to_string();
-        let mut status_code_out: Option<u16> = None;
-        
-        for (idx, step) in pipeline.steps.iter().enumerate() {
-            let is_last_step = idx + 1 == pipeline.steps.len();
-            match step {
-                PipelineStep::Regular { name, config } => {
-                    // info!("Executing middleware: {} with config: {}", name, config);
-                    
-                    // Resolve variables and auto-name if applicable
-                    let (effective_config, effective_input, auto_named) =
-                        self.resolve_config_and_autoname(name, config, &input);
-
-                    // Support a virtual middleware step for named pipelines: `pipeline: <name>`
-                    let exec_result: Result<(Value, Option<u16>, String), WebPipeError> = if name == "pipeline" {
-                        let name = effective_config.trim();
-                        if let Some(p) = self.named_pipelines.get(name) {
-                            let (val, ct, st) = self.execute_pipeline(p, effective_input.clone()).await?;
-                            Ok((val, st, ct))
-                        } else {
-                            Err(WebPipeError::PipelineNotFound(name.to_string()))
-                        }
-                    } else {
-                        let val = self.middleware_registry.execute(name, &effective_config, &effective_input).await?;
-                        Ok((val, None, content_type.clone()))
-                    };
-
-                    match exec_result {
-                        Ok((result, sub_status, sub_content_type)) => {
-                            let mut next_input = if is_last_step {
-                                // final step controls output
-                                result
-                            } else {
-                                merge_values_preserving_input(&effective_input, &result)
-                            };
-                            if auto_named {
-                                if let Some(obj) = next_input.as_object_mut() {
-                                    obj.remove("resultName");
-                                }
-                            }
-                            input = next_input;
-                            
-                            // Special handling for content type changes
-                            if name == "handlebars" {
-                                content_type = "text/html".to_string();
-                            } else if name == "pipeline" && is_last_step {
-                                content_type = sub_content_type;
-                            }
-                            if is_last_step {
-                                if let Some(s) = sub_status { status_code_out = Some(s); }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Middleware {} failed: {}", name, e);
-                            return Err(WebPipeError::MiddlewareExecutionError(e.to_string()));
-                        }
-                    }
-                }
-                PipelineStep::Result { branches } => {
-                    return self.handle_result_step(branches, input, content_type).await;
-                }
-            }
-        }
-        
-        Ok((input, content_type, status_code_out))
-        })
-    }
-
-    async fn handle_result_step(
-        &self,
-        branches: &[crate::ast::ResultBranch],
         input: Value,
-        mut content_type: String,
-    ) -> Result<(Value, String, Option<u16>), WebPipeError> {
-        // Check for errors in the input data
-        let error_type = self.extract_error_type(&input);
-        
-        // Find matching branch
-        let selected_branch = self.select_branch(branches, &error_type);
-        
-        if let Some(branch) = selected_branch {
-            // Preserve any setCookies from input unless branch overwrites it
-            let inherited_cookies = input.get("setCookies").cloned();
-            // info!("Executing result branch: {:?} with status {}", branch.branch_type, branch.status_code);
-            
-            // Execute the branch's pipeline
-            let (mut result, branch_content_type, _) = self.execute_pipeline(&branch.pipeline, input).await?;
-            if inherited_cookies.is_some() {
-                if let Some(obj) = result.as_object_mut() {
-                    if !obj.contains_key("setCookies") {
-                        if let Some(c) = inherited_cookies { obj.insert("setCookies".to_string(), c); }
-                    }
-                }
-            }
-            
-            // Update content type if the branch changed it
-            if branch_content_type != "application/json" {
-                content_type = branch_content_type;
-            }
-            
-            // Return the result with the status code from the branch
-            Ok((result, content_type, Some(branch.status_code)))
-        } else {
-            // No branch matched - should not happen if parser is correct
-            warn!("No matching branch found for error type: {:?}", error_type);
-            Ok((input, content_type, None))
-        }
+    ) -> Pin<Box<dyn Future<Output = Result<(Value, String, Option<u16>), WebPipeError>> + Send + 'a>> {
+        crate::executor::execute_pipeline(&self.env, pipeline, input)
     }
 
-    fn extract_error_type(&self, input: &Value) -> Option<String> {
-        // Look for errors array in the input
-        if let Some(errors) = input.get("errors") {
-            if let Some(errors_array) = errors.as_array() {
-                if let Some(first_error) = errors_array.first() {
-                    if let Some(error_type) = first_error.get("type") {
-                        if let Some(type_str) = error_type.as_str() {
-                            return Some(type_str.to_string());
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn select_branch<'a>(
-        &self,
-        branches: &'a [crate::ast::ResultBranch],
-        error_type: &Option<String>,
-    ) -> Option<&'a crate::ast::ResultBranch> {
-        use crate::ast::ResultBranchType;
-        
-        // If there's an error, try to match it to a custom branch
-        if let Some(err_type) = error_type {
-            for branch in branches {
-                if let ResultBranchType::Custom(branch_name) = &branch.branch_type {
-                    if branch_name == err_type {
-                        return Some(branch);
-                    }
-                }
-            }
-        }
-        
-        // If no error or no matching custom branch, try to find 'ok' branch
-        if error_type.is_none() {
-            for branch in branches {
-                if matches!(branch.branch_type, ResultBranchType::Ok) {
-                    return Some(branch);
-                }
-            }
-        }
-        
-        // Fall back to default branch
-        for branch in branches {
-            if matches!(branch.branch_type, ResultBranchType::Default) {
-                return Some(branch);
-            }
-        }
-        
-        None
-    }
+    
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -345,14 +145,25 @@ impl WebPipeServer {
             info!("Registered route: {} {}", route.method, path);
         }
 
+        let named_pipelines: HashMap<String, Arc<Pipeline>> = self.program
+            .pipelines
+            .iter()
+            .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
+            .collect();
+
+        let env = ExecutionEnv {
+            variables: Arc::new(self.program.variables.clone()),
+            named_pipelines: Arc::new(named_pipelines),
+            invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
+        };
+
         let server_state = ServerState {
             middleware_registry: self.middleware_registry.clone(),
             get_router: Arc::new(get_router),
             post_router: Arc::new(post_router),
             put_router: Arc::new(put_router),
             delete_router: Arc::new(delete_router),
-            variables: Arc::new(self.program.variables.clone()),
-            named_pipelines: Arc::new(self.program.pipelines.iter().map(|p| (p.name.clone(), Arc::new(p.pipeline.clone()))).collect()),
+            env: Arc::new(env),
         };
 
         // Single catch-all per method

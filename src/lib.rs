@@ -5,6 +5,7 @@ pub mod middleware;
 pub mod runtime;
 pub mod server;
 pub mod test_runner;
+pub mod executor;
 
 pub use ast::*;
 pub use error::WebPipeError;

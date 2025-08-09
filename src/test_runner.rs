@@ -1,10 +1,12 @@
-use crate::ast::{Mock, Pipeline, PipelineRef, PipelineStep, Program, ResultBranchType, Variable, When};
+use crate::ast::{Mock, Pipeline, PipelineRef, PipelineStep, Program, Variable, When};
 use crate::error::WebPipeError;
 use crate::middleware::MiddlewareRegistry;
+use crate::executor::{ExecutionEnv, MiddlewareInvoker};
 use crate::runtime::Context;
 use crate::config;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 struct MockResolver {
@@ -72,6 +74,22 @@ impl MockResolver {
     }
 }
 
+#[derive(Clone)]
+struct MockingInvoker {
+    registry: Arc<MiddlewareRegistry>,
+    mocks: MockResolver,
+}
+
+#[async_trait::async_trait]
+impl MiddlewareInvoker for MockingInvoker {
+    async fn call(&self, name: &str, cfg: &str, input: &Value) -> Result<Value, WebPipeError> {
+        if let Some(mock_val) = self.mocks.get_middleware_mock(name, input) {
+            return Ok(mock_val.clone());
+        }
+        self.registry.execute(name, cfg, input).await
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TestOutcome {
     pub describe: String,
@@ -133,124 +151,18 @@ fn parse_optional_input(input: &Option<String>) -> Result<Value, WebPipeError> {
 use std::future::Future;
 use std::pin::Pin;
 
-fn execute_pipeline_with_mocks<'a>(
+fn execute_pipeline_with_env<'a>(
+    env: &'a ExecutionEnv,
     pipeline: &'a Pipeline,
     input: Value,
-    registry: &'a MiddlewareRegistry,
-    mocks: &'a MockResolver,
-    variables: &'a [Variable],
 ) -> Pin<Box<dyn Future<Output = Result<(Value, Option<u16>), WebPipeError>> + Send + 'a>> {
     Box::pin(async move {
-        let mut current_input = input;
-        let mut status_code: Option<u16> = None;
-
-        for (idx, step) in pipeline.steps.iter().enumerate() {
-            let is_last_step = idx + 1 == pipeline.steps.len();
-            match step {
-                PipelineStep::Regular { name, config } => {
-                    // Resolve variable references and auto-name like the server
-                    let (effective_config, mut effective_input, auto_named) = resolve_config_and_autoname(variables, name, config, &current_input);
-
-                    if let Some(mock_val) = mocks.get_middleware_mock(name, &effective_input) {
-                        let result = mock_val.clone();
-                        let mut next = if is_last_step { result } else { merge_values_preserving_input(&effective_input, &result) };
-                        if auto_named { if let Some(obj) = next.as_object_mut() { obj.remove("resultName"); } }
-                        current_input = next;
-                    } else {
-                        let result = registry.execute(name, &effective_config, &effective_input).await?;
-                        let mut next = if is_last_step { result } else { merge_values_preserving_input(&effective_input, &result) };
-                        if auto_named { if let Some(obj) = next.as_object_mut() { obj.remove("resultName"); } }
-                        current_input = next;
-                    }
-                }
-                PipelineStep::Result { branches } => {
-                    // Emulate server's result routing
-                    let error_type = extract_error_type(&current_input);
-                    let selected = select_branch(branches, &error_type);
-                    if let Some(branch) = selected {
-                        let (res, _status_unused) = execute_pipeline_with_mocks(&branch.pipeline, current_input, registry, mocks, variables).await?;
-                        current_input = res;
-                        status_code = Some(branch.status_code);
-                        return Ok((current_input, status_code));
-                    } else {
-                        return Ok((current_input, status_code));
-                    }
-                }
-            }
-        }
-
-        Ok((current_input, status_code))
+        let (out, _ct, status) = crate::executor::execute_pipeline(env, pipeline, input).await?;
+        Ok((out, status))
     })
 }
 
-fn resolve_config_and_autoname(
-    variables: &[Variable],
-    middleware_name: &str,
-    step_config: &str,
-    input: &Value,
-) -> (String, Value, bool) {
-    if let Some(var) = variables.iter().find(|v| v.var_type == middleware_name && v.name == step_config) {
-        let resolved_config = var.value.clone();
-        let mut new_input = input.clone();
-        let mut auto_named = false;
-        if let Some(obj) = new_input.as_object_mut() {
-            if !obj.contains_key("resultName") {
-                obj.insert("resultName".to_string(), Value::String(var.name.clone()));
-                auto_named = true;
-            }
-        }
-        return (resolved_config, new_input, auto_named);
-    }
-    (step_config.to_string(), input.clone(), false)
-}
-
-fn merge_values_preserving_input(input: &Value, result: &Value) -> Value {
-    match (input, result) {
-        (Value::Object(base), Value::Object(patch)) => {
-            let mut merged = base.clone();
-            for (k, v) in patch {
-                merged.insert(k.clone(), v.clone());
-            }
-            Value::Object(merged)
-        }
-        _ => result.clone(),
-    }
-}
-
-fn extract_error_type(input: &Value) -> Option<String> {
-    if let Some(errors) = input.get("errors") {
-        if let Some(errors_array) = errors.as_array() {
-            if let Some(first_error) = errors_array.first() {
-                if let Some(error_type) = first_error.get("type").and_then(|v| v.as_str()) {
-                    return Some(error_type.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-fn select_branch<'a>(
-    branches: &'a [crate::ast::ResultBranch],
-    error_type: &Option<String>,
-) -> Option<&'a crate::ast::ResultBranch> {
-    if let Some(err_type) = error_type {
-        for branch in branches {
-            if let ResultBranchType::Custom(name) = &branch.branch_type {
-                if name == err_type { return Some(branch); }
-            }
-        }
-    }
-    if error_type.is_none() {
-        for branch in branches {
-            if matches!(branch.branch_type, ResultBranchType::Ok) { return Some(branch); }
-        }
-    }
-    for branch in branches {
-        if matches!(branch.branch_type, ResultBranchType::Default) { return Some(branch); }
-    }
-    None
-}
+// Removed local helper functions in favor of shared executor
 
 fn find_variable<'a>(variables: &'a [Variable], var_type: &str, name: &str) -> Option<&'a Variable> {
     variables.iter().find(|v| v.var_type == var_type && v.name == name)
@@ -261,7 +173,7 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
     config::init_global(program.configs.clone());
 
     let ctx = Context::from_program_configs(program.configs.clone(), &program.variables).await?;
-    let registry = MiddlewareRegistry::with_builtins(std::sync::Arc::new(ctx));
+    let registry: Arc<MiddlewareRegistry> = Arc::new(MiddlewareRegistry::with_builtins(std::sync::Arc::new(ctx)));
 
     let mut outcomes: Vec<TestOutcome> = Vec::new();
 
@@ -327,23 +239,31 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                             request_obj.insert("content_type".to_string(), Value::String("application/json".to_string()));
                             let input = Value::Object(request_obj);
 
-                            // Pipeline-level mock when route uses a named pipeline
-                        let mut status = 200u16;
-                            let output_value = if let Some(name) = selected_pipeline_name {
-                                if let Some(mock) = mocks.get_pipeline_mock(name) {
-                                    mock.clone()
-                                } else {
-                                    let (out, s) = execute_pipeline_with_mocks(selected_pipeline.unwrap(), input, &registry, &mocks, &program.variables).await?;
-                                    if let Some(sc) = s { status = sc; }
-                                    out
-                                }
-                            } else {
-                                let (out, s) = execute_pipeline_with_mocks(selected_pipeline.unwrap(), input, &registry, &mocks, &program.variables).await?;
-                                if let Some(sc) = s { status = sc; }
-                                out
+                            // Build shared ExecutionEnv with MockingInvoker
+                            let named: HashMap<String, Arc<Pipeline>> = program
+                                .pipelines
+                                .iter()
+                                .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
+                                .collect();
+
+                            let env = ExecutionEnv {
+                                variables: Arc::new(program.variables.clone()),
+                                named_pipelines: Arc::new(named),
+                                invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             };
 
-                            (status, output_value, true, String::new())
+                            // Pipeline-level mock when route uses a named pipeline
+                            if let Some(name) = selected_pipeline_name {
+                                if let Some(mock) = mocks.get_pipeline_mock(name) {
+                                    (200u16, mock.clone(), true, String::new())
+                                } else {
+                                    let (out, s) = execute_pipeline_with_env(&env, selected_pipeline.unwrap(), input).await?;
+                                    (s.unwrap_or(200u16), out, true, String::new())
+                                }
+                            } else {
+                                let (out, s) = execute_pipeline_with_env(&env, selected_pipeline.unwrap(), input).await?;
+                                (s.unwrap_or(200u16), out, true, String::new())
+                            }
                         }
                         Err(_) => (404u16, Value::Object(serde_json::Map::new()), false, format!("Route not found: {} {}", method, path)),
                     }
@@ -359,7 +279,17 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                             .iter()
                             .find(|p| p.name == *name)
                             .ok_or_else(|| WebPipeError::PipelineNotFound(name.clone()))?;
-                        let (out, status_opt) = execute_pipeline_with_mocks(&pipeline.pipeline, input, &registry, &mocks, &program.variables).await?;
+                        let named: HashMap<String, Arc<Pipeline>> = program
+                            .pipelines
+                            .iter()
+                            .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
+                            .collect();
+                        let env = ExecutionEnv {
+                            variables: Arc::new(program.variables.clone()),
+                            named_pipelines: Arc::new(named),
+                            invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
+                        };
+                        let (out, status_opt) = execute_pipeline_with_env(&env, &pipeline.pipeline, input).await?;
                         (status_opt.unwrap_or(200u16), out, true, String::new())
                     }
                 }
@@ -371,10 +301,20 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                     if let Some(mock) = mocks.variable_mocks.get(&(var.var_type.clone(), var.name.clone())) {
                         (200u16, mock.clone(), true, String::new())
                     } else {
-                    // Single-step pipeline invoking the variable's middleware
-                    let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), config: var.value.clone() }] };
-                    let (out, status_opt) = execute_pipeline_with_mocks(&pipeline, input, &registry, &mocks, &program.variables).await?;
-                    (status_opt.unwrap_or(200u16), out, true, String::new())
+                        // Single-step pipeline invoking the variable's middleware
+                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), config: var.value.clone() }] };
+                        let named: HashMap<String, Arc<Pipeline>> = program
+                            .pipelines
+                            .iter()
+                            .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
+                            .collect();
+                        let env = ExecutionEnv {
+                            variables: Arc::new(program.variables.clone()),
+                            named_pipelines: Arc::new(named),
+                            invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
+                        };
+                        let (out, status_opt) = execute_pipeline_with_env(&env, &pipeline, input).await?;
+                        (status_opt.unwrap_or(200u16), out, true, String::new())
                     }
                 }
             };
