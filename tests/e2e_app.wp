@@ -1,0 +1,22 @@
+# Minimal E2E test app for CLI --test mode
+
+GET /hello/:name
+  |> jq: `{ greeting: "hello", name: .params.name }`
+  |> handlebars: `<p>{{greeting}}, {{name}}</p>`
+
+describe "hello route"
+  it "renders html"
+    when calling GET /hello/world
+    then status is 200
+    and output equals `<p>hello, world</p>`
+
+GET /api/echo
+  |> jq: `{ method: .method, ok: true }`
+
+describe "echo route"
+  it "returns json"
+    when calling GET /api/echo
+    then status is 200
+    and output equals `{"method":"GET","ok":true}`
+
+
