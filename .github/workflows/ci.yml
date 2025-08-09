@@ -18,6 +18,8 @@ jobs:
         image: postgres:15
         env:
           POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
         ports:
           - 5432:5432
         options: >-
@@ -88,27 +90,17 @@ jobs:
           echo "JQ_LIB_DIR=$(brew --prefix jq)/lib" >> "$GITHUB_ENV"
           echo "JQ_INCLUDE_DIR=$(brew --prefix jq)/include" >> "$GITHUB_ENV"
 
-      - name: Init and start Postgres
+      - name: Start PostgreSQL (Homebrew) and prepare DB
         run: |
-          initdb -D /tmp/pgdb
-          pg_ctl -D /tmp/pgdb -o "-p $PGPORT" -l /tmp/pglog start
+          brew services start postgresql@15
           # Wait until ready
           for i in {1..30}; do
             pg_isready -h "$PGHOST" -p "$PGPORT" && break
             sleep 1
           done
-          # Ensure role and database used by tests exist (set password for TCP auth)
-          psql -U "$(whoami)" -h "$PGHOST" -p "$PGPORT" -d postgres -v ON_ERROR_STOP=1 <<'SQL'
-          DO $do$
-          BEGIN
-            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'postgres') THEN
-              CREATE ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';
-            ELSE
-              ALTER ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';
-            END IF;
-          END
-          $do$;
-          SQL
+          # Ensure role and database used by tests exist; connect as current user
+          psql -U "$(whoami)" -h "$PGHOST" -p "$PGPORT" -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';" || \
+          psql -U "$(whoami)" -h "$PGHOST" -p "$PGPORT" -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';"
           createdb -h "$PGHOST" -p "$PGPORT" -O postgres postgres || true
 
       - name: Setup Rust
