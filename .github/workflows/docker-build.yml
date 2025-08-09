@@ -1,0 +1,58 @@
+name: Build and Push Docker Image
+
+on:
+  workflow_run:
+    workflows: ["Test Suite"]
+    types: [completed]
+    branches: [ "main" ]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: Login to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GHCR_TOKEN }}
+        
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ghcr.io/williamcotton/webpipe-rs
+        tags: |
+          type=raw,value=latest
+          type=sha,prefix={{branch}}-
+        labels: |
+          org.opencontainers.image.title=webpipe-rs
+          org.opencontainers.image.description=Web Pipe DSL HTTP server runtime with pipeline-based middleware
+          org.opencontainers.image.url=https://github.com/williamcotton/webpipe-rs
+          org.opencontainers.image.source=https://github.com/williamcotton/webpipe-rs
+          org.opencontainers.image.version=latest
+          org.opencontainers.image.created={{date 'RFC3339'}}
+          org.opencontainers.image.revision={{sha}}
+          org.opencontainers.image.licenses=MIT
+          
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
