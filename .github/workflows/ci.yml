@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  test-linux:
+    name: Tests (Ubuntu)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres" --health-interval=10s --health-timeout=5s --health-retries=5
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGDATABASE: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Wait for Postgres
+        run: |
+          for i in {1..30}; do
+            pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" && break
+            sleep 1
+          done
+
+      - name: Run tests (with pg)
+        run: cargo test --tests --features pg_tests --verbose
+
+  test-macos:
+    name: Tests (macOS)
+    runs-on: macos-latest
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGDATABASE: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Postgres and jq (Homebrew)
+        run: |
+          brew update
+          brew install postgresql@15 jq
+          echo "$(brew --prefix postgresql@15)/bin" >> "$GITHUB_PATH"
+
+      - name: Init and start Postgres
+        run: |
+          initdb -D /tmp/pgdb
+          pg_ctl -D /tmp/pgdb -o "-p $PGPORT" -l /tmp/pglog start
+          # Create role and database used by tests
+          createuser -s postgres || true
+          createdb -O postgres postgres || true
+          # Wait until ready
+          for i in {1..30}; do
+            pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" && break
+            sleep 1
+          done
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests (with pg)
+        run: cargo test --tests --features pg_tests --verbose
+
+
