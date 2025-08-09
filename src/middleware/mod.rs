@@ -1554,28 +1554,27 @@ impl Middleware for LogMiddleware {
     }
 
     async fn post_execute(&self, final_response: &Value) -> Result<(), WebPipeError> {
-        // Read metadata stamped by execute (optional)
+        // Only proceed if execute stamped log metadata
         let meta = final_response
             .get("_metadata")
             .and_then(|m| m.get("log"))
-            .and_then(|l| l.as_object());
+            .and_then(|l| l.as_object())
+            .ok_or_else(|| WebPipeError::InternalError("missing log metadata".to_string()))?;
 
-        if let Some(m) = meta {
-            if let Some(Value::Bool(false)) = m.get("enabled") { return Ok(()); }
-        }
+        if let Some(Value::Bool(false)) = meta.get("enabled") { return Ok(()); }
 
-        let include_body = meta.and_then(|m| m.get("includeBody")).and_then(|v| v.as_bool()).unwrap_or(false);
-        let include_headers = meta.and_then(|m| m.get("includeHeaders")).and_then(|v| v.as_bool()).unwrap_or(true);
-        let level = meta.and_then(|m| m.get("level")).and_then(|v| v.as_str()).unwrap_or("info");
+        let include_body = meta.get("includeBody").and_then(|v| v.as_bool()).unwrap_or(false);
+        let include_headers = meta.get("includeHeaders").and_then(|v| v.as_bool()).unwrap_or(true);
+        let level = meta.get("level").and_then(|v| v.as_str()).unwrap_or("info");
 
         // Prefer high-resolution monotonic delta
-        let start_mono_us = meta.and_then(|m| m.get("startMonoUs")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let start_mono_us = meta.get("startMonoUs").and_then(|v| v.as_u64()).unwrap_or(0);
         let duration_ms_f64 = if start_mono_us > 0 {
             let now_mono_us: u64 = MONO_EPOCH.elapsed().as_micros() as u64;
             let delta_us = now_mono_us.saturating_sub(start_mono_us);
             (delta_us as f64) / 1000.0
         } else {
-            let start_ms = meta.and_then(|m| m.get("startTimeMs")).and_then(|v| v.as_u64()).unwrap_or(0);
+            let start_ms = meta.get("startTimeMs").and_then(|v| v.as_u64()).unwrap_or(0);
             let now_ms = {
                 use std::time::{SystemTime, UNIX_EPOCH};
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
