@@ -10,7 +10,7 @@ use handlebars::Handlebars;
 use mlua::{Lua, Value as LuaValue, Result as LuaResult};
 use once_cell::sync::{OnceCell, Lazy};
 use sqlx::{self, postgres::PgPoolOptions, PgPool};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use reqwest::{self, Client, Method};
 use reqwest::header::{HeaderMap as ReqwestHeaderMap, HeaderName, HeaderValue, USER_AGENT};
 use rand::RngCore;
@@ -20,6 +20,9 @@ use tokio::runtime::Handle;
 // no regex needed now
 use std::fs;
 use std::path::Path;
+use std::num::NonZeroUsize;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 static HANDLEBARS_PARTIALS: Lazy<Mutex<std::collections::HashMap<String, String>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
@@ -266,6 +269,119 @@ pub struct FetchMiddleware;
 pub struct CacheMiddleware;
 #[derive(Debug)]
 pub struct LuaMiddleware;
+
+// --- Cache globals & helpers ---
+
+#[derive(Debug, Clone)]
+struct CacheSettings {
+    enabled: bool,
+    default_ttl_secs: u64,
+    max_entries: usize,
+}
+
+static CACHE_SETTINGS: OnceCell<CacheSettings> = OnceCell::new();
+
+fn load_cache_settings() -> CacheSettings {
+    if let Some(s) = CACHE_SETTINGS.get() { return s.clone(); }
+    let cm = crate::config::global();
+    let json = cm.resolve_config_as_json("cache").unwrap_or_else(|_| serde_json::json!({
+        "enabled": true,
+        "defaultTtl": 60,
+        "maxCacheSize": 10_485_760
+    }));
+    let enabled = json.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+    let default_ttl_secs = json.get("defaultTtl").and_then(|v| v.as_u64()).unwrap_or(60);
+    let max_bytes = json.get("maxCacheSize").and_then(|v| v.as_u64()).unwrap_or(10_485_760);
+    // Approximate 4KB per entry -> compute entry cap
+    let approx_entry_size = 4096u64;
+    let max_entries = std::cmp::max(64, (max_bytes / approx_entry_size) as usize);
+    let settings = CacheSettings { enabled, default_ttl_secs, max_entries };
+    let _ = CACHE_SETTINGS.set(settings.clone());
+    settings
+}
+
+#[derive(Clone)]
+struct CacheEntry {
+    payload: Value,
+    expires_at: Instant,
+}
+
+static RESPONSE_CACHE: Lazy<Mutex<LruCache<String, CacheEntry>>> = Lazy::new(|| {
+    let cap = load_cache_settings().max_entries;
+    let nz = NonZeroUsize::new(cap).unwrap_or_else(|| NonZeroUsize::new(1024).unwrap());
+    Mutex::new(LruCache::new(nz))
+});
+
+fn lookup_path_string(input: &Value, path: &str) -> String {
+    let mut cur = input;
+    for seg in path.split('.') {
+        if seg.is_empty() { continue; }
+        match cur {
+            Value::Object(map) => {
+                cur = map.get(seg).unwrap_or(&Value::Null);
+            }
+            _ => { cur = &Value::Null; }
+        }
+    }
+    match cur {
+        Value::Null => "".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn render_key_template(template: &str, input: &Value) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut i = 0;
+    let chars: Vec<char> = template.chars().collect();
+    while i < chars.len() {
+        if chars[i] == '{' {
+            // find closing brace
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != '}' { j += 1; }
+            if j < chars.len() && chars[j] == '}' {
+                let key: String = chars[i+1..j].iter().collect();
+                let val = lookup_path_string(input, key.trim());
+                out.push_str(&val);
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+fn cache_get(key: &str) -> Option<Value> {
+    if let Ok(mut cache) = RESPONSE_CACHE.lock() {
+        if let Some(entry) = cache.get(key) {
+            if Instant::now() < entry.expires_at {
+                return Some(entry.payload.clone());
+            }
+        }
+    }
+    None
+}
+
+fn cache_put(key: String, payload: Value, ttl_secs: u64) {
+    if ttl_secs == 0 { return; }
+    if let Ok(mut cache) = RESPONSE_CACHE.lock() {
+        let entry = CacheEntry { payload, expires_at: Instant::now() + Duration::from_secs(ttl_secs) };
+        cache.put(key, entry);
+    }
+}
+
+fn cache_enabled_and_ttl(input: &Value) -> (bool, u64, Option<String>) {
+    let global = load_cache_settings();
+    let meta = input.get("_metadata").and_then(|m| m.get("cache"));
+    let enabled = meta.and_then(|m| m.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(global.enabled);
+    let ttl = meta.and_then(|m| m.get("ttl")).and_then(|v| v.as_u64()).unwrap_or(global.default_ttl_secs);
+    let key_tpl = meta.and_then(|m| m.get("keyTemplate")).and_then(|v| v.as_str()).map(|s| s.to_string());
+    (enabled, ttl, key_tpl)
+}
 
 impl LuaMiddleware {
     pub fn new() -> Self {
@@ -1348,6 +1464,46 @@ impl Middleware for FetchMiddleware {
             req_builder = req_builder.json(body);
         }
 
+        // Cache: compute key and check hit
+        let (cache_enabled, cache_ttl, key_template_opt) = cache_enabled_and_ttl(input);
+        let cache_key = if let Some(tpl) = key_template_opt.as_deref() {
+            Some(render_key_template(tpl, input))
+        } else {
+            // Default cache key: method + url + headers + body hash
+            let mut hasher = DefaultHasher::new();
+            method_str.hash(&mut hasher);
+            url.hash(&mut hasher);
+            if let Some(h) = input.get("fetchHeaders") { if let Ok(s) = serde_json::to_string(h) { s.hash(&mut hasher); } }
+            if let Some(b) = input.get("fetchBody") { if let Ok(s) = serde_json::to_string(b) { s.hash(&mut hasher); } }
+            Some(format!("fetch:{:x}", hasher.finish()))
+        };
+
+        if cache_enabled {
+            if let Some(key) = cache_key.as_ref() {
+                if let Some(cached_payload) = cache_get(key) {
+                    let mut output = input.clone();
+                    let result_name_opt = input.get("resultName").and_then(|v| v.as_str());
+                    match result_name_opt {
+                        Some(name) => {
+                            if let Some(obj) = output.as_object_mut() {
+                                let data_entry = obj.entry("data").or_insert_with(|| Value::Object(serde_json::Map::new()));
+                                if !data_entry.is_object() { *data_entry = Value::Object(serde_json::Map::new()); }
+                                if let Some(data_obj) = data_entry.as_object_mut() {
+                                    data_obj.insert(name.to_string(), cached_payload);
+                                }
+                            }
+                        }
+                        None => {
+                            if let Some(obj) = output.as_object_mut() {
+                                obj.insert("data".to_string(), cached_payload);
+                            }
+                        }
+                    }
+                    return Ok(output);
+                }
+            }
+        }
+
         // Execute request
         let response = match req_builder.send().await {
             Ok(resp) => resp,
@@ -1426,15 +1582,20 @@ impl Middleware for FetchMiddleware {
                         *data_entry = Value::Object(serde_json::Map::new());
                     }
                     if let Some(data_obj) = data_entry.as_object_mut() {
-                        data_obj.insert(name.to_string(), result_payload);
+                        data_obj.insert(name.to_string(), result_payload.clone());
                     }
                 }
             }
             None => {
                 if let Some(obj) = output.as_object_mut() {
-                    obj.insert("data".to_string(), result_payload);
+                    obj.insert("data".to_string(), result_payload.clone());
                 }
             }
+        }
+
+        // Populate cache on success
+        if cache_enabled {
+            if let Some(key) = cache_key { cache_put(key, result_payload, cache_ttl); }
         }
 
         Ok(output)
@@ -1481,9 +1642,43 @@ fn get_http_client() -> &'static Client {
 #[async_trait]
 impl Middleware for CacheMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
-        // Placeholder: pass-through to avoid clobbering accumulated data
-        let _ = config; // suppress unused warning
-        Ok(input.clone())
+        // Parse simple k:v config; supports enabled, ttl, keyTemplate
+        #[derive(Default)]
+        struct LocalCfg { enabled: Option<bool>, ttl: Option<u64>, key_tpl: Option<String> }
+        fn parse_bool(s: &str) -> Option<bool> { match s.trim().to_ascii_lowercase().as_str() { "true" => Some(true), "false" => Some(false), _ => None } }
+        fn parse_cfg(cfg: &str) -> LocalCfg {
+            let mut lc = LocalCfg::default();
+            for part in cfg.replace('\n', ",").split(',') {
+                let p = part.trim(); if p.is_empty() { continue; }
+                if let Some((k,v)) = p.split_once(':') {
+                    let key = k.trim(); let val = v.trim();
+                    match key {
+                        "enabled" => lc.enabled = parse_bool(val),
+                        "ttl" => lc.ttl = val.parse::<u64>().ok(),
+                        "keyTemplate" => lc.key_tpl = Some(val.to_string()),
+                        _ => {}
+                    }
+                }
+            }
+            lc
+        }
+
+        let parsed = parse_cfg(config);
+        let mut out = input.clone();
+        if let Some(obj) = out.as_object_mut() {
+            let meta_entry = obj.entry("_metadata").or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if !meta_entry.is_object() { *meta_entry = Value::Object(serde_json::Map::new()); }
+            if let Some(meta) = meta_entry.as_object_mut() {
+                let cache_entry = meta.entry("cache").or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if !cache_entry.is_object() { *cache_entry = Value::Object(serde_json::Map::new()); }
+                if let Some(cache_map) = cache_entry.as_object_mut() {
+                    if let Some(b) = parsed.enabled { cache_map.insert("enabled".to_string(), Value::Bool(b)); }
+                    if let Some(ttl) = parsed.ttl { cache_map.insert("ttl".to_string(), Value::Number(serde_json::Number::from(ttl))); }
+                    if let Some(tpl) = parsed.key_tpl { cache_map.insert("keyTemplate".to_string(), Value::String(tpl)); }
+                }
+            }
+        }
+        Ok(out)
     }
 }
 

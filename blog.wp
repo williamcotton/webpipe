@@ -48,6 +48,10 @@ pipeline contentfulFetch =
 pipeline contentfulArticles =
   |> pipeline: contentfulAuth
   |> jq: `. + { contentType: "blogPost", filters: "&fields.hidden=false&order=-fields.publishedDate" }`
+  |> cache: `
+    enabled: true,
+    ttl: 60
+  `
   |> pipeline: contentfulFetch
   |> lua: `
     if request.data and request.data.response then
@@ -109,6 +113,10 @@ pipeline contentfulArticles =
 pipeline contentfulByArticle =
   |> pipeline: contentfulAuth
   |> jq: `. + { filters: ("&fields.slug[in]=" + .params.article) }`
+  |> cache: `
+    enabled: true,
+    ttl: 120
+  `
   |> pipeline: contentfulFetch
   |> lua: `
     if request.data and request.data.response and request.data.response.items then
@@ -156,6 +164,10 @@ pipeline contentfulByArticle =
 pipeline contentfulPages =
   |> pipeline: contentfulAuth
   |> jq: `. + { contentType: "page", filters: ("&fields.slug[in]=" + .params.page) }`
+  |> cache: `
+    enabled: true,
+    ttl: 120
+  `
   |> pipeline: contentfulFetch
   |> lua: `
     if request.data and request.data.response and request.data.response.items then
