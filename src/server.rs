@@ -20,6 +20,7 @@ use tokio::fs as tokio_fs;
 use std::path::{Path, PathBuf};
 use crate::runtime::Context;
 use crate::executor::{ExecutionEnv, RealInvoker};
+use crate::http::request::build_request_from_axum;
 
 fn string_to_number_or_string(s: &str) -> Value {
     // Try integer first
@@ -269,97 +270,8 @@ async fn respond_with_pipeline(
     body: Bytes,
     pipeline: Arc<Pipeline>,
 ) -> Response {
-    let method_str = method.to_string();
-    
-    // Convert headers to HashMap
-    let headers_map: HashMap<String, String> = headers
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-        .collect();
-    
-    // Extract cookies from headers
-    let cookies: HashMap<String, String> = headers
-        .get("cookie")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .split(';')
-        .filter_map(|cookie| {
-            let mut parts = cookie.trim().split('=');
-            let key = parts.next()?.to_string();
-            let value = parts.next().unwrap_or("").to_string();
-            Some((key, value))
-        })
-        .collect();
-    
-    // Determine content type
-    let content_type = headers_map
-        .get("content-type")
-        .cloned()
-        .unwrap_or_else(|| "application/json".to_string());
-    
-    // Parse body based on content type
-    let parsed_body = if body.is_empty() {
-        Value::Object(serde_json::Map::new())
-    } else {
-        match content_type.as_str() {
-            ct if ct.starts_with("application/json") => {
-                serde_json::from_slice(&body).unwrap_or(Value::Null)
-            }
-            ct if ct.starts_with("application/x-www-form-urlencoded") => {
-                let form_str = String::from_utf8_lossy(&body);
-                let form_data: HashMap<String, String> = form_str
-                    .split('&')
-                    .filter_map(|pair| {
-                        let mut parts = pair.split('=');
-                        let key = parts.next()?.to_string();
-                        let value = parts.next().unwrap_or("").to_string();
-                        Some((key, value))
-                    })
-                    .collect();
-                string_map_to_json_with_number_coercion(&form_data)
-            }
-            _ => Value::String(String::from_utf8_lossy(&body).to_string()),
-        }
-    };
-    
-    // Create WebPipe request object
-    let webpipe_request = WebPipeRequest {
-        method: method_str.clone(),
-        path: "".to_string(), // Path is handled by Axum routing
-        query: query_params.clone(),
-        params: path_params.clone(),
-        headers: headers_map,
-        cookies,
-        body: parsed_body,
-        content_type,
-    };
-    
-    // Convert to JSON for pipeline processing
-    let mut request_json = match serde_json::to_value(&webpipe_request) {
-        Ok(json) => json,
-        Err(e) => {
-            warn!("Failed to serialize request: {}", e);
-            let error_response = serde_json::json!({
-                "error": "Failed to serialize request",
-                "details": e.to_string()
-            });
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response();
-        }
-    };
-
-    // Coerce numeric-looking strings in params and query into numbers
-    if let Some(obj) = request_json.as_object_mut() {
-        let coerced_params = string_map_to_json_with_number_coercion(&path_params);
-        let coerced_query = string_map_to_json_with_number_coercion(&query_params);
-        obj.insert("params".to_string(), coerced_params.clone());
-        obj.insert("query".to_string(), coerced_query.clone());
-        // Attach originalRequest snapshot for later reference in pipelines
-        let mut orig = serde_json::Map::new();
-        orig.insert("method".to_string(), Value::String(method_str.clone()));
-        orig.insert("params".to_string(), coerced_params);
-        orig.insert("query".to_string(), coerced_query);
-        obj.insert("originalRequest".to_string(), Value::Object(orig));
-    }
+    // Build unified request JSON and content type via shared helper
+    let (request_json, content_type) = build_request_from_axum(&method, &headers, &path_params, &query_params, &body);
     
     // Keep a snapshot for post_execute (contains _metadata, originalRequest, headers)
     let request_snapshot = request_json.clone();

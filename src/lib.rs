@@ -6,6 +6,9 @@ pub mod runtime;
 pub mod server;
 pub mod test_runner;
 pub mod executor;
+pub mod http {
+    pub mod request;
+}
 
 pub use ast::*;
 pub use error::WebPipeError;

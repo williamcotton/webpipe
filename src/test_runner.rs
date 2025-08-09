@@ -7,6 +7,7 @@ use crate::config;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use crate::http::request::build_minimal_request_for_tests;
 
 #[derive(Debug, Clone)]
 struct MockResolver {
@@ -227,17 +228,8 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                                 .map(|(k, v)| (k.to_string(), v.to_string()))
                                 .collect::<HashMap<_, _>>();
 
-                            // Build request JSON similar to server
-                            let mut request_obj = serde_json::Map::new();
-                            request_obj.insert("method".to_string(), Value::String(method.clone()));
-                            request_obj.insert("path".to_string(), Value::String(path_str.clone()));
-                            request_obj.insert("query".to_string(), string_map_to_json_with_number_coercion(&query_map));
-                            request_obj.insert("params".to_string(), string_map_to_json_with_number_coercion(&params_map));
-                            request_obj.insert("headers".to_string(), Value::Object(serde_json::Map::new()));
-                            request_obj.insert("cookies".to_string(), Value::Object(serde_json::Map::new()));
-                            request_obj.insert("body".to_string(), Value::Object(serde_json::Map::new()));
-                            request_obj.insert("content_type".to_string(), Value::String("application/json".to_string()));
-                            let input = Value::Object(request_obj);
+                            // Build request JSON via shared helper
+                            let input = build_minimal_request_for_tests(method, &path_str, &params_map, &query_map);
 
                             // Build shared ExecutionEnv with MockingInvoker
                             let named: HashMap<String, Arc<Pipeline>> = program
