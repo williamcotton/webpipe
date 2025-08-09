@@ -38,6 +38,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq libjq-dev libonig-dev pkg-config postgresql-client
 
+      - name: Configure jq env (Ubuntu)
+        run: |
+          echo "JQ_LIB_DIR=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
+          echo "JQ_INCLUDE_DIR=/usr/include" >> "$GITHUB_ENV"
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -78,6 +83,10 @@ jobs:
         run: |
           echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix jq)/lib/pkgconfig:$(brew --prefix oniguruma)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
           echo "LIBRARY_PATH=$(brew --prefix)/lib:$(brew --prefix oniguruma)/lib:$LIBRARY_PATH" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L$(brew --prefix jq)/lib -L$(brew --prefix oniguruma)/lib $LDFLAGS" >> "$GITHUB_ENV"
+          echo "CPPFLAGS=-I$(brew --prefix jq)/include $CPPFLAGS" >> "$GITHUB_ENV"
+          echo "JQ_LIB_DIR=$(brew --prefix jq)/lib" >> "$GITHUB_ENV"
+          echo "JQ_INCLUDE_DIR=$(brew --prefix jq)/include" >> "$GITHUB_ENV"
 
       - name: Init and start Postgres
         run: |
