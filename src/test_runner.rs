@@ -1,6 +1,7 @@
 use crate::ast::{Mock, Pipeline, PipelineRef, PipelineStep, Program, ResultBranchType, Variable, When};
 use crate::error::WebPipeError;
-use crate::middleware::{MiddlewareRegistry, configure_handlebars_partials};
+use crate::middleware::MiddlewareRegistry;
+use crate::runtime::Context;
 use crate::config;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -256,11 +257,11 @@ fn find_variable<'a>(variables: &'a [Variable], var_type: &str, name: &str) -> O
 }
 
 pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
-    // Initialize global config and handlebars partials similarly to server
+    // Initialize global config (Context builder will also set globals and register partials)
     config::init_global(program.configs.clone());
-    configure_handlebars_partials(&program.variables);
 
-    let registry = MiddlewareRegistry::new();
+    let ctx = Context::from_program_configs(program.configs.clone(), &program.variables).await?;
+    let registry = MiddlewareRegistry::with_builtins(std::sync::Arc::new(ctx));
 
     let mut outcomes: Vec<TestOutcome> = Vec::new();
 

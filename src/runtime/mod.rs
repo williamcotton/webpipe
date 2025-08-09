@@ -4,6 +4,9 @@ use crate::middleware::MiddlewareRegistry;
 use axum::http::{Method, StatusCode};
 use serde_json::Value;
 
+pub mod context;
+pub use context::Context;
+
 fn merge_values_preserving_input(input: &Value, result: &Value) -> Value {
     match (input, result) {
         (Value::Object(base), Value::Object(patch)) => {

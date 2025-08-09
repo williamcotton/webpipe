@@ -124,7 +124,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         } else {
             // Create and start the server with a shutdown signal
-            let server = WebPipeServer::from_program(program);
+            let server = match WebPipeServer::from_program(program).await {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Failed to build server: {}", e);
+                    std::process::exit(1);
+                }
+            };
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
             let mut serve_fut = Box::pin(server.serve_with_shutdown(addr, async move { let _ = shutdown_rx.await; }));
 

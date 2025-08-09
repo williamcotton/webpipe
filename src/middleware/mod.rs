@@ -1,5 +1,4 @@
 use crate::error::WebPipeError;
-use crate::ast::Variable;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -9,10 +8,10 @@ use parking_lot::Mutex;
 use lru::LruCache;
 use handlebars::Handlebars;
 use mlua::{Lua, Value as LuaValue, Result as LuaResult};
-use once_cell::sync::{OnceCell, Lazy};
-use sqlx::{self, postgres::PgPoolOptions, PgPool};
+use once_cell::sync::Lazy;
+use sqlx::{self, PgPool};
 use std::time::{Duration, Instant};
-use reqwest::{self, Client, Method};
+use reqwest::{self, Method};
 use reqwest::header::{HeaderMap as ReqwestHeaderMap, HeaderName, HeaderValue, USER_AGENT};
 use rand::RngCore;
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
@@ -21,25 +20,14 @@ use tokio::runtime::Handle;
 // no regex needed now
 use std::fs;
 use std::path::Path;
-use std::num::NonZeroUsize;
+// use std::num::NonZeroUsize;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-static HANDLEBARS_PARTIALS: Lazy<Mutex<std::collections::HashMap<String, String>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
+use crate::runtime::Context;
 
 // Monotonic epoch for high-resolution timing (avoid SystemTime granularity)
 static MONO_EPOCH: Lazy<std::time::Instant> = Lazy::new(std::time::Instant::now);
-
-pub fn configure_handlebars_partials(variables: &[Variable]) {
-    let mut map = std::collections::HashMap::new();
-    for v in variables {
-        if v.var_type == "mustache" || v.var_type == "handlebars" {
-            map.insert(v.name.clone(), v.value.clone());
-        }
-    }
-    let mut locked = HANDLEBARS_PARTIALS.lock();
-    *locked = map;
-}
 
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
@@ -55,24 +43,30 @@ pub struct MiddlewareRegistry {
 }
 
 impl MiddlewareRegistry {
-    pub fn new() -> Self {
+    pub fn with_builtins(ctx: Arc<Context>) -> Self {
         let mut registry = Self {
             middlewares: HashMap::new(),
         };
-        
-        // Register built-in middleware
         registry.register("jq", Box::new(JqMiddleware::new()));
-        registry.register("auth", Box::new(AuthMiddleware));
+        registry.register("auth", Box::new(AuthMiddleware { ctx: ctx.clone() }));
         registry.register("validate", Box::new(ValidateMiddleware));
-        registry.register("pg", Box::new(PgMiddleware));
-        registry.register("handlebars", Box::new(HandlebarsMiddleware::new()));
-        registry.register("fetch", Box::new(FetchMiddleware));
+        registry.register("pg", Box::new(PgMiddleware { ctx: ctx.clone() }));
+        registry.register("handlebars", Box::new(HandlebarsMiddleware::new_with_ctx(ctx.clone())));
+        registry.register("fetch", Box::new(FetchMiddleware { ctx: ctx.clone() }));
         registry.register("cache", Box::new(CacheMiddleware));
         registry.register("lua", Box::new(LuaMiddleware::new()));
         registry.register("log", Box::new(LogMiddleware));
-         registry.register("debug", Box::new(DebugMiddleware));
-        
+        registry.register("debug", Box::new(DebugMiddleware));
         registry
+    }
+    pub fn new() -> Self {
+        // Backward-compatible default context for callers still using new();
+        // constructs a minimal Context using current global config and no variables
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let ctx = rt
+            .block_on(crate::runtime::Context::from_program_configs(vec![], &[]))
+            .unwrap_or_else(|_| panic!("failed to create default Context"));
+        Self::with_builtins(Arc::new(ctx))
     }
 
     pub fn register(&mut self, name: &str, middleware: Box<dyn Middleware>) {
@@ -156,28 +150,20 @@ impl Default for JqMiddleware {
     }
 }
 #[derive(Debug)]
-pub struct AuthMiddleware;
+pub struct AuthMiddleware { pub(crate) ctx: Arc<Context> }
 #[derive(Debug)]
 pub struct ValidateMiddleware;
 #[derive(Debug)]
-pub struct PgMiddleware;
+pub struct PgMiddleware { pub(crate) ctx: Arc<Context> }
 #[derive(Debug)]
 pub struct HandlebarsMiddleware {
     handlebars: Arc<Mutex<Handlebars<'static>>>,
-    // Register global partials only once per process
-    partials_registered: Arc<Mutex<bool>>,
-    // Track templates we've compiled/registered by a stable id
     registered_templates: Arc<Mutex<HashSet<String>>>,
 }
 
 impl HandlebarsMiddleware {
-    pub fn new() -> Self {
-        Self {
-            handlebars: Arc::new(Mutex::new(Handlebars::new())),
-            partials_registered: Arc::new(Mutex::new(false)),
-            registered_templates: Arc::new(Mutex::new(HashSet::new())),
-        }
-    }
+    pub fn new() -> Self { Self { handlebars: Arc::new(Mutex::new(Handlebars::new())), registered_templates: Arc::new(Mutex::new(HashSet::new())), } }
+    pub fn new_with_ctx(ctx: Arc<Context>) -> Self { Self { handlebars: ctx.hb.clone(), registered_templates: Arc::new(Mutex::new(HashSet::new())), } }
     
     fn dedent_multiline(input: &str) -> String {
         // Trim outer whitespace first to normalize leading/trailing blank lines
@@ -227,19 +213,7 @@ impl HandlebarsMiddleware {
 
         let mut handlebars = self.handlebars.lock();
 
-        // Register global partials once per process (new server on hot-reload recreates middleware)
-        {
-            let mut already = self.partials_registered.lock();
-            if !*already {
-                let partials = HANDLEBARS_PARTIALS.lock();
-                for (name, tpl) in partials.iter() {
-                    let n = name.trim();
-                    let dedented = Self::dedent_multiline(tpl);
-                    let _ = handlebars.register_partial(n, &dedented);
-                }
-                *already = true;
-            }
-        }
+        // Partials are pre-registered in Context; nothing to do here
 
         // Compile/register this template string only once, render by id thereafter
         let tpl = Self::dedent_multiline(template);
@@ -263,53 +237,11 @@ impl HandlebarsMiddleware {
 
 // Preprocessor removed: templates are now authored in native Handlebars
 #[derive(Debug)]
-pub struct FetchMiddleware;
+pub struct FetchMiddleware { pub(crate) ctx: Arc<Context> }
 #[derive(Debug)]
 pub struct CacheMiddleware;
 #[derive(Debug)]
 pub struct LuaMiddleware;
-
-// --- Cache globals & helpers ---
-
-#[derive(Debug, Clone)]
-struct CacheSettings {
-    enabled: bool,
-    default_ttl_secs: u64,
-    max_entries: usize,
-}
-
-static CACHE_SETTINGS: OnceCell<CacheSettings> = OnceCell::new();
-
-fn load_cache_settings() -> CacheSettings {
-    if let Some(s) = CACHE_SETTINGS.get() { return s.clone(); }
-    let cm = crate::config::global();
-    let json = cm.resolve_config_as_json("cache").unwrap_or_else(|_| serde_json::json!({
-        "enabled": true,
-        "defaultTtl": 60,
-        "maxCacheSize": 10_485_760
-    }));
-    let enabled = json.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
-    let default_ttl_secs = json.get("defaultTtl").and_then(|v| v.as_u64()).unwrap_or(60);
-    let max_bytes = json.get("maxCacheSize").and_then(|v| v.as_u64()).unwrap_or(10_485_760);
-    // Approximate 4KB per entry -> compute entry cap
-    let approx_entry_size = 4096u64;
-    let max_entries = std::cmp::max(64, (max_bytes / approx_entry_size) as usize);
-    let settings = CacheSettings { enabled, default_ttl_secs, max_entries };
-    let _ = CACHE_SETTINGS.set(settings.clone());
-    settings
-}
-
-#[derive(Clone)]
-struct CacheEntry {
-    payload: Value,
-    expires_at: Instant,
-}
-
-static RESPONSE_CACHE: Lazy<Mutex<LruCache<String, CacheEntry>>> = Lazy::new(|| {
-    let cap = load_cache_settings().max_entries;
-    let nz = NonZeroUsize::new(cap).unwrap_or_else(|| NonZeroUsize::new(1024).unwrap());
-    Mutex::new(LruCache::new(nz))
-});
 
 fn lookup_path_string(input: &Value, path: &str) -> String {
     let mut cur = input;
@@ -354,28 +286,11 @@ fn render_key_template(template: &str, input: &Value) -> String {
     out
 }
 
-fn cache_get(key: &str) -> Option<Value> {
-    let mut cache = RESPONSE_CACHE.lock();
-    if let Some(entry) = cache.get(key) {
-        if Instant::now() < entry.expires_at {
-            return Some(entry.payload.clone());
-        }
-    }
-    None
-}
-
-fn cache_put(key: String, payload: Value, ttl_secs: u64) {
-    if ttl_secs == 0 { return; }
-    let mut cache = RESPONSE_CACHE.lock();
-    let entry = CacheEntry { payload, expires_at: Instant::now() + Duration::from_secs(ttl_secs) };
-    cache.put(key, entry);
-}
-
 fn cache_enabled_and_ttl(input: &Value) -> (bool, u64, Option<String>) {
-    let global = load_cache_settings();
+    // Defaults mirror Context defaults (enabled=true, ttl=60s) for backward compatibility
     let meta = input.get("_metadata").and_then(|m| m.get("cache"));
-    let enabled = meta.and_then(|m| m.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(global.enabled);
-    let ttl = meta.and_then(|m| m.get("ttl")).and_then(|v| v.as_u64()).unwrap_or(global.default_ttl_secs);
+    let enabled = meta.and_then(|m| m.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(true);
+    let ttl = meta.and_then(|m| m.get("ttl")).and_then(|v| v.as_u64()).unwrap_or(60);
     let key_tpl = meta.and_then(|m| m.get("keyTemplate")).and_then(|v| v.as_str()).map(|s| s.to_string());
     (enabled, ttl, key_tpl)
 }
@@ -503,27 +418,9 @@ impl LuaMiddleware {
                     .create_function(|lua, query: String| {
                         let handle = Handle::current();
                         let fut = async move {
-                            let pool = get_pg_pool().await.map_err(|e| e.to_string())?;
-                            // Wrap like PgMiddleware so we always deliver rows
-                            let wrapped_sql = format!(
-                                "WITH t AS ({}) SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) AS rows FROM t",
-                                query
-                            );
-                            let rows_json_res = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql)
-                                .fetch_one(pool)
-                                .await;
-                            match rows_json_res {
-                                Ok(json) => {
-                                    let rows = json.0;
-                                    let row_count = rows.as_array().map(|a| a.len()).unwrap_or(0);
-                                    let val = serde_json::json!({
-                                        "rows": rows,
-                                        "rowCount": row_count,
-                                    });
-                                    Ok::<Value, String>(val)
-                                }
-                                Err(e) => Err(e.to_string()),
-                            }
+                            // NOTE: Lua executeSql no longer wired to Context; disable by default
+                            let _ = query; // avoid unused warnings
+                            return Err("executeSql is disabled without Context".to_string());
                         };
                         // We may be inside Tokio already; use block_in_place to avoid nested runtime issues
                         match tokio::task::block_in_place(|| handle.block_on(fut)) {
@@ -756,7 +653,7 @@ fn extract_body_field<'a>(input: &'a Value, key: &str) -> Option<&'a str> {
     input.get("body")?.get(key)?.as_str()
 }
 
-async fn auth_login(input: &Value) -> Result<Value, WebPipeError> {
+async fn auth_login(pool: &PgPool, input: &Value) -> Result<Value, WebPipeError> {
     let login = extract_body_field(input, "login").or_else(|| extract_body_field(input, "username"));
     let password = extract_body_field(input, "password");
     if login.is_none() || password.is_none() {
@@ -765,7 +662,6 @@ async fn auth_login(input: &Value) -> Result<Value, WebPipeError> {
     let login = login.unwrap();
     let password = password.unwrap();
 
-    let pool = get_pg_pool().await?;
     // fetch user by login
     let user_row: Option<(i32, String, String, String, String)> = sqlx::query_as(
         "SELECT id, login, password_hash, email, COALESCE(type,'local') as type FROM users WHERE login = $1 AND COALESCE(status,'active') = 'active' LIMIT 1"
@@ -832,7 +728,7 @@ async fn auth_login(input: &Value) -> Result<Value, WebPipeError> {
     Ok(result)
 }
 
-async fn auth_register(input: &Value) -> Result<Value, WebPipeError> {
+async fn auth_register(pool: &PgPool, input: &Value) -> Result<Value, WebPipeError> {
     let login = extract_body_field(input, "login");
     let email = extract_body_field(input, "email");
     let password = extract_body_field(input, "password");
@@ -842,8 +738,6 @@ async fn auth_register(input: &Value) -> Result<Value, WebPipeError> {
     let login = login.unwrap();
     let email = email.unwrap();
     let password = password.unwrap();
-
-    let pool = get_pg_pool().await?;
 
     // check if exists
     let exists: Option<i64> = sqlx::query_scalar("SELECT id FROM users WHERE login = $1 LIMIT 1")
@@ -892,7 +786,7 @@ async fn auth_register(input: &Value) -> Result<Value, WebPipeError> {
     Ok(result)
 }
 
-async fn auth_required(input: &Value) -> Result<Value, WebPipeError> {
+async fn auth_required(pool: &PgPool, input: &Value) -> Result<Value, WebPipeError> {
     let cookie_name = get_auth_config().cookie_name;
     let token_opt = input
         .get("cookies")
@@ -900,7 +794,7 @@ async fn auth_required(input: &Value) -> Result<Value, WebPipeError> {
         .and_then(|v| v.as_str());
     let token = match token_opt { Some(t) if !t.is_empty() => t, _ => return Ok(build_auth_error_object("Authentication required", "required")) };
 
-    let user_info = lookup_session_user(token).await?;
+    let user_info = lookup_session_user(pool, token).await?;
     match user_info {
         Some((user_id, login, email, user_type)) => {
             let mut result = input.clone();
@@ -918,14 +812,14 @@ async fn auth_required(input: &Value) -> Result<Value, WebPipeError> {
     }
 }
 
-async fn auth_optional(input: &Value) -> Result<Value, WebPipeError> {
+async fn auth_optional(pool: &PgPool, input: &Value) -> Result<Value, WebPipeError> {
     let cookie_name = get_auth_config().cookie_name;
     let token_opt = input
         .get("cookies")
         .and_then(|v| v.get(&cookie_name))
         .and_then(|v| v.as_str());
     if let Some(token) = token_opt {
-        if let Some((user_id, login, email, user_type)) = lookup_session_user(token).await? {
+        if let Some((user_id, login, email, user_type)) = lookup_session_user(pool, token).await? {
             let mut result = input.clone();
             if let Some(obj) = result.as_object_mut() {
                 obj.insert(
@@ -941,14 +835,13 @@ async fn auth_optional(input: &Value) -> Result<Value, WebPipeError> {
     Ok(input.clone())
 }
 
-async fn auth_logout(input: &Value) -> Result<Value, WebPipeError> {
+async fn auth_logout(pool: &PgPool, input: &Value) -> Result<Value, WebPipeError> {
     let cookie_name = get_auth_config().cookie_name;
     let token_opt = input
         .get("cookies")
         .and_then(|v| v.get(&cookie_name))
         .and_then(|v| v.as_str());
     if let Some(token) = token_opt {
-        let pool = get_pg_pool().await?;
         let _ = sqlx::query("DELETE FROM sessions WHERE token = $1")
             .bind(token)
             .execute(pool)
@@ -962,8 +855,8 @@ async fn auth_logout(input: &Value) -> Result<Value, WebPipeError> {
     Ok(result)
 }
 
-async fn auth_type_check(input: &Value, required_type: &str) -> Result<Value, WebPipeError> {
-    let with_user = auth_required(input).await?;
+async fn auth_type_check(pool: &PgPool, input: &Value, required_type: &str) -> Result<Value, WebPipeError> {
+    let with_user = auth_required(pool, input).await?;
     let user_type = with_user.get("user").and_then(|u| u.get("type")).and_then(|v| v.as_str());
     if user_type == Some(required_type) {
         Ok(with_user)
@@ -972,8 +865,7 @@ async fn auth_type_check(input: &Value, required_type: &str) -> Result<Value, We
     }
 }
 
-async fn lookup_session_user(token: &str) -> Result<Option<(i32, String, String, String)>, WebPipeError> {
-    let pool = get_pg_pool().await?;
+async fn lookup_session_user(pool: &PgPool, token: &str) -> Result<Option<(i32, String, String, String)>, WebPipeError> {
     let row: Option<(i32, String, String, String)> = sqlx::query_as(
         "SELECT u.id, u.login, u.email, COALESCE(u.type,'local') as type FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.token = $1 AND s.expires_at > NOW() LIMIT 1"
     )
@@ -1003,16 +895,21 @@ impl Middleware for JqMiddleware {
 #[async_trait]
 impl Middleware for AuthMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
+        let pool = self
+            .ctx
+            .pg
+            .as_ref()
+            .ok_or_else(|| WebPipeError::DatabaseError("database not configured".to_string()))?;
         let config = config.trim();
         match config {
-            "login" => auth_login(input).await,
-            "logout" => auth_logout(input).await,
-            "register" => auth_register(input).await,
-            "required" => auth_required(input).await,
-            "optional" => auth_optional(input).await,
+            "login" => auth_login(pool, input).await,
+            "logout" => auth_logout(pool, input).await,
+            "register" => auth_register(pool, input).await,
+            "required" => auth_required(pool, input).await,
+            "optional" => auth_optional(pool, input).await,
             _ => {
                 if let Some(rest) = config.strip_prefix("type:") {
-                    auth_type_check(input, rest.trim()).await
+                    auth_type_check(pool, input, rest.trim()).await
                 } else {
                     Ok(build_auth_error_object("Invalid auth configuration", config))
                 }
@@ -1175,7 +1072,7 @@ impl Middleware for PgMiddleware {
             return Err(WebPipeError::DatabaseError("Empty SQL config for pg middleware".to_string()));
         }
 
-        let pool = get_pg_pool().await?;
+        // Pool is provided by Context now
 
         // Build parameter list from input.sqlParams (preserve native types)
         let params: Vec<Value> = input
@@ -1199,7 +1096,7 @@ impl Middleware for PgMiddleware {
             let mut query = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql);
             for p in &params { query = bind_json_param_scalar(query, p); }
 
-            let rows_json = match query.fetch_one(pool).await {
+            let rows_json = match query.fetch_one(self.ctx.pg.as_ref().ok_or_else(|| WebPipeError::DatabaseError("database not configured".to_string()))?).await {
                 Ok(json) => json.0,
                 Err(e) => {
                     return Ok(build_sql_error_value(&e, sql));
@@ -1243,7 +1140,7 @@ impl Middleware for PgMiddleware {
             let mut query = sqlx::query(sql);
             for p in &params { query = bind_json_param(query, p); }
 
-            let result = match query.execute(pool).await {
+            let result = match query.execute(self.ctx.pg.as_ref().ok_or_else(|| WebPipeError::DatabaseError("database not configured".to_string()))?).await {
                 Ok(res) => res,
                 Err(e) => {
                     return Ok(build_sql_error_value(&e, sql));
@@ -1261,59 +1158,6 @@ impl Middleware for PgMiddleware {
             Ok(output)
         }
     }
-}
-
-// --- PG pool management and helpers ---
-
-static PG_POOL: OnceCell<PgPool> = OnceCell::new();
-
-async fn get_pg_pool() -> Result<&'static PgPool, WebPipeError> {
-    if let Some(pool) = PG_POOL.get() {
-        return Ok(pool);
-    }
-
-    // Read resolved pg config directly (handles $ENV || default)
-    let cm = crate::config::global();
-    let pg_cfg = cm.resolve_config_as_json("pg")?;
-
-    let host = pg_cfg.get("host").and_then(|v| v.as_str()).unwrap_or("localhost");
-    let port = pg_cfg.get("port").and_then(|v| v.as_i64()).unwrap_or(5432);
-    let database = pg_cfg.get("database").and_then(|v| v.as_str()).unwrap_or("postgres");
-    let user = pg_cfg.get("user").and_then(|v| v.as_str()).unwrap_or("postgres");
-    let password = pg_cfg.get("password").and_then(|v| v.as_str()).unwrap_or("postgres");
-
-    // Pool sizing from config with sensible defaults
-    let max_conns: u32 = pg_cfg.get("maxPoolSize").and_then(|v| v.as_i64()).unwrap_or(20).max(1) as u32;
-    let mut min_conns: u32 = pg_cfg.get("initialPoolSize").and_then(|v| v.as_i64()).unwrap_or(5).max(1) as u32;
-    if min_conns > max_conns { min_conns = max_conns; }
-
-    let database_url = format!(
-        "postgres://{}:{}@{}:{}/{}",
-        urlencode(user),
-        urlencode(password),
-        host,
-        port,
-        database
-    );
-
-    let pool = PgPoolOptions::new()
-        .max_connections(max_conns)
-        .min_connections(min_conns)
-        .acquire_timeout(Duration::from_secs(3))
-        .connect(&database_url)
-        .await
-        .map_err(|e| WebPipeError::DatabaseError(format!("Failed to connect to database: {}", e)))?;
-
-    let _ = PG_POOL.set(pool);
-    Ok(PG_POOL.get().expect("PG_POOL just set"))
-}
-
-// old env-based URL builder removed; config-driven URL is constructed in get_pg_pool
-
-fn urlencode(input: &str) -> String {
-    // Basic percent-encoding for URL components
-    use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-    utf8_percent_encode(input, NON_ALPHANUMERIC).to_string()
 }
 
 fn bind_json_param<'q>(query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, v: &'q Value)
@@ -1428,9 +1272,8 @@ impl Middleware for FetchMiddleware {
         let method = Method::from_bytes(method_str.as_bytes())
             .unwrap_or(Method::GET);
 
-        // Build client and request
-        let client = get_http_client();
-        let mut req_builder = client.request(method, &url);
+        // Build client and request from Context
+        let mut req_builder = self.ctx.http.request(method, &url);
 
         // Per-request timeout
         if let Some(timeout_secs) = input.get("fetchTimeout").and_then(|v| v.as_u64()) {
@@ -1477,7 +1320,7 @@ impl Middleware for FetchMiddleware {
 
         if cache_enabled {
             if let Some(key) = cache_key.as_ref() {
-                if let Some(cached_payload) = cache_get(key) {
+                if let Some(cached_payload) = self.ctx.cache.get(key) {
                     let mut output = input.clone();
                     let result_name_opt = input.get("resultName").and_then(|v| v.as_str());
                     match result_name_opt {
@@ -1592,7 +1435,7 @@ impl Middleware for FetchMiddleware {
 
         // Populate cache on success
         if cache_enabled {
-            if let Some(key) = cache_key { cache_put(key, result_payload, cache_ttl); }
+            if let Some(key) = cache_key { self.ctx.cache.put(key, result_payload, Some(cache_ttl)); }
         }
 
         Ok(output)
@@ -1626,15 +1469,7 @@ fn build_fetch_error_object(error_type: &str, mut details: Value) -> Value {
     )
 }
 
-fn get_http_client() -> &'static Client {
-    static CLIENT: OnceCell<Client> = OnceCell::new();
-    CLIENT.get_or_init(|| {
-        Client::builder()
-            // Do not set a global timeout; allow per-request overrides
-            .build()
-            .expect("failed to build reqwest client")
-    })
-}
+// Deprecated: HTTP client is provided by Context.http
 
 #[async_trait]
 impl Middleware for CacheMiddleware {

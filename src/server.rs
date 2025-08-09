@@ -1,6 +1,6 @@
 use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep, Variable};
-use crate::middleware::{MiddlewareRegistry, configure_handlebars_partials};
-use crate::config::{self};
+use crate::middleware::MiddlewareRegistry;
+use crate::config;
 use crate::error::WebPipeError;
 use axum::{
     body::{Bytes, Body},
@@ -18,6 +18,7 @@ use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 use tokio::fs as tokio_fs;
 use std::path::{Path, PathBuf};
+use crate::runtime::Context;
 
 fn string_to_number_or_string(s: &str) -> Value {
     // Try integer first
@@ -286,17 +287,15 @@ pub struct WebPipeRequest {
 }
 
 impl WebPipeServer {
-    pub fn from_program(program: Program) -> Self {
-        let middleware_registry = Arc::new(MiddlewareRegistry::new());
-        // Initialize partials from variables for handlebars mustache-like behavior
-        configure_handlebars_partials(&program.variables);
+    pub async fn from_program(program: Program) -> Result<Self, WebPipeError> {
+        // Build a Context from program configs (also initializes global config)
+        let ctx = Context::from_program_configs(program.configs.clone(), &program.variables).await?;
+        let middleware_registry = Arc::new(MiddlewareRegistry::with_builtins(Arc::new(ctx)));
 
-        // Initialize global config from program configs
-        config::init_global(program.configs.clone());
-        Self {
+        Ok(Self {
             program,
             middleware_registry,
-        }
+        })
     }
 
     pub fn router(self) -> Router {
