@@ -514,7 +514,7 @@ async fn respond_with_pipeline(
     
     // Create WebPipe request object
     let webpipe_request = WebPipeRequest {
-        method: method_str,
+        method: method_str.clone(),
         path: "".to_string(), // Path is handled by Axum routing
         query: query_params.clone(),
         params: path_params.clone(),
@@ -539,8 +539,16 @@ async fn respond_with_pipeline(
 
     // Coerce numeric-looking strings in params and query into numbers
     if let Some(obj) = request_json.as_object_mut() {
-        obj.insert("params".to_string(), string_map_to_json_with_number_coercion(&path_params));
-        obj.insert("query".to_string(), string_map_to_json_with_number_coercion(&query_params));
+        let coerced_params = string_map_to_json_with_number_coercion(&path_params);
+        let coerced_query = string_map_to_json_with_number_coercion(&query_params);
+        obj.insert("params".to_string(), coerced_params.clone());
+        obj.insert("query".to_string(), coerced_query.clone());
+        // Attach originalRequest snapshot for later reference in pipelines
+        let mut orig = serde_json::Map::new();
+        orig.insert("method".to_string(), Value::String(method_str.clone()));
+        orig.insert("params".to_string(), coerced_params);
+        orig.insert("query".to_string(), coerced_query);
+        obj.insert("originalRequest".to_string(), Value::Object(orig));
     }
     
     // Execute the pipeline
