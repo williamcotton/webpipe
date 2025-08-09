@@ -100,9 +100,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let (_leftover_input, program) = parse_program(&input)
             .map_err(|e| format!("Parse error: {}", e))?;
 
-        println!("Parsed WebPipe program:");
-        println!("{}", program);
-
         if test_mode {
             // Run tests once and exit
             match run_tests(program).await {

@@ -121,8 +121,6 @@ impl WebPipeServer {
                     continue;
                 }
             }
-
-            info!("Registered route: {} {}", route.method, path);
         }
 
         let named_pipelines: HashMap<String, Arc<Pipeline>> = self.program
