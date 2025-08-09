@@ -99,16 +99,16 @@ jobs:
           done
           # Ensure role and database used by tests exist (set password for TCP auth)
           psql -U "$(whoami)" -h "$PGHOST" -p "$PGPORT" -d postgres -v ON_ERROR_STOP=1 <<'SQL'
-DO $do$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'postgres') THEN
-    CREATE ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';
-  ELSE
-    ALTER ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';
-  END IF;
-END
-$do$;
-SQL
+          DO $do$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'postgres') THEN
+              CREATE ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';
+            ELSE
+              ALTER ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';
+            END IF;
+          END
+          $do$;
+          SQL
           createdb -h "$PGHOST" -p "$PGPORT" -O postgres postgres || true
 
       - name: Setup Rust
