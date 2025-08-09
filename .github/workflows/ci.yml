@@ -38,12 +38,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq libjq-dev libonig-dev pkg-config postgresql-client
 
-      - name: Configure jq paths
-        run: |
-          # Use pkg-config to locate jq
-          echo "JQ_LIB_DIR=$(pkg-config --variable=libdir jq)" >> "$GITHUB_ENV"
-          echo "JQ_INCLUDE_DIR=$(pkg-config --variable=includedir jq)" >> "$GITHUB_ENV"
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -74,17 +68,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Postgres and jq (Homebrew)
+      - name: Install Postgres, jq, and deps (Homebrew)
         run: |
           brew update
-          brew install postgresql@15 jq pkg-config
+          brew install postgresql@15 jq oniguruma pkg-config
           echo "$(brew --prefix postgresql@15)/bin" >> "$GITHUB_PATH"
 
-      - name: Configure jq paths (Homebrew)
+      - name: Configure pkg-config and linker paths (Homebrew)
         run: |
-          JQ_PREFIX="$(brew --prefix jq)"
-          echo "JQ_LIB_DIR=${JQ_PREFIX}/lib" >> "$GITHUB_ENV"
-          echo "JQ_INCLUDE_DIR=${JQ_PREFIX}/include" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix jq)/lib/pkgconfig:$(brew --prefix oniguruma)/lib/pkgconfig:$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$(brew --prefix)/lib:$(brew --prefix oniguruma)/lib:$LIBRARY_PATH" >> "$GITHUB_ENV"
 
       - name: Init and start Postgres
         run: |
