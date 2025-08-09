@@ -41,7 +41,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Determine if test mode
     let test_mode = args.iter().any(|a| a == "--test");
     let default_addr = "127.0.0.1:8090".to_string();
-    let addr_str = args.get(2).filter(|v| v.as_str() != "--test").unwrap_or(&default_addr);
+    // If explicit CLI addr is provided (and not --test), use it. Otherwise, if PORT env is set (Heroku), bind 0.0.0.0:PORT.
+    let explicit_cli_addr = args.get(2).filter(|v| v.as_str() != "--test").cloned();
+    let addr_str = if let Some(a) = explicit_cli_addr {
+        a
+    } else if let Ok(port) = std::env::var("PORT") {
+        format!("0.0.0.0:{}", port)
+    } else {
+        default_addr.clone()
+    };
     
     // Parse the address
     let addr: SocketAddr = addr_str.parse()?;

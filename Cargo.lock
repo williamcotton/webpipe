@@ -3138,6 +3138,7 @@ dependencies = [
  "nom 8.0.0",
  "notify",
  "once_cell",
+ "parking_lot",
  "percent-encoding",
  "rand",
  "regex",

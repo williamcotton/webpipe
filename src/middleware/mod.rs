@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 use lru::LruCache;
 use handlebars::Handlebars;
 use mlua::{Lua, Value as LuaValue, Result as LuaResult};
@@ -36,9 +37,8 @@ pub fn configure_handlebars_partials(variables: &[Variable]) {
             map.insert(v.name.clone(), v.value.clone());
         }
     }
-    if let Ok(mut locked) = HANDLEBARS_PARTIALS.lock() {
-        *locked = map;
-    }
+    let mut locked = HANDLEBARS_PARTIALS.lock();
+    *locked = map;
 }
 
 #[async_trait]
@@ -225,18 +225,17 @@ impl HandlebarsMiddleware {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        let mut handlebars = self.handlebars.lock().unwrap();
+        let mut handlebars = self.handlebars.lock();
 
         // Register global partials once per process (new server on hot-reload recreates middleware)
-        if let Ok(mut already) = self.partials_registered.lock() {
+        {
+            let mut already = self.partials_registered.lock();
             if !*already {
-                if let Ok(partials) = HANDLEBARS_PARTIALS.lock() {
-                    for (name, tpl) in partials.iter() {
-                        let n = name.trim();
-                        // Dedent partials to avoid unintended leading whitespace from config indentation
-                        let dedented = Self::dedent_multiline(tpl);
-                        let _ = handlebars.register_partial(n, &dedented);
-                    }
+                let partials = HANDLEBARS_PARTIALS.lock();
+                for (name, tpl) in partials.iter() {
+                    let n = name.trim();
+                    let dedented = Self::dedent_multiline(tpl);
+                    let _ = handlebars.register_partial(n, &dedented);
                 }
                 *already = true;
             }
@@ -248,7 +247,7 @@ impl HandlebarsMiddleware {
         tpl.hash(&mut hasher);
         let id = format!("tpl_{:x}", hasher.finish());
 
-        let mut compiled = self.registered_templates.lock().unwrap();
+        let mut compiled = self.registered_templates.lock();
         if !compiled.contains(&id) {
             if let Err(e) = handlebars.register_template_string(&id, &tpl) {
                 return Err(WebPipeError::MiddlewareExecutionError(format!("Handlebars template compile error: {}", e)));
@@ -356,11 +355,10 @@ fn render_key_template(template: &str, input: &Value) -> String {
 }
 
 fn cache_get(key: &str) -> Option<Value> {
-    if let Ok(mut cache) = RESPONSE_CACHE.lock() {
-        if let Some(entry) = cache.get(key) {
-            if Instant::now() < entry.expires_at {
-                return Some(entry.payload.clone());
-            }
+    let mut cache = RESPONSE_CACHE.lock();
+    if let Some(entry) = cache.get(key) {
+        if Instant::now() < entry.expires_at {
+            return Some(entry.payload.clone());
         }
     }
     None
@@ -368,10 +366,9 @@ fn cache_get(key: &str) -> Option<Value> {
 
 fn cache_put(key: String, payload: Value, ttl_secs: u64) {
     if ttl_secs == 0 { return; }
-    if let Ok(mut cache) = RESPONSE_CACHE.lock() {
-        let entry = CacheEntry { payload, expires_at: Instant::now() + Duration::from_secs(ttl_secs) };
-        cache.put(key, entry);
-    }
+    let mut cache = RESPONSE_CACHE.lock();
+    let entry = CacheEntry { payload, expires_at: Instant::now() + Duration::from_secs(ttl_secs) };
+    cache.put(key, entry);
 }
 
 fn cache_enabled_and_ttl(input: &Value) -> (bool, u64, Option<String>) {
