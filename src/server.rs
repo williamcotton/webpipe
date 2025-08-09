@@ -1,6 +1,5 @@
 use crate::ast::{Program, Pipeline, PipelineRef};
 use crate::middleware::MiddlewareRegistry;
-use crate::config;
 use crate::error::WebPipeError;
 use axum::{
     body::{Bytes, Body},
@@ -22,27 +21,7 @@ use crate::runtime::Context;
 use crate::executor::{ExecutionEnv, RealInvoker};
 use crate::http::request::build_request_from_axum;
 
-fn string_to_number_or_string(s: &str) -> Value {
-    // Try integer first
-    if let Ok(i) = s.parse::<i64>() {
-        return Value::Number(i.into());
-    }
-    // Then float
-    if let Ok(f) = s.parse::<f64>() {
-        if let Some(n) = serde_json::Number::from_f64(f) {
-            return Value::Number(n);
-        }
-    }
-    Value::String(s.to_string())
-}
-
-fn string_map_to_json_with_number_coercion(map: &HashMap<String, String>) -> Value {
-    let mut obj = serde_json::Map::new();
-    for (k, v) in map {
-        obj.insert(k.clone(), string_to_number_or_string(v));
-    }
-    Value::Object(obj)
-}
+// number coercion helpers moved to http::request
 
 // merge helper moved to shared executor
 
@@ -271,7 +250,7 @@ async fn respond_with_pipeline(
     pipeline: Arc<Pipeline>,
 ) -> Response {
     // Build unified request JSON and content type via shared helper
-    let (request_json, content_type) = build_request_from_axum(&method, &headers, &path_params, &query_params, &body);
+    let (request_json, _content_type) = build_request_from_axum(&method, &headers, &path_params, &query_params, &body);
     
     // Keep a snapshot for post_execute (contains _metadata, originalRequest, headers)
     let request_snapshot = request_json.clone();

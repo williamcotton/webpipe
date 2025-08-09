@@ -107,25 +107,7 @@ pub struct TestSummary {
     pub outcomes: Vec<TestOutcome>,
 }
 
-fn string_to_number_or_string(s: &str) -> Value {
-    if let Ok(i) = s.parse::<i64>() {
-        return Value::Number(i.into());
-    }
-    if let Ok(f) = s.parse::<f64>() {
-        if let Some(n) = serde_json::Number::from_f64(f) {
-            return Value::Number(n);
-        }
-    }
-    Value::String(s.to_string())
-}
-
-fn string_map_to_json_with_number_coercion(map: &HashMap<String, String>) -> Value {
-    let mut obj = serde_json::Map::new();
-    for (k, v) in map {
-        obj.insert(k.clone(), string_to_number_or_string(v));
-    }
-    Value::Object(obj)
-}
+// number coercion helpers are provided by http::request for server/test build paths
 
 fn parse_backticked_json(s: &str) -> Result<Value, WebPipeError> {
     let trimmed = s.trim();
@@ -204,8 +186,6 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
 
                     // Build a matchit router for this method
                     let mut router: matchit::Router<(&Pipeline, Option<&str>)> = matchit::Router::new();
-                    let mut selected_pipeline: Option<&Pipeline> = None;
-                    let mut selected_pipeline_name: Option<&str> = None;
                     for route in &program.routes {
                         if &route.method == method {
                             match &route.pipeline {
@@ -220,8 +200,8 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                     }
                     match router.at(&path_str) {
                         Ok(m) => {
-                            selected_pipeline = Some(m.value.0);
-                            selected_pipeline_name = m.value.1;
+                            let selected_pipeline = m.value.0;
+                            let selected_pipeline_name = m.value.1;
                             let params_map = m
                                 .params
                                 .iter()
@@ -249,11 +229,11 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                                 if let Some(mock) = mocks.get_pipeline_mock(name) {
                                     (200u16, mock.clone(), true, String::new())
                                 } else {
-                                    let (out, s) = execute_pipeline_with_env(&env, selected_pipeline.unwrap(), input).await?;
+                                    let (out, s) = execute_pipeline_with_env(&env, selected_pipeline, input).await?;
                                     (s.unwrap_or(200u16), out, true, String::new())
                                 }
                             } else {
-                                let (out, s) = execute_pipeline_with_env(&env, selected_pipeline.unwrap(), input).await?;
+                                let (out, s) = execute_pipeline_with_env(&env, selected_pipeline, input).await?;
                                 (s.unwrap_or(200u16), out, true, String::new())
                             }
                         }

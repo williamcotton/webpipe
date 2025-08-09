@@ -126,7 +126,7 @@ pub fn build_request_from_axum(
 
     // Original request snapshot
     if let Some(obj) = Value::Object(req_obj).as_object() {
-        let mut req_clone = obj.clone();
+        let req_clone = obj.clone();
         let method_str = req_clone
             .get("method")
             .and_then(|v| v.as_str())

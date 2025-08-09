@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Set up watcher (only for serve mode)
-    let mut watcher: Option<RecommendedWatcher> = None;
+    let mut _watcher: Option<RecommendedWatcher> = None;
     if !test_mode {
         let mut w: RecommendedWatcher = notify::recommended_watcher(move |res| {
             let _ = raw_tx.send(res);
@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         w.watch(Path::new(file_path), RecursiveMode::NonRecursive)?;
         // Also watch the directory for .env changes (creation/modification)
         let _ = w.watch(env_dir, RecursiveMode::NonRecursive);
-        watcher = Some(w);
+        _watcher = Some(w);
     }
 
     loop {

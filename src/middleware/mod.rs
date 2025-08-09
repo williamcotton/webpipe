@@ -10,7 +10,7 @@ use handlebars::Handlebars;
 use mlua::{Lua, Value as LuaValue, Result as LuaResult};
 use once_cell::sync::Lazy;
 use sqlx::{self, PgPool};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use reqwest::{self, Method};
 use reqwest::header::{HeaderMap as ReqwestHeaderMap, HeaderName, HeaderValue, USER_AGENT};
 use rand::RngCore;
@@ -1190,7 +1190,6 @@ impl Middleware for PgMiddleware {
 fn bind_json_param<'q>(query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>, v: &'q Value)
     -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>
 {
-    let mut query = query;
     match v {
         Value::Null => {
             let none: Option<i32> = None; query.bind(none)
@@ -1210,7 +1209,6 @@ fn bind_json_param<'q>(query: sqlx::query::Query<'q, sqlx::Postgres, sqlx::postg
 fn bind_json_param_scalar<'q>(query: sqlx::query::QueryScalar<'q, sqlx::Postgres, sqlx::types::Json<Value>, sqlx::postgres::PgArguments>, v: &'q Value)
     -> sqlx::query::QueryScalar<'q, sqlx::Postgres, sqlx::types::Json<Value>, sqlx::postgres::PgArguments>
 {
-    let mut query = query;
     match v {
         Value::Null => {
             let none: Option<i32> = None; query.bind(none)
