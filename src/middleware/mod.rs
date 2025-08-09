@@ -54,7 +54,7 @@ impl MiddlewareRegistry {
         registry.register("handlebars", Box::new(HandlebarsMiddleware::new_with_ctx(ctx.clone())));
         registry.register("fetch", Box::new(FetchMiddleware { ctx: ctx.clone() }));
         registry.register("cache", Box::new(CacheMiddleware));
-        registry.register("lua", Box::new(LuaMiddleware::new()));
+        registry.register("lua", Box::new(LuaMiddleware::new(ctx.clone())));
         registry.register("log", Box::new(LogMiddleware));
         registry.register("debug", Box::new(DebugMiddleware));
         registry
@@ -241,7 +241,9 @@ pub struct FetchMiddleware { pub(crate) ctx: Arc<Context> }
 #[derive(Debug)]
 pub struct CacheMiddleware;
 #[derive(Debug)]
-pub struct LuaMiddleware;
+pub struct LuaMiddleware {
+    ctx: Arc<Context>,
+}
 
 fn lookup_path_string(input: &Value, path: &str) -> String {
     let mut cur = input;
@@ -296,8 +298,8 @@ fn cache_enabled_and_ttl(input: &Value) -> (bool, u64, Option<String>) {
 }
 
 impl LuaMiddleware {
-    pub fn new() -> Self {
-        Self
+    pub fn new(ctx: Arc<Context>) -> Self {
+        Self { ctx }
     }
     
     fn load_scripts_from_dir(lua: &Lua) -> Result<(), WebPipeError> {
@@ -356,7 +358,7 @@ impl LuaMiddleware {
         Ok(())
     }
 
-    fn ensure_lua_initialized() -> Result<(), WebPipeError> {
+    fn ensure_lua_initialized(&self) -> Result<(), WebPipeError> {
         LUA_STATE.with(|state| {
             let mut state = state.borrow_mut();
             if state.is_none() {
@@ -414,18 +416,43 @@ impl LuaMiddleware {
                 }
 
                 // Provide executeSql(sql) -> (resultTable, errorString|nil)
+                // Provide executeSql(sql) -> (resultTable, errorString|nil) backed by Context.pg
+                let pool_opt = self.ctx.pg.clone();
                 let exec_sql_fn = lua
-                    .create_function(|lua, query: String| {
+                    .create_function(move |lua, query: String| {
+                        let pool = match pool_opt.clone() {
+                            Some(p) => p,
+                            None => {
+                                let err = lua.create_string("database not configured")?;
+                                return Ok((LuaValue::Nil, LuaValue::String(err)));
+                            }
+                        };
                         let handle = Handle::current();
                         let fut = async move {
-                            // NOTE: Lua executeSql no longer wired to Context; disable by default
-                            let _ = query; // avoid unused warnings
-                            return Err("executeSql is disabled without Context".to_string());
+                            let wrapped_sql = format!(
+                                "WITH t AS ({}) SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) AS rows FROM t",
+                                query
+                            );
+                            let rows_json_res = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql)
+                                .fetch_one(&pool)
+                                .await;
+                            match rows_json_res {
+                                Ok(json) => {
+                                    let rows = json.0;
+                                    let row_count = rows.as_array().map(|a| a.len()).unwrap_or(0);
+                                    let val = serde_json::json!({
+                                        "rows": rows,
+                                        "rowCount": row_count,
+                                    });
+                                    Ok::<Value, String>(val)
+                                }
+                                Err(e) => Err(e.to_string()),
+                            }
                         };
                         // We may be inside Tokio already; use block_in_place to avoid nested runtime issues
                         match tokio::task::block_in_place(|| handle.block_on(fut)) {
                             Ok(json_val) => {
-                                let lua_val = Self::json_to_lua(lua, &json_val)?;
+                                let lua_val = LuaMiddleware::json_to_lua(lua, &json_val)?;
                                 Ok((lua_val, LuaValue::Nil))
                             }
                             Err(err_msg) => {
@@ -566,7 +593,7 @@ impl LuaMiddleware {
     
     fn execute_lua_script(&self, script: &str, input: &Value) -> Result<Value, WebPipeError> {
         // Ensure Lua is initialized in this thread
-        Self::ensure_lua_initialized()?;
+        self.ensure_lua_initialized()?;
         
         LUA_STATE.with(|state| {
             let state = state.borrow();
