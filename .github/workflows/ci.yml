@@ -57,7 +57,7 @@ jobs:
           done
 
       - name: Run tests (with pg)
-        run: cargo test --tests --features pg_tests --verbose
+        run: cargo test --tests --features pg_tests --verbose -- --test-threads=1
 
   test-macos:
     name: Tests (macOS)
@@ -92,14 +92,14 @@ jobs:
         run: |
           initdb -D /tmp/pgdb
           pg_ctl -D /tmp/pgdb -o "-p $PGPORT" -l /tmp/pglog start
-          # Create role and database used by tests
-          createuser -s postgres || true
-          createdb -O postgres postgres || true
           # Wait until ready
           for i in {1..30}; do
-            pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" && break
+            pg_isready -h "$PGHOST" -p "$PGPORT" && break
             sleep 1
           done
+          # Ensure role and database used by tests exist (set password for TCP auth)
+          psql -U "$(whoami)" -h "$PGHOST" -p "$PGPORT" -d postgres -v ON_ERROR_STOP=1 -c "DO $$BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'postgres') THEN CREATE ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres'; ELSE ALTER ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres'; END IF; END$$;"
+          createdb -h "$PGHOST" -p "$PGPORT" -O postgres postgres || true
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -108,6 +108,6 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run tests (with pg)
-        run: cargo test --tests --features pg_tests --verbose
+        run: cargo test --tests --features pg_tests --verbose -- --test-threads=1
 
 
