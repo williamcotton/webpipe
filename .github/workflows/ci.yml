@@ -33,10 +33,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install jq
+      - name: Install jq and Postgres client
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq libjq-dev libonig-dev pkg-config postgresql-client
+
+      - name: Configure jq paths
+        run: |
+          # Use pkg-config to locate jq
+          echo "JQ_LIB_DIR=$(pkg-config --variable=libdir jq)" >> "$GITHUB_ENV"
+          echo "JQ_INCLUDE_DIR=$(pkg-config --variable=includedir jq)" >> "$GITHUB_ENV"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -71,8 +77,14 @@ jobs:
       - name: Install Postgres and jq (Homebrew)
         run: |
           brew update
-          brew install postgresql@15 jq
+          brew install postgresql@15 jq pkg-config
           echo "$(brew --prefix postgresql@15)/bin" >> "$GITHUB_PATH"
+
+      - name: Configure jq paths (Homebrew)
+        run: |
+          JQ_PREFIX="$(brew --prefix jq)"
+          echo "JQ_LIB_DIR=${JQ_PREFIX}/lib" >> "$GITHUB_ENV"
+          echo "JQ_INCLUDE_DIR=${JQ_PREFIX}/include" >> "$GITHUB_ENV"
 
       - name: Init and start Postgres
         run: |
