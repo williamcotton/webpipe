@@ -193,3 +193,76 @@ pub fn execute_pipeline<'a>(
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{PipelineStep, Pipeline};
+    use std::sync::Arc;
+
+    struct StubInvoker;
+    #[async_trait]
+    impl MiddlewareInvoker for StubInvoker {
+        async fn call(&self, name: &str, cfg: &str, input: &Value) -> Result<Value, WebPipeError> {
+            match name {
+                "handlebars" => Ok(Value::String(format!("<p>{}</p>", cfg))),
+                "echo" => Ok(serde_json::json!({"echo": cfg, "inputCopy": input })),
+                _ => Ok(serde_json::json!({"ok": true}))
+            }
+        }
+    }
+
+    fn env_with_vars(vars: Vec<Variable>) -> ExecutionEnv {
+        ExecutionEnv {
+            variables: Arc::new(vars),
+            named_pipelines: Arc::new(HashMap::new()),
+            invoker: Arc::new(StubInvoker),
+        }
+    }
+
+    #[tokio::test]
+    async fn merge_values_preserving_input_for_objects() {
+        let input = serde_json::json!({"a":1});
+        let result = serde_json::json!({"b":2});
+        let merged = super::merge_values_preserving_input(&input, &result);
+        assert_eq!(merged, serde_json::json!({"a":1,"b":2}));
+    }
+
+    #[tokio::test]
+    async fn result_branch_selection_and_status() {
+        let env = env_with_vars(vec![]);
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular { name: "echo".to_string(), config: "{}".to_string() },
+            PipelineStep::Result { branches: vec![
+                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Ok, status_code: 201, pipeline: Pipeline { steps: vec![] } },
+                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 200, pipeline: Pipeline { steps: vec![] } },
+            ]}
+        ]};
+        let (out, _ct, status) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        assert!(out.is_object());
+        assert_eq!(status, Some(201));
+    }
+
+    #[tokio::test]
+    async fn handlebars_sets_html_content_type() {
+        let env = env_with_vars(vec![]);
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular { name: "handlebars".to_string(), config: "Hello".to_string() }
+        ]};
+        let (_out, ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        assert_eq!(ct, "text/html");
+    }
+
+    #[tokio::test]
+    async fn variable_auto_naming_adds_and_removes_result_name() {
+        let vars = vec![Variable { var_type: "echo".to_string(), name: "myVar".to_string(), value: "{}".to_string() }];
+        let env = env_with_vars(vars);
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular { name: "echo".to_string(), config: "myVar".to_string() }
+        ]};
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        assert!(out.get("resultName").is_none());
+        // Ensure output is an object and not empty
+        assert!(out.is_object());
+    }
+}
+

@@ -190,3 +190,102 @@ pub fn build_minimal_request_for_tests(
 }
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, Method};
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_string_to_number_or_string_variants() {
+        assert_eq!(string_to_number_or_string("42"), serde_json::json!(42));
+        // f64 may have precision, but 3.14 should parse
+        assert_eq!(string_to_number_or_string("3.14").as_f64().unwrap(), 3.14);
+        assert_eq!(string_to_number_or_string("foo"), serde_json::json!("foo"));
+    }
+
+    #[test]
+    fn test_string_map_to_json_with_number_coercion() {
+        let mut m = HashMap::new();
+        m.insert("a".to_string(), "1".to_string());
+        m.insert("b".to_string(), "1.5".to_string());
+        m.insert("c".to_string(), "x".to_string());
+        let v = string_map_to_json_with_number_coercion(&m);
+        assert_eq!(v["a"], serde_json::json!(1));
+        assert_eq!(v["b"].as_f64().unwrap(), 1.5);
+        assert_eq!(v["c"], serde_json::json!("x"));
+    }
+
+    #[test]
+    fn test_parse_cookies_from_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cookie", "a=1; b=two; c=".parse().unwrap());
+        let cookies = parse_cookies_from_headers(&headers);
+        assert_eq!(cookies.get("a").unwrap(), "1");
+        assert_eq!(cookies.get("b").unwrap(), "two");
+        assert_eq!(cookies.get("c").unwrap(), "");
+    }
+
+    #[test]
+    fn test_parse_body_from_content_type() {
+        // empty -> {}
+        let empty = Bytes::from_static(b"");
+        assert_eq!(parse_body_from_content_type(&empty, "application/json"), serde_json::json!({}));
+
+        // json valid
+        let body = Bytes::from_static(br#"{"x":1}"#);
+        assert_eq!(parse_body_from_content_type(&body, "application/json"), serde_json::json!({"x":1}));
+
+        // json invalid -> Null
+        let body = Bytes::from_static(br#"{invalid}"#);
+        assert_eq!(parse_body_from_content_type(&body, "application/json"), serde_json::Value::Null);
+
+        // form
+        let body = Bytes::from_static(b"a=1&b=two&c=&d=3.5");
+        let v = parse_body_from_content_type(&body, "application/x-www-form-urlencoded");
+        assert_eq!(v["a"], serde_json::json!(1));
+        assert_eq!(v["b"], serde_json::json!("two"));
+        assert_eq!(v["c"], serde_json::json!(""));
+        assert_eq!(v["d"].as_f64().unwrap(), 3.5);
+
+        // other -> raw string
+        let body = Bytes::from_static(b"hello");
+        assert_eq!(parse_body_from_content_type(&body, "text/plain"), serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn test_build_request_from_axum_defaults_and_snapshot() {
+        let method = Method::POST;
+        let mut headers = HeaderMap::new();
+        // Intentionally omit content-type to trigger default
+        headers.insert("cookie", "sid=abc".parse().unwrap());
+        let mut path_params = HashMap::new();
+        path_params.insert("id".to_string(), "42".to_string());
+        let mut query_params = HashMap::new();
+        query_params.insert("q".to_string(), "term".to_string());
+        let body = Bytes::from_static(br#"{"a":1}"#);
+
+        let (req, ct) = build_request_from_axum(&method, &headers, &path_params, &query_params, &body);
+        assert_eq!(ct, "application/json");
+        assert_eq!(req["method"], serde_json::json!("POST"));
+        assert_eq!(req["cookies"]["sid"], serde_json::json!("abc"));
+        assert_eq!(req["originalRequest"]["method"], serde_json::json!("POST"));
+        assert_eq!(req["originalRequest"]["params"]["id"], serde_json::json!(42));
+        assert_eq!(req["originalRequest"]["query"]["q"], serde_json::json!("term"));
+    }
+
+    #[test]
+    fn test_build_minimal_request_for_tests_shape() {
+        let mut path_params = HashMap::new();
+        path_params.insert("id".to_string(), "7".to_string());
+        let mut query_params = HashMap::new();
+        query_params.insert("q".to_string(), "a".to_string());
+        let v = build_minimal_request_for_tests("GET", "/u/7", &path_params, &query_params);
+        assert_eq!(v["method"], serde_json::json!("GET"));
+        assert_eq!(v["content_type"], serde_json::json!("application/json"));
+        assert_eq!(v["originalRequest"]["params"]["id"], serde_json::json!(7));
+        assert_eq!(v["originalRequest"]["query"]["q"], serde_json::json!("a"));
+    }
+}
+

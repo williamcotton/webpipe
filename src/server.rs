@@ -432,3 +432,36 @@ async fn try_serve_static(request_path: &str) -> Option<Response> {
     let _ = resp.headers_mut().insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static(ct));
     Some(resp)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn content_type_guessing() {
+        assert_eq!(guess_content_type(Path::new("a.html")), "text/html; charset=utf-8");
+        assert_eq!(guess_content_type(Path::new("a.css")), "text/css; charset=utf-8");
+        assert_eq!(guess_content_type(Path::new("a.json")), "application/json; charset=utf-8");
+        assert_eq!(guess_content_type(Path::new("a.bin")), "application/octet-stream");
+    }
+
+    #[test]
+    fn static_path_normalization() {
+        std::env::set_var("WEBPIPE_PUBLIC_DIR", "public");
+        // normal
+        let p = normalize_static_path("/index.html").unwrap();
+        assert!(p.ends_with("index.html"));
+        // traversal guarded
+        assert!(normalize_static_path("/../secret").is_none());
+        // root -> index.html
+        let p2 = normalize_static_path("/").unwrap();
+        assert!(p2.ends_with("index.html"));
+    }
+
+    #[tokio::test]
+    async fn health_check_ok() {
+        let resp = health_check().await.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+}

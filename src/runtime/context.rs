@@ -164,3 +164,25 @@ impl Context {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_put_get_and_expiry_and_zero_ttl() {
+        let cache = CacheStore::new(16, 1);
+        // zero TTL is ignored
+        cache.put("k0".to_string(), serde_json::json!({"v":0}), Some(0));
+        assert!(cache.get("k0").is_none());
+
+        cache.put("k1".to_string(), serde_json::json!({"v":1}), None);
+        assert_eq!(cache.get("k1").unwrap()["v"], serde_json::json!(1));
+
+        // expiry path
+        cache.put("k2".to_string(), serde_json::json!({"v":2}), Some(1));
+        assert!(cache.get("k2").is_some());
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(cache.get("k2").is_none());
+    }
+}
+

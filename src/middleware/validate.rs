@@ -99,3 +99,42 @@ impl super::Middleware for ValidateMiddleware {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::middleware::Middleware;
+
+    #[tokio::test]
+    async fn string_min_max_and_missing() {
+        let mw = ValidateMiddleware;
+        let cfg = "{ name: string(2..4) }";
+        // missing
+        let out = mw.execute(cfg, &serde_json::json!({"body": {}})).await.unwrap();
+        assert_eq!(out["errors"][0]["type"], serde_json::json!("validationError"));
+        // too short
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "a"}})).await.unwrap();
+        assert_eq!(out["errors"][0]["rule"], serde_json::json!("minLength"));
+        // too long
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abcde"}})).await.unwrap();
+        assert_eq!(out["errors"][0]["rule"], serde_json::json!("maxLength"));
+        // ok
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abc"}})).await.unwrap();
+        assert!(out.get("errors").is_none());
+    }
+
+    #[tokio::test]
+    async fn email_rule_accepts_and_rejects() {
+        let mw = ValidateMiddleware;
+        let cfg = "{ email: email }";
+        // missing
+        let out = mw.execute(cfg, &serde_json::json!({"body": {}})).await.unwrap();
+        assert_eq!(out["errors"][0]["type"], serde_json::json!("validationError"));
+        // invalid
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "foo"}})).await.unwrap();
+        assert_eq!(out["errors"][0]["rule"], serde_json::json!("email"));
+        // valid
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "a@b.com"}})).await.unwrap();
+        assert!(out.get("errors").is_none());
+    }
+}
+

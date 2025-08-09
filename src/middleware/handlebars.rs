@@ -26,7 +26,9 @@ impl HandlebarsMiddleware {
     }
 
     fn dedent_multiline(input: &str) -> String {
-        let trimmed = input.trim_matches(['\n', '\r', ' ', '\t'].as_ref());
+        // Trim only newline characters at the boundaries so that leading spaces
+        // on the first line are preserved for indentation detection.
+        let trimmed = input.trim_matches(['\n', '\r'].as_ref());
         let lines: Vec<&str> = trimmed.lines().collect();
         if lines.is_empty() { return String::new(); }
 
@@ -81,4 +83,27 @@ impl super::Middleware for HandlebarsMiddleware {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::middleware::Middleware;
+
+    #[test]
+    fn test_dedent_multiline() {
+        let s = "\n    hello\n      world\n";
+        let out = HandlebarsMiddleware::dedent_multiline(s);
+        assert_eq!(out, "hello\n  world");
+    }
+
+    #[tokio::test]
+    async fn render_template_and_register_once() {
+        let hb = HandlebarsMiddleware::new();
+        let data = serde_json::json!({"name":"Ada"});
+        let v1 = hb.execute("Hello {{name}}", &data).await.unwrap();
+        assert_eq!(v1, serde_json::json!("Hello Ada"));
+        let v2 = hb.execute("Hello {{name}}", &data).await.unwrap();
+        assert_eq!(v2, serde_json::json!("Hello Ada"));
+    }
+}
 

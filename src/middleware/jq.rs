@@ -59,3 +59,29 @@ impl super::Middleware for JqMiddleware {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::middleware::Middleware;
+
+    #[tokio::test]
+    async fn jq_happy_path_and_cache_reuse() {
+        let jq = JqMiddleware::new();
+        let input = serde_json::json!({"a":1});
+        let out1 = jq.execute(".a", &input).await.unwrap();
+        assert_eq!(out1, serde_json::json!(1));
+        // second run should hit cache path implicitly; just ensure same result
+        let out2 = jq.execute(".a", &input).await.unwrap();
+        assert_eq!(out2, serde_json::json!(1));
+    }
+
+    #[tokio::test]
+    async fn jq_parse_error_surfaces() {
+        let jq = JqMiddleware::new();
+        let input = serde_json::json!({});
+        let err = jq.execute(".[] | ", &input).await.err().unwrap();
+        // Ensure it's wrapped as MiddlewareExecutionError string
+        assert!(format!("{}", err).contains("JQ"));
+    }
+}
+

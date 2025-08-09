@@ -135,3 +135,18 @@ fn build_sql_error_value(e: &sqlx::Error, query: &str) -> Value {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn build_sql_error_object_shape() {
+        // Build a synthetic sqlx::Error using a simple conversion from string via DatabaseError is non-trivial.
+        // Instead, use a connection error to verify the envelope fields are present.
+        let err = sqlx::Error::Configuration("bad config".into());
+        let v = build_sql_error_value(&err, "SELECT 1");
+        assert_eq!(v["errors"][0]["type"], serde_json::json!("sqlError"));
+        assert_eq!(v["errors"][0]["query"], serde_json::json!("SELECT 1"));
+    }
+}
+

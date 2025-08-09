@@ -48,3 +48,19 @@ impl super::Middleware for CacheMiddleware {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::middleware::Middleware;
+
+    #[tokio::test]
+    async fn merges_cache_flags_into_metadata() {
+        let mw = CacheMiddleware;
+        let input = serde_json::json!({});
+        let out = mw.execute("enabled: true, ttl: 5, keyTemplate: id-{params.id}", &input).await.unwrap();
+        assert_eq!(out["_metadata"]["cache"]["enabled"], serde_json::json!(true));
+        assert_eq!(out["_metadata"]["cache"]["ttl"], serde_json::json!(5));
+        assert_eq!(out["_metadata"]["cache"]["keyTemplate"], serde_json::json!("id-{params.id}"));
+    }
+}
+

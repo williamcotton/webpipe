@@ -150,3 +150,15 @@ impl IntoResponse for WebPipeError {
 }
 
 pub type Result<T> = std::result::Result<T, WebPipeError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_code_mapping_basic() {
+        assert_eq!(WebPipeError::ParseError("x".into()).status_code(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(WebPipeError::AuthError("x".into()).status_code(), axum::http::StatusCode::UNAUTHORIZED);
+        assert_eq!(WebPipeError::NotFound("x".into()).status_code(), axum::http::StatusCode::NOT_FOUND);
+    }
+}

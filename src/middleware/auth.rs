@@ -305,3 +305,31 @@ impl super::Middleware for AuthMiddleware {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cookie_header_builders_have_expected_flags() {
+        let set = build_set_cookie_header("abc");
+        assert!(set.contains("wp_session=abc"));
+        assert!(set.contains("HttpOnly"));
+        assert!(set.contains("SameSite"));
+        assert!(set.contains("Path=/"));
+        assert!(set.contains("Max-Age="));
+
+        let clr = build_clear_cookie_header();
+        assert!(clr.contains("wp_session="));
+        assert!(clr.contains("HttpOnly"));
+        assert!(clr.contains("Path=/"));
+        assert!(clr.contains("Max-Age=0"));
+    }
+
+    #[test]
+    fn auth_error_object_shape() {
+        let v = build_auth_error_object("x", "ctx");
+        assert_eq!(v["errors"][0]["type"], serde_json::json!("authError"));
+        assert_eq!(v["errors"].as_array().unwrap().len(), 1);
+    }
+}
+

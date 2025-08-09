@@ -178,3 +178,47 @@ impl super::Middleware for FetchMiddleware {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Context;
+    use crate::runtime::context::{CacheStore, ConfigSnapshot};
+    use crate::middleware::Middleware;
+    use reqwest::Client;
+    use std::time::Duration;
+
+    fn ctx_with_client() -> Arc<Context> {
+        Arc::new(Context {
+            pg: None,
+            http: Client::builder().timeout(Duration::from_secs(1)).build().unwrap(),
+            cache: CacheStore::new(64, 1),
+            hb: std::sync::Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
+            cfg: ConfigSnapshot(serde_json::json!({})),
+        })
+    }
+
+    #[tokio::test]
+    async fn missing_url_yields_network_error_object() {
+        let mw = FetchMiddleware { ctx: ctx_with_client() };
+        let out = mw.execute("", &serde_json::json!({})).await.unwrap();
+        assert_eq!(out["errors"][0]["type"], serde_json::json!("networkError"));
+    }
+
+    #[tokio::test]
+    async fn cache_key_template_and_merge_into_result_name() {
+        let mw = FetchMiddleware { ctx: ctx_with_client() };
+        // Provide a non-empty URL so middleware reaches cache check before sending
+        let input = serde_json::json!({
+            "resultName": "r",
+            "_metadata": {"cache": {"enabled": true, "ttl": 1, "keyTemplate": "x-{resultName}"}},
+            "fetchUrl": "http://localhost/never",
+        });
+        // Manually put into cache to simulate a prior success and ensure retrieval merges correctly
+        mw.ctx.cache.put("x-r".to_string(), serde_json::json!({"response": {"ok": true}, "status": 200, "headers": {}}), Some(1));
+        let out2 = mw.execute("", &input).await.unwrap();
+        // When cached, middleware merges into data under resultName
+        assert!(out2.get("data").is_some(), "expected cached merge to populate data");
+        assert!(out2["data"]["r"].is_object());
+    }
+}
+

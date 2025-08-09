@@ -751,3 +751,39 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
     
     Ok((remaining, Program { configs, pipelines, variables, routes, describes }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_minimal_program_and_roundtrip_display() {
+        let src = r#"
+config cache {
+  enabled: true
+  defaultTtl: 60
+}
+
+pipeline simple =
+  |> handlebars: `Hello`
+
+GET /
+  |> pipeline: simple
+
+describe "home"
+  it "returns html"
+    when calling GET /
+    then status is 200
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        // sanity checks
+        assert_eq!(program.configs.len(), 1);
+        assert_eq!(program.pipelines.len(), 1);
+        assert_eq!(program.routes.len(), 1);
+        assert_eq!(program.describes.len(), 1);
+
+        // Display should not panic and include route path
+        let s = format!("{}", program);
+        assert!(s.contains("GET /"));
+    }
+}

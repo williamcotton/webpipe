@@ -101,3 +101,21 @@ impl super::Middleware for LogMiddleware {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::middleware::Middleware;
+
+    #[tokio::test]
+    async fn pre_and_post_execution_metadata_and_duration() {
+        let mw = LogMiddleware;
+        let input = serde_json::json!({
+            "headers": {"x": "y"},
+            "originalRequest": {"method": "GET", "params": {}, "query": {}},
+        });
+        let out = mw.execute("level: info, includeHeaders: true, includeBody: false, enabled: true", &input).await.unwrap();
+        assert!(out.get("_metadata").is_some());
+        mw.post_execute(&out).await.unwrap();
+    }
+}
+

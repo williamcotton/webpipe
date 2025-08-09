@@ -170,3 +170,41 @@ impl super::Middleware for LuaMiddleware {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Context;
+    use crate::runtime::context::{CacheStore, ConfigSnapshot};
+    use crate::middleware::Middleware;
+
+    fn ctx_no_db() -> Arc<Context> {
+        Arc::new(Context {
+            pg: None,
+            http: reqwest::Client::builder().build().unwrap(),
+            cache: CacheStore::new(64, 1),
+            hb: std::sync::Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
+            cfg: ConfigSnapshot(serde_json::json!({})),
+        })
+    }
+
+    #[tokio::test]
+    async fn json_lua_roundtrip_primitives_and_tables() {
+        let mw = LuaMiddleware::new(ctx_no_db());
+        let input = serde_json::json!({"x": 1, "arr": [1,2], "obj": {"a": true}});
+        let out = mw.execute("return { x = request.x, arr = request.arr, obj = request.obj }", &input).await.unwrap();
+        assert_eq!(out["x"], serde_json::json!(1));
+        assert_eq!(out["arr"].as_array().unwrap().len(), 2);
+        assert_eq!(out["obj"]["a"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn require_script_and_get_env_registered() {
+        std::env::set_var("WEBPIPE_SCRIPTS_DIR", "scripts");
+        let mw = LuaMiddleware::new(ctx_no_db());
+        let out = mw.execute("local c = requireScript('contentful'); return type(c) ~= 'nil'", &serde_json::json!({})).await.unwrap();
+        assert!(out.as_bool().unwrap() || out.is_string());
+        let out2 = mw.execute("return getEnv('PATH') ~= nil", &serde_json::json!({})).await.unwrap();
+        assert!(out2.as_bool().unwrap());
+    }
+}
+
