@@ -23,6 +23,9 @@ use std::path::Path;
 
 static HANDLEBARS_PARTIALS: Lazy<Mutex<std::collections::HashMap<String, String>>> = Lazy::new(|| Mutex::new(std::collections::HashMap::new()));
 
+// Monotonic epoch for high-resolution timing (avoid SystemTime granularity)
+static MONO_EPOCH: Lazy<std::time::Instant> = Lazy::new(std::time::Instant::now);
+
 pub fn configure_handlebars_partials(variables: &[Variable]) {
     let mut map = std::collections::HashMap::new();
     for v in variables {
@@ -38,6 +41,9 @@ pub fn configure_handlebars_partials(variables: &[Variable]) {
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError>;
+    async fn post_execute(&self, _final_response: &Value) -> Result<(), WebPipeError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -80,6 +86,13 @@ impl MiddlewareRegistry {
             .ok_or_else(|| WebPipeError::MiddlewareNotFound(name.to_string()))?;
         
         middleware.execute(config, input).await
+    }
+
+    pub async fn post_execute_all(&self, final_response: &Value) {
+        // Best-effort: each middleware gets a chance; ignore individual errors
+        for mw in self.middlewares.values() {
+            let _ = mw.post_execute(final_response).await;
+        }
     }
 }
 
@@ -1527,6 +1540,9 @@ impl Middleware for LogMiddleware {
                     now.as_millis() as u64
                 };
                 log_map.insert("startTimeMs".to_string(), Value::Number(serde_json::Number::from(start_ms)));
+                // High-resolution monotonic timestamp
+                let start_mono_us: u64 = MONO_EPOCH.elapsed().as_micros() as u64;
+                log_map.insert("startMonoUs".to_string(), Value::Number(serde_json::Number::from(start_mono_us)));
                 if let Some(level) = sc.level { log_map.insert("level".to_string(), Value::String(level)); }
                 if let Some(b) = sc.include_body { log_map.insert("includeBody".to_string(), Value::Bool(b)); }
                 if let Some(b) = sc.include_headers { log_map.insert("includeHeaders".to_string(), Value::Bool(b)); }
@@ -1535,6 +1551,72 @@ impl Middleware for LogMiddleware {
             }
         }
         Ok(out)
+    }
+
+    async fn post_execute(&self, final_response: &Value) -> Result<(), WebPipeError> {
+        // Read metadata stamped by execute (optional)
+        let meta = final_response
+            .get("_metadata")
+            .and_then(|m| m.get("log"))
+            .and_then(|l| l.as_object());
+
+        if let Some(m) = meta {
+            if let Some(Value::Bool(false)) = m.get("enabled") { return Ok(()); }
+        }
+
+        let include_body = meta.and_then(|m| m.get("includeBody")).and_then(|v| v.as_bool()).unwrap_or(false);
+        let include_headers = meta.and_then(|m| m.get("includeHeaders")).and_then(|v| v.as_bool()).unwrap_or(true);
+        let level = meta.and_then(|m| m.get("level")).and_then(|v| v.as_str()).unwrap_or("info");
+
+        // Prefer high-resolution monotonic delta
+        let start_mono_us = meta.and_then(|m| m.get("startMonoUs")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let duration_ms_f64 = if start_mono_us > 0 {
+            let now_mono_us: u64 = MONO_EPOCH.elapsed().as_micros() as u64;
+            let delta_us = now_mono_us.saturating_sub(start_mono_us);
+            (delta_us as f64) / 1000.0
+        } else {
+            let start_ms = meta.and_then(|m| m.get("startTimeMs")).and_then(|v| v.as_u64()).unwrap_or(0);
+            let now_ms = {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+                now.as_millis() as u64
+            };
+            (now_ms.saturating_sub(start_ms)) as f64
+        };
+
+        // Build request snapshot from originalRequest if present
+        let mut req_obj = serde_json::Map::new();
+        if let Some(orig) = final_response.get("originalRequest").and_then(|v| v.as_object()) {
+            if let Some(m) = orig.get("method").cloned() { req_obj.insert("method".to_string(), m); }
+            if let Some(p) = orig.get("params").cloned() { req_obj.insert("params".to_string(), p); }
+            if let Some(q) = orig.get("query").cloned() { req_obj.insert("query".to_string(), q); }
+        }
+        if include_headers {
+            if let Some(h) = final_response.get("headers").cloned() {
+                req_obj.insert("headers".to_string(), h);
+            }
+        }
+
+        // Response snapshot; status may not be embedded, so omit and focus on body if requested
+        let mut resp_obj = serde_json::Map::new();
+        if include_body {
+            let mut clean = final_response.clone();
+            if let Some(obj) = clean.as_object_mut() {
+                obj.remove("_metadata");
+                obj.remove("originalRequest");
+                obj.remove("setCookies");
+            }
+            resp_obj.insert("body".to_string(), clean);
+        }
+
+        let mut entry = serde_json::Map::new();
+        entry.insert("level".to_string(), Value::String(level.to_string()));
+        entry.insert("duration_ms".to_string(), Value::Number(serde_json::Number::from_f64(duration_ms_f64).unwrap_or_else(|| serde_json::Number::from(0))));
+        entry.insert("request".to_string(), Value::Object(req_obj));
+        entry.insert("response".to_string(), Value::Object(resp_obj));
+        if let Ok(line) = serde_json::to_string(&Value::Object(entry)) { println!("{}", line); }
+
+        Ok(())
     }
 }
 

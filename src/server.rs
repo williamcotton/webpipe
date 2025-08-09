@@ -551,6 +551,27 @@ async fn respond_with_pipeline(
         obj.insert("originalRequest".to_string(), Value::Object(orig));
     }
     
+    // Ensure a baseline _metadata.log.startTimeMs exists for duration calc
+    if let Some(obj) = request_json.as_object_mut() {
+        let meta_entry = obj.entry("_metadata").or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if !meta_entry.is_object() { *meta_entry = Value::Object(serde_json::Map::new()); }
+        if let Some(meta) = meta_entry.as_object_mut() {
+            let log_entry = meta.entry("log").or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if !log_entry.is_object() { *log_entry = Value::Object(serde_json::Map::new()); }
+            if let Some(log_obj) = log_entry.as_object_mut() {
+                if !log_obj.contains_key("startTimeMs") {
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+                    let ms = now.as_millis() as u64;
+                    log_obj.insert("startTimeMs".to_string(), Value::Number(serde_json::Number::from(ms)));
+                }
+            }
+        }
+    }
+
+    // Keep a snapshot for post_execute (contains _metadata, originalRequest, headers)
+    let request_snapshot = request_json.clone();
+
     // Execute the pipeline
     match state.execute_pipeline(&pipeline, request_json).await {
         Ok((result, content_type, status_code)) => {
@@ -561,7 +582,7 @@ async fn respond_with_pipeline(
                 StatusCode::OK
             };
             
-            if content_type.starts_with("text/html") {
+            let response = if content_type.starts_with("text/html") {
                 match result.as_str() {
                     Some(html) => (http_status, Html(html.to_string())).into_response(),
                     None => {
@@ -587,9 +608,35 @@ async fn respond_with_pipeline(
                     }
                     response
                 } else {
-                    (http_status, Json(result)).into_response()
+                    (http_status, Json(result.clone())).into_response()
+                }
+            };
+
+            // After building response, invoke post_execute for all middleware using an envelope that includes
+            // originalRequest, headers, and _metadata from the initial request snapshot.
+            let registry = state.middleware_registry.clone();
+            let mut post_payload = if content_type.starts_with("text/html") {
+                Value::Object(serde_json::Map::new())
+            } else {
+                result.clone()
+            };
+            if !post_payload.is_object() {
+                post_payload = Value::Object(serde_json::Map::new());
+            }
+            if let Some(obj) = post_payload.as_object_mut() {
+                if let Some(meta) = request_snapshot.get("_metadata").cloned() {
+                    obj.insert("_metadata".to_string(), meta);
+                }
+                if let Some(orig) = request_snapshot.get("originalRequest").cloned() {
+                    obj.insert("originalRequest".to_string(), orig);
+                }
+                if let Some(h) = request_snapshot.get("headers").cloned() {
+                    obj.insert("headers".to_string(), h);
                 }
             }
+            tokio::spawn(async move { registry.post_execute_all(&post_payload).await; });
+
+            response
         }
         Err(e) => {
             warn!("Pipeline execution failed: {}", e);
