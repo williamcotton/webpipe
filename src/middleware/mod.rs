@@ -224,13 +224,18 @@ impl HandlebarsMiddleware {
 
         let mut handlebars = self.handlebars.lock().unwrap();
 
-        // Always (re)register global partials to support hot reload of templates
-        if let Ok(partials) = HANDLEBARS_PARTIALS.lock() {
-            for (name, tpl) in partials.iter() {
-                let n = name.trim();
-                // Dedent partials to avoid unintended leading whitespace from config indentation
-                let dedented = Self::dedent_multiline(tpl);
-                let _ = handlebars.register_partial(n, &dedented);
+        // Register global partials once per process (new server on hot-reload recreates middleware)
+        if let Ok(mut already) = self.partials_registered.lock() {
+            if !*already {
+                if let Ok(partials) = HANDLEBARS_PARTIALS.lock() {
+                    for (name, tpl) in partials.iter() {
+                        let n = name.trim();
+                        // Dedent partials to avoid unintended leading whitespace from config indentation
+                        let dedented = Self::dedent_multiline(tpl);
+                        let _ = handlebars.register_partial(n, &dedented);
+                    }
+                }
+                *already = true;
             }
         }
 
