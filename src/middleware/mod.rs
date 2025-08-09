@@ -16,6 +16,7 @@ use reqwest::header::{HeaderMap as ReqwestHeaderMap, HeaderName, HeaderValue, US
 use rand::RngCore;
 use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use argon2::password_hash::{SaltString, PasswordHash, rand_core::OsRng};
+use tokio::runtime::Handle;
 // no regex needed now
 use std::fs;
 use std::path::Path;
@@ -364,6 +365,50 @@ impl LuaMiddleware {
                 // Load all Lua helper scripts from scripts/ directory as globals
                 if let Err(e) = Self::load_scripts_from_dir(&lua) {
                     return Err(e);
+                }
+
+                // Provide executeSql(sql) -> (resultTable, errorString|nil)
+                let exec_sql_fn = lua
+                    .create_function(|lua, query: String| {
+                        let handle = Handle::current();
+                        let fut = async move {
+                            let pool = get_pg_pool().await.map_err(|e| e.to_string())?;
+                            // Wrap like PgMiddleware so we always deliver rows
+                            let wrapped_sql = format!(
+                                "WITH t AS ({}) SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) AS rows FROM t",
+                                query
+                            );
+                            let rows_json_res = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql)
+                                .fetch_one(pool)
+                                .await;
+                            match rows_json_res {
+                                Ok(json) => {
+                                    let rows = json.0;
+                                    let row_count = rows.as_array().map(|a| a.len()).unwrap_or(0);
+                                    let val = serde_json::json!({
+                                        "rows": rows,
+                                        "rowCount": row_count,
+                                    });
+                                    Ok::<Value, String>(val)
+                                }
+                                Err(e) => Err(e.to_string()),
+                            }
+                        };
+                        // We may be inside Tokio already; use block_in_place to avoid nested runtime issues
+                        match tokio::task::block_in_place(|| handle.block_on(fut)) {
+                            Ok(json_val) => {
+                                let lua_val = Self::json_to_lua(lua, &json_val)?;
+                                Ok((lua_val, LuaValue::Nil))
+                            }
+                            Err(err_msg) => {
+                                let err = lua.create_string(&err_msg)?;
+                                Ok((LuaValue::Nil, LuaValue::String(err)))
+                            }
+                        }
+                    })
+                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create executeSql: {}", e)))?;
+                if let Err(e) = lua.globals().set("executeSql", exec_sql_fn) {
+                    return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to register executeSql: {}", e)));
                 }
 
                 *state = Some(lua);
@@ -848,8 +893,145 @@ impl Middleware for AuthMiddleware {
 #[async_trait]
 impl Middleware for ValidateMiddleware {
     async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
-        // Placeholder: pass-through to avoid clobbering accumulated data
-        let _ = config; // suppress unused warning
+        // Parse a very small validation DSL, e.g.:
+        // {
+        //   login: string(3..50),
+        //   email: email,
+        //   password: string(8..100)
+        // }
+        // or without braces/newlines as used in examples
+
+        #[derive(Debug)]
+        struct Rule {
+            field: String,
+            kind: String, // "string" | "email"
+            min: Option<usize>,
+            max: Option<usize>,
+        }
+
+        fn trim_wrapping_braces(s: &str) -> &str {
+            let t = s.trim();
+            if t.starts_with('{') && t.ends_with('}') {
+                &t[1..t.len()-1]
+            } else {
+                t
+            }
+        }
+
+        fn parse_range(spec: &str) -> (Option<usize>, Option<usize>) {
+            let mut min = None;
+            let mut max = None;
+            let parts: Vec<&str> = spec.split("..").collect();
+            if parts.len() == 2 {
+                if let Ok(v) = parts[0].trim().parse::<usize>() { min = Some(v); }
+                if let Ok(v) = parts[1].trim().parse::<usize>() { max = Some(v); }
+            } else if parts.len() == 1 {
+                if let Ok(v) = parts[0].trim().parse::<usize>() { min = Some(v); max = Some(v); }
+            }
+            (min, max)
+        }
+
+        fn parse_rules(cfg: &str) -> Vec<Rule> {
+            let body = trim_wrapping_braces(cfg);
+            let mut rules: Vec<Rule> = Vec::new();
+            for raw_line in body.lines() {
+                let line = raw_line.trim().trim_end_matches(',');
+                if line.is_empty() { continue; }
+                if let Some(colon_pos) = line.find(':') {
+                    let field = line[..colon_pos].trim().to_string();
+                    let rhs = line[colon_pos + 1..].trim();
+                    if rhs.starts_with("string") {
+                        // string(3..50) or string(8)
+                        let mut min = None;
+                        let mut max = None;
+                        if let Some(lp) = rhs.find('(') {
+                            if let Some(rp) = rhs.rfind(')') {
+                                let inside = &rhs[lp + 1..rp];
+                                let (mn, mx) = parse_range(inside);
+                                min = mn; max = mx;
+                            }
+                        }
+                        rules.push(Rule { field, kind: "string".to_string(), min, max });
+                    } else if rhs.starts_with("email") {
+                        rules.push(Rule { field, kind: "email".to_string(), min: None, max: None });
+                    } else {
+                        // Unknown rule kind -> ignore silently for now
+                        continue;
+                    }
+                }
+            }
+            rules
+        }
+
+        fn make_error(field: &str, rule: &str, message: String) -> Value {
+            serde_json::json!({
+                "errors": [
+                    {
+                        "type": "validationError",
+                        "field": field,
+                        "context": field,
+                        "rule": rule,
+                        "message": message
+                    }
+                ]
+            })
+        }
+
+        let rules = parse_rules(config);
+        if rules.is_empty() {
+            return Ok(input.clone());
+        }
+
+        let body = input.get("body");
+        let obj = match body.and_then(|b| b.as_object()) {
+            Some(o) => o,
+            None => {
+                // No body to validate
+                return Ok(input.clone());
+            }
+        };
+
+        // Validate first failing rule and return a single error for now
+        for rule in rules {
+            let val = obj.get(&rule.field);
+            match rule.kind.as_str() {
+                "string" => {
+                    let s_owned: Option<String> = match val {
+                        Some(Value::String(s)) => Some(s.clone()),
+                        Some(Value::Number(n)) => Some(n.to_string()),
+                        Some(Value::Bool(b)) => Some(b.to_string()),
+                        Some(Value::Null) | None => None,
+                        Some(_) => None,
+                    };
+                    let s = match s_owned.as_deref() {
+                        Some(v) if !v.is_empty() => v,
+                        _ => {
+                            let msg = format!("Field '{}' is required and must be a non-empty string", rule.field);
+                            return Ok(make_error(&rule.field, "required", msg));
+                        }
+                    };
+                    let len = s.chars().count();
+                    if let Some(min) = rule.min { if len < min { return Ok(make_error(&rule.field, "minLength", format!("Field '{}' must be at least {} characters", rule.field, min))); } }
+                    if let Some(max) = rule.max { if len > max { return Ok(make_error(&rule.field, "maxLength", format!("Field '{}' must be at most {} characters", rule.field, max))); } }
+                }
+                "email" => {
+                    let s = match val.and_then(|v| v.as_str()) {
+                        Some(v) if !v.is_empty() => v,
+                        _ => {
+                            let msg = format!("Field '{}' is required and must be a valid email", rule.field);
+                            return Ok(make_error(&rule.field, "required", msg));
+                        }
+                    };
+                    let valid = s.contains('@') && s.contains('.') && !s.starts_with('@') && !s.ends_with('@');
+                    if !valid {
+                        return Ok(make_error(&rule.field, "email", format!("Field '{}' must be a valid email address", rule.field)));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // All good
         Ok(input.clone())
     }
 }
