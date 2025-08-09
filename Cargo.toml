@@ -9,7 +9,7 @@ axum = "0.7.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
-tower = "0.4"
+tower = { version = "0.4", features = ["util"] }
 tower-http = { version = "0.5", features = ["fs", "cors"] }
 anyhow = "1.0"
 thiserror = "1.0"
@@ -34,3 +34,6 @@ regex = "1.10"
 notify = { version = "6.1", default-features = false, features = ["macos_fsevent"] }
 dotenvy = "0.15"
 parking_lot = "0.12"
+
+[features]
+pg_tests = []

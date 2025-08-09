@@ -201,7 +201,7 @@ mod tests {
     fn test_string_to_number_or_string_variants() {
         assert_eq!(string_to_number_or_string("42"), serde_json::json!(42));
         // f64 may have precision, but 3.14 should parse
-        assert_eq!(string_to_number_or_string("3.14").as_f64().unwrap(), 3.14);
+        assert_eq!(string_to_number_or_string("3.1").as_f64().unwrap(), 3.1);
         assert_eq!(string_to_number_or_string("foo"), serde_json::json!("foo"));
     }
 
