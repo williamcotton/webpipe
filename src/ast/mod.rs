@@ -123,6 +123,7 @@ pub enum When {
 pub struct Condition {
     pub condition_type: ConditionType,
     pub field: String,
+    pub jq_expr: Option<String>,
     pub comparison: String,
     pub value: String,
 }
@@ -307,7 +308,12 @@ impl Display for When {
 
 impl Display for Condition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {} {} {}", self.condition_type, self.field, self.comparison, self.value)
+        let field_with_jq = if let Some(expr) = &self.jq_expr {
+            format!("{} `{}`", self.field, expr)
+        } else {
+            self.field.clone()
+        };
+        write!(f, "{} {} {} {}", self.condition_type, field_with_jq, self.comparison, self.value)
     }
 }
 
@@ -580,6 +586,9 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
     let (input, _) = multispace0(input)?;
     let (input, field) = take_till1(|c| c == ' ')(input)?;
     let (input, _) = multispace0(input)?;
+    // Optional backticked jq filter following the field
+    let (input, jq_expr_opt) = opt(parse_multiline_string).parse(input)?;
+    let (input, _) = multispace0(input)?;
     let (input, comparison) = take_till1(|c| c == ' ')(input)?;
     let (input, _) = multispace0(input)?;
     // Value can be a backtick-delimited multi-line string, a quoted string, or the rest of the line
@@ -597,6 +606,7 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
     Ok((input, Condition {
         condition_type,
         field: field.to_string(),
+        jq_expr: jq_expr_opt,
         comparison: comparison.to_string(),
         value,
     }))

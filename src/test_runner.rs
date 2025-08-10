@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use crate::http::request::build_minimal_request_for_tests;
+use regex::Regex;
 
 #[derive(Debug, Clone)]
 struct MockResolver {
@@ -155,7 +156,7 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
             // Test-level mocks override describe-level mocks (overlay describe <- test)
             let mocks = describe_mocks.overlay(&test_mocks);
 
-            let (status, output_value, pass, msg) = match &test.when {
+            let (status, output_value, content_type, pass, msg) = match &test.when {
                 When::CallingRoute { method, path } => {
                     // Split query string if present
                     let mut path_str = path.clone();
@@ -215,23 +216,23 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                             // Pipeline-level mock when route uses a named pipeline
                             if let Some(name) = selected_pipeline_name {
                                 if let Some(mock) = mocks.get_pipeline_mock(name) {
-                                    (200u16, mock.clone(), true, String::new())
+                                    (200u16, mock.clone(), "application/json".to_string(), true, String::new())
                                 } else {
-                                    let (out, _ct, s) = crate::executor::execute_pipeline(&env, selected_pipeline, input).await?;
-                                    (s.unwrap_or(200u16), out, true, String::new())
+                                    let (out, ct, s) = crate::executor::execute_pipeline(&env, selected_pipeline, input).await?;
+                                    (s.unwrap_or(200u16), out, ct, true, String::new())
                                 }
                             } else {
-                                let (out, _ct, s) = crate::executor::execute_pipeline(&env, selected_pipeline, input).await?;
-                                (s.unwrap_or(200u16), out, true, String::new())
+                                let (out, ct, s) = crate::executor::execute_pipeline(&env, selected_pipeline, input).await?;
+                                (s.unwrap_or(200u16), out, ct, true, String::new())
                             }
                         }
-                        Err(_) => (404u16, Value::Object(serde_json::Map::new()), false, format!("Route not found: {} {}", method, path)),
+                        Err(_) => (404u16, Value::Object(serde_json::Map::new()), "application/json".to_string(), false, format!("Route not found: {} {}", method, path)),
                     }
                 }
                 When::ExecutingPipeline { name } => {
                     // If pipeline mock exists, return it directly
                     if let Some(mock) = mocks.get_pipeline_mock(name) {
-                        (200u16, mock.clone(), true, String::new())
+                        (200u16, mock.clone(), "application/json".to_string(), true, String::new())
                     } else {
                         let input = parse_optional_input(&test.input)?;
                         let pipeline = program
@@ -249,8 +250,8 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                             named_pipelines: Arc::new(named),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                         };
-                        let (out, _ct, status_opt) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input).await?;
-                        (status_opt.unwrap_or(200u16), out, true, String::new())
+                        let (out, ct, status_opt) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input).await?;
+                        (status_opt.unwrap_or(200u16), out, ct, true, String::new())
                     }
                 }
                 When::ExecutingVariable { var_type, name } => {
@@ -259,7 +260,7 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                     let input = parse_optional_input(&test.input)?;
                     // If there's an explicit variable-level mock, return it directly
                     if let Some(mock) = mocks.variable_mocks.get(&(var.var_type.clone(), var.name.clone())) {
-                        (200u16, mock.clone(), true, String::new())
+                        (200u16, mock.clone(), "application/json".to_string(), true, String::new())
                     } else {
                         // Single-step pipeline invoking the variable's middleware
                         let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), config: var.value.clone() }] };
@@ -273,8 +274,8 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                             named_pipelines: Arc::new(named),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                         };
-                        let (out, _ct, status_opt) = crate::executor::execute_pipeline(&env, &pipeline, input).await?;
-                        (status_opt.unwrap_or(200u16), out, true, String::new())
+                        let (out, ct, status_opt) = crate::executor::execute_pipeline(&env, &pipeline, input).await?;
+                        (status_opt.unwrap_or(200u16), out, ct, true, String::new())
                     }
                 }
             };
@@ -286,19 +287,100 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                 let field = cond.field.trim();
                 let cmp = cond.comparison.trim();
                 let val_str = cond.value.trim();
+
+                // Helpers
+                fn deep_contains(actual: &Value, expected: &Value) -> bool {
+                    match (actual, expected) {
+                        (Value::Object(ao), Value::Object(eo)) => {
+                            eo.iter().all(|(k, ev)| ao.get(k).map_or(false, |av| deep_contains(av, ev)))
+                        }
+                        (Value::Array(aa), Value::Array(ea)) => {
+                            // Every expected element must appear at least once in actual
+                            ea.iter().all(|ev| aa.iter().any(|av| av == ev || deep_contains(av, ev)))
+                        }
+                        (Value::String(as_) , Value::String(es_)) => as_.contains(es_),
+                        _ => actual == expected,
+                    }
+                }
+                fn value_to_string(v: &Value) -> String {
+                    match v {
+                        Value::String(s) => s.clone(),
+                        _ => serde_json::to_string(v).unwrap_or_default(),
+                    }
+                }
+                fn eval_jq_filter(input: &Value, filter: &str) -> Result<Value, WebPipeError> {
+                    let input_json = serde_json::to_string(input)
+                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Input serialization error: {}", e)))?;
+                    let mut program = jq_rs::compile(filter)
+                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ compilation error: {}", e)))?;
+                    let result_json = program
+                        .run(&input_json)
+                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)))?;
+                    serde_json::from_str(&result_json)
+                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ result parse error: {}", e)))
+                }
+
+                // Resolve base value per field
+                let mut actual_val: Option<Value> = None;
+                match field {
+                    "status" => {
+                        // status-specific comparisons handled below
+                    }
+                    "output" => {
+                        actual_val = Some(output_value.clone());
+                    }
+                    "contentType" => {
+                        actual_val = Some(Value::String(content_type.clone()));
+                    }
+                    _ => { /* unsupported field for now */ }
+                }
+
+                // Handle comparisons
                 match (field, cmp) {
                     ("status", "is") | ("status", "equals") => {
                         if let Ok(expected) = val_str.parse::<u16>() {
                             if status != expected { cond_pass = false; failure_msgs.push(format!("expected status {} got {}", expected, status)); }
-                        } else {
-                            cond_pass = false; failure_msgs.push(format!("invalid expected status: {}", val_str));
-                        }
+                        } else { cond_pass = false; failure_msgs.push(format!("invalid expected status: {}", val_str)); }
                     }
-                    ("output", "equals") => {
-                        let expected = parse_backticked_json(val_str)?;
-                        if output_value != expected {
-                            cond_pass = false;
-                            failure_msgs.push("output mismatch".to_string());
+                    ("status", "in") => {
+                        // parse N..M
+                        let parts: Vec<&str> = val_str.split("..").collect();
+                        if parts.len() == 2 {
+                            if let (Ok(start), Ok(end)) = (parts[0].trim().parse::<u16>(), parts[1].trim().parse::<u16>()) {
+                                if status < start || status > end {
+                                    cond_pass = false; failure_msgs.push(format!("expected status in {}..{} got {}", start, end, status));
+                                }
+                            } else { cond_pass = false; failure_msgs.push(format!("invalid status range: {}", val_str)); }
+                        } else { cond_pass = false; failure_msgs.push(format!("invalid status range: {}", val_str)); }
+                    }
+                    ("contentType", "is") | ("contentType", "equals") => {
+                        let expected = val_str.trim_matches('"');
+                        if content_type != expected { cond_pass = false; failure_msgs.push(format!("expected contentType {} got {}", expected, content_type)); }
+                    }
+                    ("output", op) if ["equals","contains","matches"].contains(&op) => {
+                        // Possibly apply jq
+                        let mut target = output_value.clone();
+                        if let Some(expr) = &cond.jq_expr {
+                            // Only if JSON
+                            target = eval_jq_filter(&target, expr)?;
+                        }
+                        match op {
+                            "equals" => {
+                                let expected = parse_backticked_json(val_str)?;
+                                if target != expected { cond_pass = false; failure_msgs.push("output mismatch".to_string()); }
+                            }
+                            "contains" => {
+                                let expected = parse_backticked_json(val_str)?;
+                                if !deep_contains(&target, &expected) { cond_pass = false; failure_msgs.push("output missing expected fragment".to_string()); }
+                            }
+                            "matches" => {
+                                let expected = parse_backticked_json(val_str)?;
+                                let pattern = if let Value::String(s) = expected { s } else { value_to_string(&expected) };
+                                let re = Regex::new(&pattern).map_err(|e| WebPipeError::BadRequest(format!("invalid regex: {}", e)))?;
+                                let hay = value_to_string(&target);
+                                if !re.is_match(&hay) { cond_pass = false; failure_msgs.push("output does not match regex".to_string()); }
+                            }
+                            _ => {}
                         }
                     }
                     _ => {

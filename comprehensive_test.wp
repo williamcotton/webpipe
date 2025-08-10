@@ -120,6 +120,12 @@ describe "getTeams pipeline"
       "rows": [{ "id": 42, "name": "Marketing" }]
     }`
 
+  it "supports jq equals on output subpath"
+    when executing pipeline getTeams
+    with input `{ "params": { "id": 42 } }`
+    and mock pg returning `{ "rows": [{ "id": 42, "name": "Marketing" }] }`
+    then output `.rows[0].id` equals 42
+
 describe "test calling route"
   it "calls the route"
     when calling GET /hello
@@ -127,6 +133,25 @@ describe "test calling route"
     and output equals `{
       "hello": "world"
     }`
+
+describe "jq assertions"
+  it "supports output contains for partial JSON"
+    when calling GET /hello
+    then output contains `{ "hello": "world" }`
+
+  it "supports output matches for HTML"
+    when calling GET /hello/world
+    then output matches `^<p>hello, .*</p>$`
+
+  it "supports status ranges"
+    when calling GET /hello
+    then status in 200..299
+
+  it "supports jq filter with map"
+    when executing pipeline getTeams
+    with input `{ "params": { "id": 2 } }`
+    and mock pg returning `{ "rows": [{ "id": 2, "name": "Growth" }, { "id": 3, "name": "Security" }] }`
+    then output `.rows | map(.id)` equals `[2, 3]`
 
 GET /test
   |> jq: `.`
