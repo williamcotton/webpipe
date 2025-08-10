@@ -131,19 +131,7 @@ fn parse_optional_input(input: &Option<String>) -> Result<Value, WebPipeError> {
     }
 }
 
-use std::future::Future;
-use std::pin::Pin;
-
-fn execute_pipeline_with_env<'a>(
-    env: &'a ExecutionEnv,
-    pipeline: &'a Pipeline,
-    input: Value,
-) -> Pin<Box<dyn Future<Output = Result<(Value, Option<u16>), WebPipeError>> + Send + 'a>> {
-    Box::pin(async move {
-        let (out, _ct, status) = crate::executor::execute_pipeline(env, pipeline, input).await?;
-        Ok((out, status))
-    })
-}
+ 
 
 // Removed local helper functions in favor of shared executor
 
@@ -229,11 +217,11 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                                 if let Some(mock) = mocks.get_pipeline_mock(name) {
                                     (200u16, mock.clone(), true, String::new())
                                 } else {
-                                    let (out, s) = execute_pipeline_with_env(&env, selected_pipeline, input).await?;
+                                    let (out, _ct, s) = crate::executor::execute_pipeline(&env, selected_pipeline, input).await?;
                                     (s.unwrap_or(200u16), out, true, String::new())
                                 }
                             } else {
-                                let (out, s) = execute_pipeline_with_env(&env, selected_pipeline, input).await?;
+                                let (out, _ct, s) = crate::executor::execute_pipeline(&env, selected_pipeline, input).await?;
                                 (s.unwrap_or(200u16), out, true, String::new())
                             }
                         }
@@ -261,7 +249,7 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                             named_pipelines: Arc::new(named),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                         };
-                        let (out, status_opt) = execute_pipeline_with_env(&env, &pipeline.pipeline, input).await?;
+                        let (out, _ct, status_opt) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input).await?;
                         (status_opt.unwrap_or(200u16), out, true, String::new())
                     }
                 }
@@ -285,7 +273,7 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                             named_pipelines: Arc::new(named),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                         };
-                        let (out, status_opt) = execute_pipeline_with_env(&env, &pipeline, input).await?;
+                        let (out, _ct, status_opt) = crate::executor::execute_pipeline(&env, &pipeline, input).await?;
                         (status_opt.unwrap_or(200u16), out, true, String::new())
                     }
                 }
@@ -310,7 +298,7 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                         let expected = parse_backticked_json(val_str)?;
                         if output_value != expected {
                             cond_pass = false;
-                            failure_msgs.push(format!("output mismatch"));
+                            failure_msgs.push("output mismatch".to_string());
                         }
                     }
                     _ => {
