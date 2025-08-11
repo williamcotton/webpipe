@@ -4,7 +4,7 @@ GET /hello/:world
   |> jq: `{ world: .params.world }`
   |> handlebars: `<p>hello, {{world}}</p>`
 
-describe "hello, world"z
+describe "hello, world"
   it "calls the route"
     when calling GET /hello/world
     then status is 200
