@@ -10,7 +10,7 @@ use axum::{
     Router,
 };
 use serde_json::Value;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, pin::Pin, future::Future};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::signal;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
@@ -18,7 +18,7 @@ use tracing::{info, warn};
 use tokio::fs as tokio_fs;
 use std::path::{Path, PathBuf};
 use crate::runtime::Context;
-use crate::executor::{ExecutionEnv, RealInvoker};
+use crate::executor::{ExecutionEnv, RealInvoker, PipelineExecFuture};
 use crate::http::request::build_request_from_axum;
 
 // number coercion helpers moved to http::request
@@ -47,7 +47,7 @@ impl ServerState {
         &'a self,
         pipeline: &'a Pipeline,
         input: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<(Value, String, Option<u16>), WebPipeError>> + Send + 'a>> {
+    ) -> PipelineExecFuture<'a> {
         crate::executor::execute_pipeline(&self.env, pipeline, input)
     }
 
@@ -414,12 +414,10 @@ async fn try_serve_static(request_path: &str) -> Option<Response> {
         candidate.push("index.html");
     }
 
-    if !candidate.exists() {
-        if Path::new(request_path).extension().is_none() {
-            let mut idx = candidate.clone();
-            idx.push("index.html");
-            if idx.exists() { candidate = idx; }
-        }
+    if !candidate.exists() && Path::new(request_path).extension().is_none() {
+        let mut idx = candidate.clone();
+        idx.push("index.html");
+        if idx.exists() { candidate = idx; }
     }
 
     let data = match tokio_fs::read(&candidate).await {

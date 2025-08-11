@@ -291,9 +291,9 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                 // Helpers
                 fn deep_contains(actual: &Value, expected: &Value) -> bool {
                     match (actual, expected) {
-                        (Value::Object(ao), Value::Object(eo)) => {
-                            eo.iter().all(|(k, ev)| ao.get(k).map_or(false, |av| deep_contains(av, ev)))
-                        }
+                        (Value::Object(ao), Value::Object(eo)) => eo
+                            .iter()
+                            .all(|(k, ev)| ao.get(k).is_some_and(|av| deep_contains(av, ev))),
                         (Value::Array(aa), Value::Array(ea)) => {
                             // Every expected element must appear at least once in actual
                             ea.iter().all(|ev| aa.iter().any(|av| av == ev || deep_contains(av, ev)))

@@ -14,7 +14,7 @@ impl super::Middleware for PgMiddleware {
         let sql = config.trim();
         if sql.is_empty() { return Err(WebPipeError::DatabaseError("Empty SQL config for pg middleware".to_string())); }
 
-        let params: Vec<Value> = input.get("sqlParams").and_then(|v| v.as_array()).map(|arr| arr.iter().cloned().collect()).unwrap_or_default();
+        let params: Vec<Value> = input.get("sqlParams").and_then(|v| v.as_array()).map(|arr| arr.to_vec()).unwrap_or_default();
 
         let lowered = sql.to_lowercase();
         let is_select = lowered.trim_start().starts_with("select");

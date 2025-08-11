@@ -9,6 +9,13 @@ use crate::{
     middleware::MiddlewareRegistry,
 };
 
+/// Public alias for the complex future type returned by pipeline execution functions.
+pub type PipelineExecFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = Result<(Value, String, Option<u16>), WebPipeError>> + Send + 'a,
+    >,
+>;
+
 #[async_trait]
 pub trait MiddlewareInvoker: Send + Sync {
     async fn call(&self, name: &str, cfg: &str, input: &Value) -> Result<Value, WebPipeError>;
@@ -91,21 +98,16 @@ fn select_branch<'a>(
     use crate::ast::ResultBranchType;
 
     if let Some(err_type) = error_type {
-        for branch in branches {
-            if let ResultBranchType::Custom(name) = &branch.branch_type {
-                if name == err_type { return Some(branch); }
-            }
+        if let Some(branch) = branches.iter().find(|b| matches!(&b.branch_type, ResultBranchType::Custom(name) if name == err_type)) {
+            return Some(branch);
         }
+    } else if let Some(branch) = branches.iter().find(|b| matches!(b.branch_type, ResultBranchType::Ok)) {
+        return Some(branch);
     }
-    if error_type.is_none() {
-        for branch in branches {
-            if matches!(branch.branch_type, ResultBranchType::Ok) { return Some(branch); }
-        }
-    }
-    for branch in branches {
-        if matches!(branch.branch_type, ResultBranchType::Default) { return Some(branch); }
-    }
-    None
+
+    branches
+        .iter()
+        .find(|b| matches!(b.branch_type, ResultBranchType::Default))
 }
 
 async fn handle_result_step<'a>(
@@ -137,7 +139,7 @@ pub fn execute_pipeline<'a>(
     env: &'a ExecutionEnv,
     pipeline: &'a Pipeline,
     mut input: Value,
-) -> Pin<Box<dyn Future<Output = Result<(Value, String, Option<u16>), WebPipeError>> + Send + 'a>> {
+) -> PipelineExecFuture<'a> {
     Box::pin(async move {
         let mut content_type = "application/json".to_string();
         let mut status_code_out: Option<u16> = None;

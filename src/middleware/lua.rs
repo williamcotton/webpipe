@@ -11,7 +11,7 @@ use tokio::runtime::Handle;
 
 // Thread-local Lua state since Lua is not Send + Sync
 thread_local! {
-    static LUA_STATE: std::cell::RefCell<Option<Lua>> = std::cell::RefCell::new(None);
+    static LUA_STATE: std::cell::RefCell<Option<Lua>> = const { std::cell::RefCell::new(None) };
 }
 
 #[derive(Debug)]
@@ -36,7 +36,7 @@ impl LuaMiddleware {
                 if module_name.is_empty() { continue; }
                 let source = fs::read_to_string(&path)
                     .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to read Lua script '{}': {}", path.display(), e)))?;
-                let chunk = lua.load(&source).set_name(&format!("@{}", module_name));
+                let chunk = lua.load(&source).set_name(format!("@{}", module_name));
                 let returned: LuaValue = chunk.eval().map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Lua script '{}' execution error: {}", module_name, e)))?;
                 lua.globals().set(module_name, returned).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to register Lua module as global: {}", e)))?;
             }
@@ -66,13 +66,13 @@ impl LuaMiddleware {
                     if !path.ends_with('/') { path.push('/'); }
                     let full = format!("{}{}.lua", path, name);
                     match std::fs::read_to_string(&full) {
-                        Ok(src) => { let chunk = lua.load(&src).set_name(&format!("@{}", name)); let val: LuaValue = chunk.eval().map_err(|e| mlua::Error::external(e.to_string()))?; lua.globals().set(name, val.clone())?; Ok(val) },
+                        Ok(src) => { let chunk = lua.load(&src).set_name(format!("@{}", name)); let val: LuaValue = chunk.eval().map_err(|e| mlua::Error::external(e.to_string()))?; lua.globals().set(name, val.clone())?; Ok(val) },
                         Err(_) => Ok(LuaValue::Nil)
                     }
                 }).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create requireScript: {}", e)))?;
                 if let Err(e) = lua.globals().set("requireScript", require_fn) { return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to register requireScript: {}", e))); }
 
-                if let Err(e) = Self::load_scripts_from_dir(&lua) { return Err(e); }
+                Self::load_scripts_from_dir(&lua)?;
 
                 let pool_opt = self.ctx.pg.clone();
                 let exec_sql_fn = lua.create_function(move |lua, query: String| {

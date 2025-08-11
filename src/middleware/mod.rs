@@ -38,6 +38,12 @@ pub struct MiddlewareRegistry {
     middlewares: HashMap<String, Box<dyn Middleware>>,
 }
 
+impl Default for MiddlewareRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MiddlewareRegistry {
     pub fn with_builtins(ctx: Arc<Context>) -> Self {
         let mut registry = Self { middlewares: HashMap::new() };

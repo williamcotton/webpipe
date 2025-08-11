@@ -61,16 +61,28 @@ fn parse_body_from_content_type(body: &Bytes, content_type: &str) -> Value {
     }
 }
 
-pub fn assemble_request_object(
-    method: &str,
-    path: &str,
-    path_params: &HashMap<String, String>,
-    query_params: &HashMap<String, String>,
-    headers: Option<&HashMap<String, String>>, // None -> {}
-    cookies: Option<&HashMap<String, String>>, // None -> {}
-    body: Value,
-    content_type: &str,
-) -> Value {
+pub struct RequestAssembly<'a> {
+    pub method: &'a str,
+    pub path: &'a str,
+    pub path_params: &'a HashMap<String, String>,
+    pub query_params: &'a HashMap<String, String>,
+    pub headers: Option<&'a HashMap<String, String>>, // None -> {}
+    pub cookies: Option<&'a HashMap<String, String>>, // None -> {}
+    pub body: Value,
+    pub content_type: &'a str,
+}
+
+pub fn assemble_request_object(opts: RequestAssembly) -> Value {
+    let RequestAssembly {
+        method,
+        path,
+        path_params,
+        query_params,
+        headers,
+        cookies,
+        body,
+        content_type,
+    } = opts;
     let mut req_obj = serde_json::Map::new();
     req_obj.insert("method".to_string(), Value::String(method.to_string()));
     req_obj.insert("path".to_string(), Value::String(path.to_string()));
@@ -154,16 +166,16 @@ pub fn build_request_from_axum(
     // Cookies
     let cookies = parse_cookies_from_headers(headers);
 
-    let req = assemble_request_object(
-        method.as_str(),
-        "",
+    let req = assemble_request_object(RequestAssembly {
+        method: method.as_str(),
+        path: "",
         path_params,
         query_params,
-        Some(&headers_map),
-        Some(&cookies),
-        parsed_body,
-        &content_type,
-    );
+        headers: Some(&headers_map),
+        cookies: Some(&cookies),
+        body: parsed_body,
+        content_type: &content_type,
+    });
 
     (req, content_type)
 }
@@ -174,16 +186,16 @@ pub fn build_minimal_request_for_tests(
     path_params: &HashMap<String, String>,
     query_params: &HashMap<String, String>,
 ) -> Value {
-    assemble_request_object(
+    assemble_request_object(RequestAssembly {
         method,
         path,
         path_params,
         query_params,
-        None,
-        None,
-        Value::Object(serde_json::Map::new()),
-        "application/json",
-    )
+        headers: None,
+        cookies: None,
+        body: Value::Object(serde_json::Map::new()),
+        content_type: "application/json",
+    })
 }
 
 

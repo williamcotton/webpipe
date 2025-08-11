@@ -14,6 +14,12 @@ pub struct HandlebarsMiddleware {
     pub(crate) registered_templates: Arc<Mutex<HashSet<String>>>,
 }
 
+impl Default for HandlebarsMiddleware {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HandlebarsMiddleware {
     pub fn new() -> Self {
         Self {
