@@ -34,5 +34,5 @@ cargo run -- hello.wp --test
 
 During development the server watches your `.wp` file and restarts on changes. It also loads `.env` and `.env.local` from the same directory as the `.wp` file so you can provide configuration without changing code.
 
-For a larger example and more middleware like `pg`, `fetch`, `lua`, `cache`, `auth`, `log`, and `debug`, see `comprehensive_test.wp`. Build with `cargo build --release` to produce an optimized binary at `target/release/webpipe`.
+For a larger example and more middleware like `pg`, `fetch`, `lua`, `cache`, `auth`, `log`, and `debug`, see `example.wp`. Build with `cargo build --release` to produce an optimized binary at `target/release/webpipe`.
 

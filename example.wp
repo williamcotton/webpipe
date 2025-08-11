@@ -1,0 +1,256 @@
+## Web Pipe Tutorial
+# This file is a self-contained tutorial for the Web Pipe DSL.
+# It introduces configuration, variables, pipelines, routes, and tests.
+# You can run it directly:
+#   cargo run -- example.wp
+# Or run tests:
+#   cargo run -- example.wp --test
+
+
+
+
+## 1) Configuration
+# Configure Postgres, authentication cookies, cache, and logging.
+
+config pg {
+  host: $WP_PG_HOST || "localhost"
+  port: $WP_PG_PORT || "5432"
+  database: $WP_PG_DATABASE || "express-test"
+  user: $WP_PG_USER || "postgres"
+  password: $WP_PG_PASSWORD || "postgres"
+  ssl: false
+  initialPoolSize: 5
+  maxPoolSize: 20
+}
+
+config auth {
+  sessionTtl: 604800
+  cookieName: "wp_session"
+  cookieSecure: false
+  cookieHttpOnly: true
+  cookieSameSite: "Lax"
+  cookiePath: "/"
+}
+
+config cache {
+  enabled: true
+  defaultTtl: 60
+  maxCacheSize: 10485760
+}
+
+config log {
+  enabled: true
+  format: "json"
+  level: "debug"
+  includeBody: false
+  includeHeaders: true
+  timestamp: true
+}
+
+
+## 2) Reusable variables and partials
+# Variables allow you to name snippets that middleware can use later.
+
+# Handlebars partials
+handlebars layout = `
+<!DOCTYPE html>
+<html><head><title>{{title}}</title></head>
+<body>{{{body}}}</body></html>
+`
+
+handlebars helloPartial = `<p>Hello, {{name}}!</p>`
+
+# SQL variables
+pg findTeamById = `SELECT * FROM teams WHERE id = $1`
+pg listTeams = `SELECT * FROM teams ORDER BY id`
+
+
+## 3) Named pipelines
+# Pipelines can be re-used across routes.
+
+pipeline loadTeam =
+  |> jq: `{ sqlParams: [(.params.id // .query.id // .body.id // 0)] }`
+  |> pg: findTeamById
+
+
+## 4) Basics: JQ and templating
+# A friendly hello route using a path parameter.
+
+GET /hello/:name
+  |> jq: `{ name: .params.name }`
+  |> handlebars: `<p>hello, {{name}}</p>`
+
+# Echo the incoming request body and method.
+POST /echo
+  |> jq: `{ method: .method, body: .body }`
+
+
+## 5) Handlebars page composition
+# Compose a simple page using a layout and a partial.
+
+GET /hello-page/:name
+  |> jq: `{ title: "Hello Page", body: ({{>helloPartial}}), name: .params.name }`
+  |> handlebars: `{{>layout}}`
+
+
+## 6) Postgres: parameters and results
+# Routes that query the teams table. Schema expected:
+#   CREATE TABLE teams (id serial primary key, name text, member_count int);
+
+GET /teams
+  |> jq: `{ sqlParams: [] }`
+  |> pg: listTeams
+  |> jq: `{
+    teams: .data.listTeams
+  }`
+
+GET /teams/:id
+  |> pipeline: loadTeam
+  |> jq: `{
+    team: if (.data.findTeamById.rows | length > 0) then .data.findTeamById.rows[0] else null end,
+    found: (.data.findTeamById.rows | length > 0)
+  }`
+
+
+## 7) Result routing
+# Map structured error objects to HTTP status codes and custom body shapes.
+
+GET /result-demo
+  |> jq: `{
+    errors: [ { type: "validationError", field: "q", message: "missing q" } ]
+  }`
+  |> result
+    ok(200):
+      |> jq: `{ ok: true }`
+    validationError(400):
+      |> jq: `{ error: "Validation failed", field: .errors[0].field, message: .errors[0].message }`
+    default(500):
+      |> jq: `{ error: "Unhandled", type: .errors[0].type }`
+
+
+## 8) Fetch and caching
+# Demonstrate running a remote HTTP request, with optional caching controls.
+
+GET /zen
+  |> fetch: `https://api.github.com/zen`
+  |> jq: `{
+    zen:.data.response
+  }`
+
+GET /search
+  |> jq: `{
+    fetchUrl: "https://httpbin.org/anything",
+    fetchMethod: "GET",
+    fetchHeaders: { "X-Search": (.query.q // "") },
+    resultName: "api"
+  }`
+  |> cache: `
+    enabled: true,
+    ttl: 120
+  `
+  |> fetch: `_`  # overridden by fetchUrl above
+  |> jq: `{
+    status: .data.api.status,
+    headers: .data.api.headers,
+    url: .data.api.response.url
+  }`
+
+
+## 9) Lua basics and SQL from Lua
+# Lua has access to the current request as `request` and helpers like executeSql and getEnv.
+
+GET /lua/echo/:id
+  |> lua: `return { from = "lua", id = request.params.id, method = request.method }`
+
+GET /lua/teams/:id
+  |> lua: `
+    local id = tonumber(request.params.id)
+    local result, err = executeSql("SELECT * FROM teams WHERE id = " .. id)
+    if err then
+      return { errors = { { type = "sqlError", message = err } } }
+    end
+    return result
+  `
+
+
+## 10) Authentication flows
+# Minimal login/register/logout/status flow using built-in middleware.
+
+POST /login
+  |> validate: `{
+    login: string(3..50),
+    password: string(6..100)
+  }`
+  |> auth: "login"
+  |> result
+    ok(200):
+      |> jq: `{ success: true, user: .user }`
+    validationError(400):
+      |> jq: `{ success: false, error: .errors[0].message }`
+    authError(401):
+      |> jq: `{ success: false, error: .errors[0].message }`
+
+POST /register
+  |> validate: `{
+    login: string(3..50),
+    email: email,
+    password: string(8..100)
+  }`
+  |> auth: "register"
+  |> result
+    ok(201):
+      |> jq: `{ success: true, message: "registered" }`
+    validationError(400):
+      |> jq: `{ success: false, error: .errors[0].message }`
+    authError(409):
+      |> jq: `{ success: false, error: .errors[0].message }`
+
+POST /logout
+  |> auth: "logout"
+  |> jq: `{ success: true }`
+
+GET /me
+  |> auth: "optional"
+  |> jq: `{
+    authenticated: (.user != null),
+    user: .user
+  }`
+
+
+## 11) Logging and debugging
+# Enable logging metadata and optionally print the JSON for debugging.
+
+GET /log-demo
+  |> log: `level: debug, includeHeaders: true, includeBody: false`
+  |> jq: `{ message: "logged" }`
+
+GET /debug-demo
+  |> debug: "Current pipeline value"
+  |> jq: `{ ok: true }`
+
+
+## 12) Tests
+# A few basic tests to validate the tutorial routes.
+
+describe "hello"
+  it "greets by name"
+    when calling GET /hello/Ada
+    then status is 200
+    and output matches `^<p>hello, Ada</p>$`
+
+describe "teams"
+  with mock pg returning `{
+    "rows": [ { "id": 1, "name": "Platform" } ]
+  }`
+  it "lists teams"
+    when calling GET /teams
+    then status is 200
+    and output contains `{ "rows": [ { "id": 1 } ] }`
+
+describe "result routing"
+  it "maps validation errors to 400"
+    when calling GET /result-demo
+    then status is 400
+    and output contains `{ "error": "Validation failed" }`
+
+
