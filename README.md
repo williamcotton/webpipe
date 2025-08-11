@@ -1,4 +1,8 @@
-## WebPipe (Rust)
+![Test Suite](https://github.com/williamcotton/webpipe-rs/workflows/Test%20Suite/badge.svg)
+
+<img src="./wp.png" width="200">
+
+## Web Pipe
 
 WebPipe is a small HTTP server and test runner powered by a compact DSL. You write routes and tests in a single `.wp` file, then run a server that executes the pipelines. Here is a minimal hello world you can paste into a file like `hello.wp`:
 
