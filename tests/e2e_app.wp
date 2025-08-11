@@ -1,5 +1,9 @@
 # Minimal E2E test app for CLI --test mode
 
+# Partials and variables
+handlebars header = `<span>{{title}}</span>`
+jq pickName = `{ full: (.body.first + " " + .body.last) }`
+
 GET /hello/:name
   |> jq: `{ greeting: "hello", name: .params.name }`
   |> handlebars: `<p>{{greeting}}, {{name}}</p>`
@@ -18,5 +22,99 @@ describe "echo route"
     when calling GET /api/echo
     then status is 200
     and output equals `{"method":"GET","ok":true}`
+
+# Query parsing and arithmetic
+GET /sum
+  |> jq: `{ sum: ((.query.a|tonumber) + (.query.b|tonumber)) }`
+
+describe "sum route"
+  it "adds query params"
+    when calling GET /sum?a=2&b=3
+    then status is 200
+    and output `.sum` equals 5
+
+# Handlebars partials and content type
+GET /templ
+  |> jq: `{ title: "Welcome" }`
+  |> handlebars: `<div>{{> header }}</div>`
+
+describe "templ route"
+  it "renders html and sets content type"
+    when calling GET /templ
+    then status in 200..299
+    and contentType is "text/html"
+    and output matches `^<div><span>Welcome</span></div>$`
+
+# Validation + result routing
+pipeline createUser =
+  |> validate: `{ name: string(2..4), email: email }`
+  |> result
+    validationError(400):
+      |> jq: `{ kind: "bad", firstError: .errors[0].type }`
+    ok(201):
+      |> jq: `{ ok: true }`
+
+POST /users
+  |> pipeline: createUser
+
+describe "createUser pipeline"
+  it "fails with 400 on invalid body"
+    when executing pipeline createUser
+    with input `{ "body": {} }`
+    then status is 400
+    and output `.firstError` equals "validationError"
+
+  it "succeeds with 201 on valid body"
+    when executing pipeline createUser
+    with input `{ "body": { "name": "Ana", "email": "a@b.com" } }`
+    then status is 201
+    and output equals `{ "ok": true }`
+
+# Fetch with resultName and middleware mock
+pipeline loadNews =
+  |> jq: `{ resultName: "news" }`
+  |> fetch: `http://example.com/api/news`
+
+describe "fetch pipeline"
+  it "merges mocked fetch under resultName"
+    when executing pipeline loadNews
+    and mock fetch returning `{ "data": { "news": { "response": { "items": [1] }, "status": 200, "headers": {} } } }`
+    then output `.data.news.response.items[0]` equals 1
+
+# Auto-named jq variable, then ensure resultName removed by executor
+pipeline fullName =
+  |> jq: pickName
+
+describe "auto-named jq variable"
+  it "removes resultName after execution"
+    when executing pipeline fullName
+    with input `{ "body": { "first": "Ada", "last": "Lovelace" } }`
+    then output `.full` equals "Ada Lovelace"
+    and output `.resultName` equals null
+
+# Nested pipeline preserves sub content-type
+pipeline htmlOnly =
+  |> handlebars: `Ok`
+
+pipeline htmlViaPipeline =
+  |> pipeline: htmlOnly
+
+GET /nested
+  |> pipeline: htmlViaPipeline
+
+describe "nested pipeline"
+  it "propagates inner content type"
+    when calling GET /nested
+    then contentType is "text/html"
+
+# Lua middleware basic execution
+GET /lua
+  |> lua: `return { ok = true }`
+
+describe "lua route"
+  it "returns json from lua"
+    when calling GET /lua
+    then status is 200
+    and output equals `{ "ok": true }`
 
 
