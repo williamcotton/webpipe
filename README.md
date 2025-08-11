@@ -18,18 +18,16 @@ describe "hello, world"
     and output equals `<p>hello, world</p>`
 ```
 
-Run the server with cargo, pointing to your `.wp` file. The server listens on `127.0.0.1:8090` by default, or you can pass a `host:port` after the file path. Try opening `http://127.0.0.1:8090/hello/world`.
+Run the server with cargo, pointing to your `.wp` file. The server listens on `127.0.0.1:8090` by default. Try opening `http://127.0.0.1:8090/hello/world`.
 
 ```bash
-cargo run -- hello.wp
-# or choose an address
-cargo run -- hello.wp 0.0.0.0:8090
+cargo run hello.wp
 ```
 
 Run tests defined inside the same `.wp` file by passing `--test`. The process exits nonzero on failure and prints a concise summary.
 
 ```bash
-cargo run -- hello.wp --test
+cargo run hello.wp --test
 ```
 
 You can also try it out with Docker.
