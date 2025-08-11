@@ -32,15 +32,15 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ghcr.io/williamcotton/webpipe-rs
+        images: ghcr.io/williamcotton/webpipe
         tags: |
           type=raw,value=latest
           type=sha,prefix={{branch}}-
         labels: |
-          org.opencontainers.image.title=webpipe-rs
+          org.opencontainers.image.title=webpipe
           org.opencontainers.image.description=Web Pipe DSL HTTP server runtime with pipeline-based middleware
-          org.opencontainers.image.url=https://github.com/williamcotton/webpipe-rs
-          org.opencontainers.image.source=https://github.com/williamcotton/webpipe-rs
+          org.opencontainers.image.url=https://github.com/williamcotton/webpipe
+          org.opencontainers.image.source=https://github.com/williamcotton/webpipe
           org.opencontainers.image.version=latest
           org.opencontainers.image.created={{date 'RFC3339'}}
           org.opencontainers.image.revision={{sha}}

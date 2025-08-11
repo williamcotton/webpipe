@@ -1,4 +1,4 @@
-![Test Suite](https://github.com/williamcotton/webpipe-rs/workflows/CI/badge.svg)
+![Test Suite](https://github.com/williamcotton/webpipe/workflows/CI/badge.svg)
 
 <img src="./wp.png" width="200">
 
@@ -35,7 +35,7 @@ cargo run hello.wp --test
 You can also try it out with Docker.
 
 ```Dockerfile
-FROM ghcr.io/williamcotton/webpipe-rs:latest
+FROM ghcr.io/williamcotton/webpipe:latest
 
 COPY app.wp /app/
 COPY public /app/public/
