@@ -82,9 +82,9 @@ GET /teams
 describe "teamsQuery variable"
   with mock pg.teamsQuery returning `{
     "rows": [
-      { "id": "1", "name": "Platform", "member_count": 8 },
-      { "id": "2", "name": "Growth", "member_count": 12 },
-      { "id": "3", "name": "Security", "member_count": 5 }
+      { "id": "1", "name": "Platform" },
+      { "id": "2", "name": "Growth" },
+      { "id": "3", "name": "Security" }
     ]
   }`
 
@@ -93,9 +93,9 @@ describe "teamsQuery variable"
     with input `{ "sqlParams": [] }`
     then output equals `{
       "rows": [
-        { "id": "1", "name": "Platform", "member_count": 8 },
-        { "id": "2", "name": "Growth", "member_count": 12 },
-        { "id": "3", "name": "Security", "member_count": 5 }
+        { "id": "1", "name": "Platform" },
+        { "id": "2", "name": "Growth" },
+        { "id": "3", "name": "Security" }
       ]
     }`
 

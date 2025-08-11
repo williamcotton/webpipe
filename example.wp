@@ -95,7 +95,7 @@ GET /hello-page/:name
 
 ## 6) Postgres: parameters and results
 # Routes that query the teams table. Schema expected:
-#   CREATE TABLE teams (id serial primary key, name text, member_count int);
+#   CREATE TABLE teams (id serial primary key, name text);
 
 GET /teams
   |> jq: `{ sqlParams: [] }`
