@@ -32,7 +32,7 @@ Run tests defined inside the same `.wp` file by passing `--test`. The process ex
 cargo run -- hello.wp --test
 ```
 
-You can also try it out with Docker image.
+You can also try it out with Docker.
 
 ```Dockerfile
 FROM ghcr.io/williamcotton/webpipe-rs:latest
