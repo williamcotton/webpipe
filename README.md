@@ -4,7 +4,9 @@
 
 ## Web Pipe
 
-Web Pipe is a small HTTP server and test runner powered by a compact DSL. You write routes and tests in a single `.wp` file, then run a server that executes the pipelines. Here is a minimal hello world you can paste into a file like `hello.wp`:
+Web Pipe (wp) is an **experimental** DSL and runtime for building web APIs and applications through pipeline-based request processing. Each HTTP request flows through a series of middleware that transform JSON data, enabling composition of data processing steps.
+
+Here is a minimal hello world you can paste into a file like `hello.wp`:
 
 ```wp
 GET /hello/:world
