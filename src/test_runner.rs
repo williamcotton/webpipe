@@ -320,21 +320,6 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                         .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ result parse error: {}", e)))
                 }
 
-                // Resolve base value per field
-                let mut actual_val: Option<Value> = None;
-                match field {
-                    "status" => {
-                        // status-specific comparisons handled below
-                    }
-                    "output" => {
-                        actual_val = Some(output_value.clone());
-                    }
-                    "contentType" => {
-                        actual_val = Some(Value::String(content_type.clone()));
-                    }
-                    _ => { /* unsupported field for now */ }
-                }
-
                 // Handle comparisons
                 match (field, cmp) {
                     ("status", "is") | ("status", "equals") => {
