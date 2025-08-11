@@ -111,5 +111,12 @@ mod tests {
         let v2 = hb.execute("Hello {{name}}", &data).await.unwrap();
         assert_eq!(v2, serde_json::json!("Hello Ada"));
     }
+
+    #[test]
+    fn test_dedent_preserves_first_line_leading_spaces_for_detection() {
+        let s = "\n  a\n    b\n";
+        let out = HandlebarsMiddleware::dedent_multiline(s);
+        assert_eq!(out, "a\n  b");
+    }
 }
 

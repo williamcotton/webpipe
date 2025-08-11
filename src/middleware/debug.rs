@@ -16,3 +16,19 @@ impl super::Middleware for DebugMiddleware {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::middleware::Middleware;
+
+    #[tokio::test]
+    async fn returns_input_and_prints_label() {
+        let mw = DebugMiddleware;
+        let input = serde_json::json!({"a":1});
+        let out = mw.execute("", &input).await.unwrap();
+        assert_eq!(out["a"], serde_json::json!(1));
+        let out2 = mw.execute("mylabel", &input).await.unwrap();
+        assert_eq!(out2["a"], serde_json::json!(1));
+    }
+}
+

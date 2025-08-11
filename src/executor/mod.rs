@@ -245,6 +245,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn result_branch_custom_error_type_selected() {
+        let env = env_with_vars(vec![]);
+        let input = serde_json::json!({ "errors": [ { "type": "validationError", "message": "bad" } ] });
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Result { branches: vec![
+                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Custom("validationError".to_string()), status_code: 422, pipeline: Pipeline { steps: vec![] } },
+                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 500, pipeline: Pipeline { steps: vec![] } },
+            ]}
+        ]};
+        let (_out, _ct, status) = execute_pipeline(&env, &pipeline, input).await.unwrap();
+        assert_eq!(status, Some(422));
+    }
+
+    #[tokio::test]
     async fn handlebars_sets_html_content_type() {
         let env = env_with_vars(vec![]);
         let pipeline = Pipeline { steps: vec![

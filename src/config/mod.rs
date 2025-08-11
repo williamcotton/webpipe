@@ -108,3 +108,45 @@ pub fn init_global(configs: Vec<Config>) {
 pub fn global() -> &'static ConfigManager {
     GLOBAL_CONFIG.get().expect("Global ConfigManager not initialized")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_manager() -> ConfigManager {
+        let cfg = Config {
+            name: "app".to_string(),
+            properties: vec![
+                crate::ast::ConfigProperty { key: "host".to_string(), value: crate::ast::ConfigValue::String("localhost".to_string()) },
+                crate::ast::ConfigProperty { key: "enabled".to_string(), value: crate::ast::ConfigValue::Boolean(true) },
+                crate::ast::ConfigProperty { key: "port".to_string(), value: crate::ast::ConfigValue::Number(8080) },
+                crate::ast::ConfigProperty { key: "apiKey".to_string(), value: crate::ast::ConfigValue::EnvVar { var: "MISSING_ENV".to_string(), default: Some("fallback".to_string()) } },
+            ],
+        };
+        ConfigManager::new(vec![cfg])
+    }
+
+    #[test]
+    fn resolve_values_and_getters() {
+        let cm = sample_manager();
+        assert_eq!(cm.get_string_value("app", "host").unwrap(), "localhost");
+        assert_eq!(cm.get_bool_value("app", "enabled").unwrap(), true);
+        assert_eq!(cm.get_number_value("app", "port").unwrap(), 8080);
+
+        // Env with default falls back
+        let as_json = cm.resolve_config_as_json("app").unwrap();
+        assert_eq!(as_json["apiKey"], serde_json::json!("fallback"));
+    }
+
+    #[test]
+    fn env_without_default_errors_and_missing_config_errors() {
+        let cm = sample_manager();
+        // Missing env and no default -> error
+        let err = cm.resolve_config_value(&crate::ast::ConfigValue::EnvVar { var: "NO_SUCH_ENV".to_string(), default: None }).unwrap_err();
+        match err { WebPipeError::ConfigError(_) => {}, other => panic!("unexpected error: {:?}", other) }
+
+        // Missing config name -> error
+        let err2 = cm.resolve_config_as_json("nope").unwrap_err();
+        match err2 { WebPipeError::ConfigError(_) => {}, other => panic!("unexpected error: {:?}", other) }
+    }
+}

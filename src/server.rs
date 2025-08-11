@@ -435,6 +435,8 @@ async fn try_serve_static(request_path: &str) -> Option<Response> {
 mod tests {
     use super::*;
     use std::path::Path;
+    use axum::http::HeaderValue;
+    use std::collections::HashMap;
 
     #[test]
     fn content_type_guessing() {
@@ -461,5 +463,72 @@ mod tests {
     async fn health_check_ok() {
         let resp = health_check().await.into_response();
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn try_serve_static_serves_file_and_none_for_missing() {
+        let base = std::env::temp_dir().join(format!("wp_public_{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&base).await.unwrap();
+        std::env::set_var("WEBPIPE_PUBLIC_DIR", &base);
+        let file_path = base.join("hello.txt");
+        tokio_fs::write(&file_path, b"hi").await.unwrap();
+        // direct file
+        let resp_opt = try_serve_static("/hello.txt").await;
+        assert!(resp_opt.is_some());
+        // missing -> None
+        let none = try_serve_static("/nope.txt").await;
+        assert!(none.is_none());
+    }
+
+    #[tokio::test]
+    async fn respond_with_pipeline_sets_cookies_and_html() {
+        // Build a minimal state with jq/handlebars available
+        let ctx = Context::from_program_configs(vec![], &[]).await.unwrap();
+        let registry = Arc::new(MiddlewareRegistry::with_builtins(Arc::new(ctx)));
+        let env = ExecutionEnv {
+            variables: Arc::new(vec![]),
+            named_pipelines: Arc::new(HashMap::new()),
+            invoker: Arc::new(RealInvoker::new(registry.clone())),
+        };
+        let state = ServerState {
+            middleware_registry: registry.clone(),
+            get_router: Arc::new(matchit::Router::new()),
+            post_router: Arc::new(matchit::Router::new()),
+            put_router: Arc::new(matchit::Router::new()),
+            delete_router: Arc::new(matchit::Router::new()),
+            env: Arc::new(env),
+        };
+        // Craft a tiny pipeline that sets cookies via jq
+        let p_set_cookie = Arc::new(Pipeline { steps: vec![
+            crate::ast::PipelineStep::Regular { name: "jq".to_string(), config: "{ setCookies: [\"a=b\"] }".to_string() }
+        ]});
+        let resp = respond_with_pipeline(
+            state.clone(),
+            Method::GET,
+            HeaderMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            axum::body::Bytes::new(),
+            p_set_cookie.clone(),
+        ).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Header present
+        assert!(resp.headers().get_all(axum::http::header::SET_COOKIE).iter().any(|h| h == &HeaderValue::from_static("a=b")));
+
+        // Pipeline that renders HTML
+        let p_html = Arc::new(Pipeline { steps: vec![
+            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), config: "<p>OK</p>".to_string() }
+        ]});
+        let resp2 = respond_with_pipeline(
+            state,
+            Method::GET,
+            HeaderMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            axum::body::Bytes::new(),
+            p_html.clone(),
+        ).await;
+        assert_eq!(resp2.status(), StatusCode::OK);
+        assert_eq!(resp2.headers().get(axum::http::header::CONTENT_TYPE).unwrap(), "text/html; charset=utf-8");
     }
 }

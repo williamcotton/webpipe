@@ -92,6 +92,53 @@ impl MiddlewareInvoker for MockingInvoker {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn mock_resolver_targets_pipeline_and_variable_and_middleware() {
+        let mocks = vec![
+            Mock { target: "pipeline.inner".to_string(), return_value: "`{\"ok\":true}`".to_string() },
+            Mock { target: "fetch.resultA".to_string(), return_value: "`{}`".to_string() },
+            Mock { target: "cache".to_string(), return_value: "`{}`".to_string() },
+        ];
+        let res = MockResolver::from_mocks(&mocks).unwrap();
+        assert!(res.get_pipeline_mock("inner").is_some());
+        assert!(res.get_middleware_mock("cache", &json!({})).is_some());
+        let with_name = res.get_middleware_mock("fetch", &json!({"resultName":"resultA"}));
+        assert!(with_name.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_conditions_status_range_and_output_contains_and_matches() {
+        let program_src = r#"
+        pipeline ok =
+          |> jq: `{ a: 1, s: "<p>x</p>" }`
+
+        describe "c"
+          it "d"
+            when executing pipeline ok
+            then status in 200..299
+            and output contains `{ "a": 1 }`
+            and output `.s` matches `^<p>x</p>$`
+        "#;
+        let (_rest, program) = crate::ast::parse_program(program_src).unwrap();
+        let summary = run_tests(program).await.unwrap();
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.failed, 0);
+    }
+
+    #[test]
+    fn parse_backticked_json_handles_strings_and_json() {
+        let j = parse_backticked_json("`{\"x\":1}`").unwrap();
+        assert_eq!(j["x"], json!(1));
+        let s = parse_backticked_json("`hello`").unwrap();
+        assert_eq!(s, json!("hello"));
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TestOutcome {
     pub describe: String,

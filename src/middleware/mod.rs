@@ -83,4 +83,37 @@ impl MiddlewareRegistry {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::Context;
+    use crate::runtime::context::{CacheStore, ConfigSnapshot};
+    use reqwest::Client;
+    use ::handlebars::Handlebars;
+
+    fn ctx_no_db() -> Arc<Context> {
+        Arc::new(Context {
+            pg: None,
+            http: Client::new(),
+            cache: CacheStore::new(8, 1),
+            hb: std::sync::Arc::new(parking_lot::Mutex::new(Handlebars::new())),
+            cfg: ConfigSnapshot(serde_json::json!({})),
+        })
+    }
+
+    #[tokio::test]
+    async fn registry_executes_builtin_middleware() {
+        let registry = MiddlewareRegistry::with_builtins(ctx_no_db());
+        let out = registry.execute("jq", "{ ok: true }", &serde_json::json!({})).await.unwrap();
+        assert_eq!(out["ok"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn registry_missing_middleware_errors() {
+        let registry = MiddlewareRegistry::with_builtins(ctx_no_db());
+        let err = registry.execute("nope", "", &serde_json::json!({})).await.unwrap_err();
+        match err { WebPipeError::MiddlewareNotFound(_) => {}, other => panic!("unexpected: {:?}", other) }
+    }
+}
+
 

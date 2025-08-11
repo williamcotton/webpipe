@@ -167,6 +167,7 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::{Config, Variable};
 
     #[test]
     fn cache_put_get_and_expiry_and_zero_ttl() {
@@ -183,6 +184,26 @@ mod tests {
         assert!(cache.get("k2").is_some());
         std::thread::sleep(std::time::Duration::from_millis(1100));
         assert!(cache.get("k2").is_none());
+    }
+
+    #[tokio::test]
+    async fn context_builds_without_pg_and_registers_partials() {
+        let configs: Vec<Config> = vec![Config { name: "cache".to_string(), properties: vec![] }];
+        // Provide a handlebars partial variable
+        let variables = vec![Variable { var_type: "handlebars".to_string(), name: "greet".to_string(), value: "Hello {{name}}".to_string() }];
+        let ctx = Context::from_program_configs(configs, &variables).await.unwrap();
+        assert!(ctx.pg.is_none(), "pg should be None when no host provided");
+        // Ensure partial was registered by attempting a render
+        let mut hb = ctx.hb.lock();
+        let _reg = handlebars::Handlebars::new();
+        // copy registered partial into a new registry to render a template referencing it
+        // The context's registry already has the partial; we register a template that uses it
+        // and inject the same registry for rendering
+        // Instead, render using the existing registry by registering a template id
+        let tpl_id = "tpl";
+        hb.register_template_string(tpl_id, "{{> greet }}").unwrap();
+        let out = hb.render(tpl_id, &serde_json::json!({"name":"Ada"})).unwrap();
+        assert_eq!(out, "Hello Ada");
     }
 }
 

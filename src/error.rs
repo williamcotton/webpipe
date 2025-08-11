@@ -154,11 +154,26 @@ pub type Result<T> = std::result::Result<T, WebPipeError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body;
 
     #[test]
     fn status_code_mapping_basic() {
         assert_eq!(WebPipeError::ParseError("x".into()).status_code(), axum::http::StatusCode::BAD_REQUEST);
         assert_eq!(WebPipeError::AuthError("x".into()).status_code(), axum::http::StatusCode::UNAUTHORIZED);
         assert_eq!(WebPipeError::NotFound("x".into()).status_code(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn into_response_wraps_type_message_and_status() {
+        let err = WebPipeError::BadRequest("oops".into());
+        let resp = err.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        // Extract body to ensure structure
+        let body = resp.into_body();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let bytes = rt.block_on(body::to_bytes(body, usize::MAX)).expect("bytes");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"]["type"], serde_json::json!("bad_request"));
+        assert_eq!(v["error"]["status"], serde_json::json!(400));
     }
 }
