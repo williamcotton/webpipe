@@ -6,7 +6,7 @@
 
 Web Pipe is a small HTTP server and test runner powered by a compact DSL. You write routes and tests in a single `.wp` file, then run a server that executes the pipelines. Here is a minimal hello world you can paste into a file like `hello.wp`:
 
-```text
+```wp
 GET /hello/:world
   |> jq: `{ world: .params.world }`
   |> handlebars: `<p>hello, {{world}}</p>`
@@ -32,7 +32,18 @@ Run tests defined inside the same `.wp` file by passing `--test`. The process ex
 cargo run -- hello.wp --test
 ```
 
+You can also try it out with Docker image.
+
+```Dockerfile
+FROM ghcr.io/williamcotton/webpipe-rs:latest
+
+COPY app.wp /app/
+COPY public /app/public/
+COPY scripts /app/scripts/
+
+CMD ["app.wp"]
+```
+
 During development the server watches your `.wp` file and restarts on changes. It also loads `.env` and `.env.local` from the same directory as the `.wp` file so you can provide configuration without changing code.
 
-For a larger example and more middleware like `pg`, `fetch`, `lua`, `cache`, `auth`, `log`, and `debug`, see `example.wp`. Build with `cargo build --release` to produce an optimized binary at `target/release/webpipe`.
-
+For a tutorial example and more middleware like `pg`, `fetch`, `lua`, `cache`, `auth`, `log`, and `debug`, see `example.wp`. Build with `cargo build --release` to produce an optimized binary at `target/release/webpipe`.
