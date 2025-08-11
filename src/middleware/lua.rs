@@ -201,7 +201,7 @@ mod tests {
     async fn require_script_and_get_env_registered() {
         std::env::set_var("WEBPIPE_SCRIPTS_DIR", "scripts");
         let mw = LuaMiddleware::new(ctx_no_db());
-        let out = mw.execute("local c = requireScript('contentful'); return type(c) ~= 'nil'", &serde_json::json!({})).await.unwrap();
+        let out = mw.execute("local c = requireScript('dateFormatter'); return type(c) ~= 'nil'", &serde_json::json!({})).await.unwrap();
         assert!(out.as_bool().unwrap() || out.is_string());
         let out2 = mw.execute("return getEnv('PATH') ~= nil", &serde_json::json!({})).await.unwrap();
         assert!(out2.as_bool().unwrap());
