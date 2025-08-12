@@ -28,7 +28,7 @@ describe "lua"
       "message": "Hello from Lua!",
       "id": 123,
       "name": "example"
-    }`1
+    }`
 
 ## Config
 config pg {
