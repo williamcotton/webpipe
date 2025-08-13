@@ -14,6 +14,11 @@ impl super::Middleware for PgMiddleware {
         let sql = config.trim();
         if sql.is_empty() { return Err(WebPipeError::DatabaseError("Empty SQL config for pg middleware".to_string())); }
 
+        // Check if we have a database connection (configured via config block)
+        let pool = self.ctx.pg.as_ref().ok_or_else(||
+            WebPipeError::DatabaseError("Database not configured. Please add a 'config pg {}' block with connection settings.".to_string())
+        )?;
+
         let params: Vec<Value> = input.get("sqlParams").and_then(|v| v.as_array()).map(|arr| arr.to_vec()).unwrap_or_default();
 
         let lowered = sql.to_lowercase();
@@ -29,7 +34,7 @@ impl super::Middleware for PgMiddleware {
             let mut query = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql);
             for p in &params { query = bind_json_param_scalar(query, p); }
 
-            let rows_json = match query.fetch_one(self.ctx.pg.as_ref().ok_or_else(|| WebPipeError::DatabaseError("database not configured".to_string()))?).await {
+            let rows_json = match query.fetch_one(pool).await {
                 Ok(json) => json.0,
                 Err(e) => { return Ok(build_sql_error_value(&e, sql)); }
             };
@@ -57,7 +62,7 @@ impl super::Middleware for PgMiddleware {
             let mut query = sqlx::query(sql);
             for p in &params { query = bind_json_param(query, p); }
 
-            let result = match query.execute(self.ctx.pg.as_ref().ok_or_else(|| WebPipeError::DatabaseError("database not configured".to_string()))?).await {
+            let result = match query.execute(pool).await {
                 Ok(res) => res,
                 Err(e) => { return Ok(build_sql_error_value(&e, sql)); }
             };
