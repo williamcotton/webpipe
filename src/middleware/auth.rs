@@ -1,5 +1,6 @@
 use crate::error::WebPipeError;
 use crate::runtime::Context;
+use crate::config;
 use async_trait::async_trait;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -22,13 +23,23 @@ struct AuthConfig {
 }
 
 fn get_auth_config() -> AuthConfig {
+    let cfg_mgr = config::global();
+    let auth_config = cfg_mgr.resolve_config_as_json("auth").unwrap_or_else(|_| serde_json::json!({
+        "sessionTtl": 604800,
+        "cookieName": "wp_session",
+        "cookieSecure": false,
+        "cookieHttpOnly": true,
+        "cookieSameSite": "Lax",
+        "cookiePath": "/"
+    }));
+
     AuthConfig {
-        session_ttl: 604800,
-        cookie_name: "wp_session".to_string(),
-        cookie_secure: false,
-        cookie_http_only: true,
-        cookie_same_site: "Lax".to_string(),
-        cookie_path: "/".to_string(),
+        session_ttl: auth_config.get("sessionTtl").and_then(|v| v.as_i64()).unwrap_or(604800),
+        cookie_name: auth_config.get("cookieName").and_then(|v| v.as_str()).unwrap_or("wp_session").to_string(),
+        cookie_secure: auth_config.get("cookieSecure").and_then(|v| v.as_bool()).unwrap_or(false),
+        cookie_http_only: auth_config.get("cookieHttpOnly").and_then(|v| v.as_bool()).unwrap_or(true),
+        cookie_same_site: auth_config.get("cookieSameSite").and_then(|v| v.as_str()).unwrap_or("Lax").to_string(),
+        cookie_path: auth_config.get("cookiePath").and_then(|v| v.as_str()).unwrap_or("/").to_string(),
     }
 }
 
@@ -311,6 +322,9 @@ mod tests {
 
     #[test]
     fn cookie_header_builders_have_expected_flags() {
+        // Initialize global config for test
+        crate::config::init_global(vec![]);
+        
         let set = build_set_cookie_header("abc");
         assert!(set.contains("wp_session=abc"));
         assert!(set.contains("HttpOnly"));

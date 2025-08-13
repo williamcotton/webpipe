@@ -1,4 +1,5 @@
 use crate::error::WebPipeError;
+use crate::config;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -28,6 +29,14 @@ impl super::Middleware for CacheMiddleware {
             lc
         }
 
+        // Get global cache config and merge with step-specific config
+        let cfg_mgr = config::global();
+        let global_cache_config = cfg_mgr.resolve_config_as_json("cache").unwrap_or_else(|_| serde_json::json!({
+            "enabled": true,
+            "defaultTtl": 60,
+            "maxCacheSize": 10485760
+        }));
+
         let parsed = parse_cfg(config);
         let mut out = input.clone();
         if let Some(obj) = out.as_object_mut() {
@@ -37,9 +46,19 @@ impl super::Middleware for CacheMiddleware {
                 let cache_entry = meta.entry("cache").or_insert_with(|| Value::Object(serde_json::Map::new()));
                 if !cache_entry.is_object() { *cache_entry = Value::Object(serde_json::Map::new()); }
                 if let Some(cache_map) = cache_entry.as_object_mut() {
-                    if let Some(b) = parsed.enabled { cache_map.insert("enabled".to_string(), Value::Bool(b)); }
-                    if let Some(ttl) = parsed.ttl { cache_map.insert("ttl".to_string(), Value::Number(serde_json::Number::from(ttl))); }
-                    if let Some(tpl) = parsed.key_tpl { cache_map.insert("keyTemplate".to_string(), Value::String(tpl)); }
+                    // Use step config if provided, otherwise fall back to global config
+                    let enabled = parsed.enabled.unwrap_or_else(|| 
+                        global_cache_config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true)
+                    );
+                    let ttl = parsed.ttl.unwrap_or_else(|| 
+                        global_cache_config.get("defaultTtl").and_then(|v| v.as_u64()).unwrap_or(60)
+                    );
+                    
+                    cache_map.insert("enabled".to_string(), Value::Bool(enabled));
+                    cache_map.insert("ttl".to_string(), Value::Number(serde_json::Number::from(ttl)));
+                    if let Some(tpl) = parsed.key_tpl { 
+                        cache_map.insert("keyTemplate".to_string(), Value::String(tpl)); 
+                    }
                 }
             }
         }
@@ -55,6 +74,9 @@ mod tests {
 
     #[tokio::test]
     async fn merges_cache_flags_into_metadata() {
+        // Initialize global config for test
+        crate::config::init_global(vec![]);
+        
         let mw = CacheMiddleware;
         let input = serde_json::json!({});
         let out = mw.execute("enabled: true, ttl: 5, keyTemplate: id-{params.id}", &input).await.unwrap();

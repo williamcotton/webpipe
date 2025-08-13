@@ -1,4 +1,5 @@
 use crate::error::WebPipeError;
+use crate::config;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use serde_json::Value;
@@ -33,6 +34,18 @@ impl super::Middleware for LogMiddleware {
             sc
         }
 
+        // Get global log config and merge with step-specific config  
+        let cfg_mgr = config::global();
+        let global_log_config = cfg_mgr.resolve_config_as_json("log").unwrap_or_else(|_| serde_json::json!({
+            "enabled": true,
+            "format": "json",
+            "level": "debug",
+            "includeBody": false,
+            "includeHeaders": true,
+            "maxBodySize": 1024,
+            "timestamp": true
+        }));
+
         let sc = parse_step_config(config);
 
         let mut out = input.clone();
@@ -45,10 +58,25 @@ impl super::Middleware for LogMiddleware {
                 log_map.insert("startTimeMs".to_string(), Value::Number(serde_json::Number::from(start_ms)));
                 let start_mono_us: u64 = MONO_EPOCH.elapsed().as_micros() as u64;
                 log_map.insert("startMonoUs".to_string(), Value::Number(serde_json::Number::from(start_mono_us)));
-                if let Some(level) = sc.level { log_map.insert("level".to_string(), Value::String(level)); }
-                if let Some(b) = sc.include_body { log_map.insert("includeBody".to_string(), Value::Bool(b)); }
-                if let Some(b) = sc.include_headers { log_map.insert("includeHeaders".to_string(), Value::Bool(b)); }
-                if let Some(b) = sc.enabled { log_map.insert("enabled".to_string(), Value::Bool(b)); } else { log_map.insert("enabled".to_string(), Value::Bool(true)); }
+                
+                // Use step config if provided, otherwise fall back to global config
+                let level = sc.level.unwrap_or_else(|| 
+                    global_log_config.get("level").and_then(|v| v.as_str()).unwrap_or("debug").to_string()
+                );
+                let include_body = sc.include_body.unwrap_or_else(|| 
+                    global_log_config.get("includeBody").and_then(|v| v.as_bool()).unwrap_or(false)
+                );
+                let include_headers = sc.include_headers.unwrap_or_else(|| 
+                    global_log_config.get("includeHeaders").and_then(|v| v.as_bool()).unwrap_or(true)
+                );
+                let enabled = sc.enabled.unwrap_or_else(|| 
+                    global_log_config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true)
+                );
+                
+                log_map.insert("level".to_string(), Value::String(level));
+                log_map.insert("includeBody".to_string(), Value::Bool(include_body));
+                log_map.insert("includeHeaders".to_string(), Value::Bool(include_headers));
+                log_map.insert("enabled".to_string(), Value::Bool(enabled));
                 meta.insert("log".to_string(), Value::Object(log_map));
             }
         }
@@ -108,6 +136,9 @@ mod tests {
 
     #[tokio::test]
     async fn pre_and_post_execution_metadata_and_duration() {
+        // Initialize global config for test
+        crate::config::init_global(vec![]);
+        
         let mw = LogMiddleware;
         let input = serde_json::json!({
             "headers": {"x": "y"},
