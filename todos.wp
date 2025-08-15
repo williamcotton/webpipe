@@ -225,6 +225,8 @@ GET /login-page
             try {
               const response = JSON.parse(event.detail.xhr.responseText);
               if (response.success) {
+                // Clear the response div before redirecting
+                event.detail.target.innerHTML = '';
                 window.location.href = '/todos';
               }
             } catch (e) {
