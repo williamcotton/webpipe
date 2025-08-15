@@ -284,7 +284,7 @@ GET /cookies
   }`
 
 GET /auth/status
-  |> auth: optional
+  |> auth: "optional"
   |> jq: `{
     authenticated: (.user != null),
     user: .user,
@@ -318,7 +318,7 @@ GET /debug/users-schema
   }`
 
 POST /debug/test-hash
-  |> auth: register
+  |> auth: "register"
   |> jq: `{
     message: "Test hash generation (this will fail but show us what's happening)",
     body: .body,
@@ -429,7 +429,7 @@ POST /login
     login: string(3..50),
     password: string(6..100)
   }`
-  |> auth: login
+  |> auth: "login"
   |> result
     ok(200):
       |> jq: `{
@@ -472,7 +472,7 @@ POST /login
       `
 
 POST /logout
-  |> auth: logout
+  |> auth: "logout"
   |> result
     ok(200):
       |> jq: `{
@@ -492,7 +492,7 @@ POST /register
     email: email,
     password: string(8..100)
   }`
-  |> auth: register
+  |> auth: "register"
   |> result
     ok(201):
       |> jq: `{
@@ -662,7 +662,7 @@ GET /register-page
   `
 
 GET /todos
-  |> auth: required
+  |> auth: "required"
   |> result
     ok(200):
       |> jq: `. + { sqlParams: [.user.id] }`
@@ -704,7 +704,7 @@ GET /todos
       |> handlebars: `{{>loginRequiredLayout}}`
 
 POST /todos/add
-  |> auth: required
+  |> auth: "required"
   |> result
     ok(200):
       |> validate: `
@@ -744,7 +744,7 @@ POST /todos/add
       `
 
 POST /todos/:id/toggle
-  |> auth: required
+  |> auth: "required"
   |> result
     ok(200):
       |> jq: `{ sqlParams: [.params.id, .user.id], todoId: .params.id }`
@@ -764,7 +764,7 @@ POST /todos/:id/toggle
       `
 
 DELETE /todos/:id
-  |> auth: required
+  |> auth: "required"
   |> result
 
 GET /test/named-query/:id
