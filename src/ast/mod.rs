@@ -71,8 +71,15 @@ pub struct Pipeline {
 }
 
 #[derive(Debug, Clone)]
+pub enum ConfigType {
+    Backtick,
+    Quoted,
+    Identifier,
+}
+
+#[derive(Debug, Clone)]
 pub enum PipelineStep {
-    Regular { name: String, config: String },
+    Regular { name: String, config: String, config_type: ConfigType },
     Result { branches: Vec<ResultBranch> },
 }
 
@@ -220,8 +227,13 @@ impl Display for Pipeline {
 impl Display for PipelineStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PipelineStep::Regular { name, config } => {
-                write!(f, "  |> {}: `{}`", name, config)
+            PipelineStep::Regular { name, config, config_type } => {
+                let formatted_config = match config_type {
+                    ConfigType::Backtick => format!("`{}`", config),
+                    ConfigType::Quoted => format!("\"{}\"", config),
+                    ConfigType::Identifier => config.clone(),
+                };
+                write!(f, "  |> {}: {}", name, formatted_config)
             }
             PipelineStep::Result { branches } => {
                 writeln!(f, "  |> result")?;
@@ -336,22 +348,28 @@ fn parse_multiline_string(input: &str) -> IResult<&str, String> {
 }
 
 // Pipeline step configuration parser - handles both backticks and double quotes
-fn parse_step_config(input: &str) -> IResult<&str, String> {
+fn parse_step_config(input: &str) -> IResult<&str, (String, ConfigType)> {
     alt((
         // Backtick-delimited multi-line strings
-        delimited(
-            char('`'),
-            map(take_until("`"), |s: &str| s.to_string()),
-            char('`')
+        map(
+            delimited(
+                char('`'),
+                map(take_until("`"), |s: &str| s.to_string()),
+                char('`')
+            ),
+            |s| (s, ConfigType::Backtick)
         ),
         // Double quote-delimited strings
-        delimited(
-            char('"'),
-            map(take_until("\""), |s: &str| s.to_string()),
-            char('"')
+        map(
+            delimited(
+                char('"'),
+                map(take_until("\""), |s: &str| s.to_string()),
+                char('"')
+            ),
+            |s| (s, ConfigType::Quoted)
         ),
         // Bare identifier (variable reference like: pg: getUserQuery)
-        parse_identifier
+        map(parse_identifier, |s| (s, ConfigType::Identifier))
     )).parse(input)
 }
 
@@ -443,9 +461,9 @@ fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, name) = parse_identifier(input)?;
     let (input, _) = char(':')(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, config) = parse_step_config(input)?;
+    let (input, (config, config_type)) = parse_step_config(input)?;
     let (input, _) = multispace0(input)?;
-    Ok((input, PipelineStep::Regular { name, config }))
+    Ok((input, PipelineStep::Regular { name, config, config_type }))
 }
 
 fn parse_result_step(input: &str) -> IResult<&str, PipelineStep> {
@@ -795,5 +813,55 @@ describe "home"
         // Display should not panic and include route path
         let s = format!("{}", program);
         assert!(s.contains("GET /"));
+    }
+
+    #[test]
+    fn parse_pipeline_steps_with_different_config_types() {
+        let src = r#"
+pipeline test =
+  |> handlebars: `multi
+line
+template`
+  |> jq: "{ hello: world }"
+  |> echo: myVariable
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        assert_eq!(program.pipelines.len(), 1);
+        
+        let pipeline = &program.pipelines[0].pipeline;
+        assert_eq!(pipeline.steps.len(), 3);
+        
+        // Test backtick config type
+        if let PipelineStep::Regular { name, config, config_type } = &pipeline.steps[0] {
+            assert_eq!(name, "handlebars");
+            assert_eq!(config, "multi\nline\ntemplate");
+            assert!(matches!(config_type, ConfigType::Backtick));
+        } else {
+            panic!("Expected Regular step");
+        }
+        
+        // Test quoted config type
+        if let PipelineStep::Regular { name, config, config_type } = &pipeline.steps[1] {
+            assert_eq!(name, "jq");
+            assert_eq!(config, "{ hello: world }");
+            assert!(matches!(config_type, ConfigType::Quoted));
+        } else {
+            panic!("Expected Regular step");
+        }
+        
+        // Test identifier config type
+        if let PipelineStep::Regular { name, config, config_type } = &pipeline.steps[2] {
+            assert_eq!(name, "echo");
+            assert_eq!(config, "myVariable");
+            assert!(matches!(config_type, ConfigType::Identifier));
+        } else {
+            panic!("Expected Regular step");
+        }
+        
+        // Test roundtrip display preserves config type formatting
+        let displayed = format!("{}", pipeline);
+        assert!(displayed.contains("`multi\nline\ntemplate`"));
+        assert!(displayed.contains("\"{ hello: world }\""));
+        assert!(displayed.contains("myVariable")); // identifier without quotes
     }
 }
