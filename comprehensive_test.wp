@@ -1,3 +1,40 @@
+## Config
+config pg {
+  host: $WP_PG_HOST || "localhost"
+  port: $WP_PG_PORT || "5432"
+  database: $WP_PG_DATABASE || "express-test"
+  user: $WP_PG_USER || "postgres"
+  password: $WP_PG_PASSWORD || "postgres"
+  ssl: false
+  initialPoolSize: 10
+  maxPoolSize: 20
+}
+
+config auth {
+  sessionTtl: 604800
+  cookieName: "wp_session"
+  cookieSecure: false
+  cookieHttpOnly: true
+  cookieSameSite: "Lax"
+  cookiePath: "/"
+}
+
+config cache {
+  enabled: true
+  defaultTtl: 60
+  maxCacheSize: 10485760
+}
+
+config log {
+  enabled: true
+  format: "json"
+  level: "debug"
+  includeBody: false
+  includeHeaders: true
+  maxBodySize: 1024
+  timestamp: true
+}
+
 GET /hello/:world
   |> jq: `{ world: .params.world }`
   |> handlebars: `<p>hello, {{world}}</p>`
@@ -826,137 +863,21 @@ GET /test-fetch-timeout
   |> jq: `{ fetchTimeout: 1 }`
   |> fetch: `https://httpbin.org/delay/5`
 
-describe "hello, world"
-  it "calls the route"
-    when calling GET /hello/world
-    then status is 200
-    and output equals <p>hello, world</p>
+GET /new-route-22
+  |> jq: `{ message: "Hello from new route" }`
+  |> jq: `. | { transformed: .data }`
+  |> handlebars: `<h1>{{message}}, friend</h1>`
 
+GET /new-route
+  |> jq: `{ message: "Hello from new route" }`
+  |> jq: `. | { transformed: .data }`
+  |> handlebars: `<h1>{{message}}, friend</h1>`
 
-describe "lua"
-  it "calls the route"
-    when calling GET /lua/123/example?name=example
-    then status is 200
-    and output equals `{
-      "message": "Hello from Lua!",
-      "id": 123,
-      "name": "example"
-    }`
-
-
-describe "teamsQuery variable"
-  with mock pg.teamsQuery returning `{
-    "rows": [
-      { "id": "1", "name": "Platform", "member_count": 8 },
-      { "id": "2", "name": "Growth", "member_count": 12 },
-      { "id": "3", "name": "Security", "member_count": 5 }
-    ]
-  }`
-
-  it "returns all teams"
-    when executing variable pg teamsQuery
-    with input `{ "sqlParams": [] }`
-    then output equals `{
-      "rows": [
-        { "id": "1", "name": "Platform", "member_count": 8 },
-        { "id": "2", "name": "Growth", "member_count": 12 },
-        { "id": "3", "name": "Security", "member_count": 5 }
-      ]
-    }`
-
-
-describe "getTeams pipeline"
-  with mock pg returning `{
-    "rows": [{ "id": "2", "name": "Growth", "created_at": "2024-01-20" }]
-  }`
-
-  it "transforms params and queries database"
-    when executing pipeline getTeams
-    with input `{ "params": { "id": "2" } }`
-    then output equals `{
-      "rows": [{ "id": "2", "name": "Growth", "created_at": "2024-01-20" }]
-    }`
-
-  it "handles string id parameter"
-    with mock pg returning `{ "rows": [{ "id": 42, "name": "Marketing" }] }`
-    when executing pipeline getTeams
-    with input `{ "params": { "id": 42 } }`
-    then output equals `{
-      "rows": [{ "id": 42, "name": "Marketing" }]
-    }`
-
-  it "supports jq equals on output subpath"
-    with mock pg returning `{ "rows": [{ "id": 42, "name": "Marketing" }] }`
-    when executing pipeline getTeams
-    with input `{ "params": { "id": 42 } }`
-    then output `.rows[0].id` equals 42
-
-
-describe "test calling route"
-  it "calls the route"
-    when calling GET /hello
-    then status is 200
-    and output equals `{
-      "hello": "world"
-    }`
-
-
-describe "jq assertions"
-  it "supports output contains for partial JSON"
-    when calling GET /hello
-    then output contains `{ "hello": "world" }`
-
-  it "supports output matches for HTML"
-    when calling GET /hello/world
-    then output matches ^<p>hello, .*</p>$
-
-  it "supports status ranges"
-    when calling GET /hello
-    then status in 200..299
-
-  it "supports jq filter with map"
-    with mock pg returning `{ "rows": [{ "id": 2, "name": "Growth" }, { "id": 3, "name": "Security" }] }`
-    when executing pipeline getTeams
-    with input `{ "params": { "id": 2 } }`
-    then output `.rows | map(.id)` equals `[2, 3]`
-
-
-## Config
-config pg {
-  host: $WP_PG_HOST || "localhost"
-  port: $WP_PG_PORT || "5432"
-  database: $WP_PG_DATABASE || "express-test"
-  user: $WP_PG_USER || "postgres"
-  password: $WP_PG_PASSWORD || "postgres"
-  ssl: false
-  initialPoolSize: 10
-  maxPoolSize: 20
-}
-
-config auth {
-  sessionTtl: 604800
-  cookieName: "wp_session"
-  cookieSecure: false
-  cookieHttpOnly: true
-  cookieSameSite: "Lax"
-  cookiePath: "/"
-}
-
-config cache {
-  enabled: true
-  defaultTtl: 60
-  maxCacheSize: 10485760
-}
-
-config log {
-  enabled: true
-  format: "json"
-  level: "debug"
-  includeBody: false
-  includeHeaders: true
-  maxBodySize: 1024
-  timestamp: true
-}
+GET /new-route-2
+  |> jq: `{ message: "Hello from new route" }`
+  |> jq: `. | { transformed: "mess312" }`
+  |> handlebars: `<h1>{{message}}</h1>
+<p>{{transformed}} 123123</p>`
 
 pipeline getTeams =
   |> jq: `{ sqlParams: [.params.id] }`
@@ -1184,3 +1105,96 @@ GET /lua-script-stress
       sample_results = {results[1], results[25], results[50]}
     }
   `
+describe "hello, world"
+  it "calls the route"
+    when calling GET /hello/world
+    then status is 200
+    and output equals <p>hello, world</p>
+
+
+describe "lua"
+  it "calls the route"
+    when calling GET /lua/123/example?name=example
+    then status is 200
+    and output equals `{
+      "message": "Hello from Lua!",
+      "id": 123,
+      "name": "example"
+    }`
+
+
+describe "teamsQuery variable"
+  with mock pg.teamsQuery returning `{
+    "rows": [
+      { "id": "1", "name": "Platform", "member_count": 8 },
+      { "id": "2", "name": "Growth", "member_count": 12 },
+      { "id": "3", "name": "Security", "member_count": 5 }
+    ]
+  }`
+
+  it "returns all teams"
+    when executing variable pg teamsQuery
+    with input `{ "sqlParams": [] }`
+    then output equals `{
+      "rows": [
+        { "id": "1", "name": "Platform", "member_count": 8 },
+        { "id": "2", "name": "Growth", "member_count": 12 },
+        { "id": "3", "name": "Security", "member_count": 5 }
+      ]
+    }`
+
+
+describe "getTeams pipeline"
+  with mock pg returning `{
+    "rows": [{ "id": "2", "name": "Growth", "created_at": "2024-01-20" }]
+  }`
+
+  it "transforms params and queries database"
+    when executing pipeline getTeams
+    with input `{ "params": { "id": "2" } }`
+    then output equals `{
+      "rows": [{ "id": "2", "name": "Growth", "created_at": "2024-01-20" }]
+    }`
+
+  it "handles string id parameter"
+    with mock pg returning `{ "rows": [{ "id": 42, "name": "Marketing" }] }`
+    when executing pipeline getTeams
+    with input `{ "params": { "id": 42 } }`
+    then output equals `{
+      "rows": [{ "id": 42, "name": "Marketing" }]
+    }`
+
+  it "supports jq equals on output subpath"
+    with mock pg returning `{ "rows": [{ "id": 42, "name": "Marketing" }] }`
+    when executing pipeline getTeams
+    with input `{ "params": { "id": 42 } }`
+    then output `.rows[0].id` equals 42
+
+
+describe "test calling route"
+  it "calls the route"
+    when calling GET /hello
+    then status is 200
+    and output equals `{
+      "hello": "world"
+    }`
+
+
+describe "jq assertions"
+  it "supports output contains for partial JSON"
+    when calling GET /hello
+    then output contains `{ "hello": "world" }`
+
+  it "supports output matches for HTML"
+    when calling GET /hello/world
+    then output matches ^<p>hello, .*</p>$
+
+  it "supports status ranges"
+    when calling GET /hello
+    then status in 200..299
+
+  it "supports jq filter with map"
+    with mock pg returning `{ "rows": [{ "id": 2, "name": "Growth" }, { "id": 3, "name": "Security" }] }`
+    when executing pipeline getTeams
+    with input `{ "params": { "id": 2 } }`
+    then output `.rows | map(.id)` equals `[2, 3]`
