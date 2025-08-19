@@ -884,31 +884,42 @@ pipeline getTeams =
   |> pg: "SELECT * FROM teams WHERE id = $1"
 
 pg teamsQuery = `SELECT * FROM teams`
+
 handlebars cardPartial = `
   <div class="card">
     <h3>{{title}}</h3>
     <p>{{description}}</p>
   </div>
 `
+
 handlebars headerPartial = `
   <header>
     <h1>{{siteName}}</h1>
     <nav>{{>navPartial}}</nav>
   </header>
 `
+
 handlebars navPartial = `
   <ul>
     <li><a href="/">Home</a></li>
     <li><a href="/about">About</a></li>
   </ul>
 `
+
 handlebars title = `Default Title`
+
 handlebars headExtras = ``
+
 handlebars content = `Default content`
+
 handlebars footerScripts = ``
+
 handlebars pageTitle = `Page Title`
+
 handlebars pageContent = ``
+
 handlebars authHeader = ``
+
 handlebars baseLayout = `
 <!DOCTYPE html>
 <html lang="en">
@@ -926,6 +937,7 @@ handlebars baseLayout = `
 </body>
 </html>
 `
+
 handlebars authLayout = `
 {{#*inline "authHeader"}}
   <div class="flex justify-between items-center border-b-2 border-blue-500 pb-3 mb-6">
@@ -946,6 +958,7 @@ handlebars authLayout = `
 {{/inline}}
 {{> baseLayout}}
 `
+
 handlebars loginRequiredLayout = `
 {{#*inline "title"}}Login Required{{/inline}}
 {{#*inline "content"}}
@@ -967,12 +980,14 @@ handlebars loginRequiredLayout = `
 {{/inline}}
 {{> baseLayout}}
 `
+
 handlebars errorAlert = `
 <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4 mt-4" role="alert">
   <strong class="font-bold">{{> errorTitle}}:</strong>
   <span class="block sm:inline">{{> errorMessage}}</span>
   </div>
 `
+
 handlebars todoItemPartial = `
   <li class="{{#if completed}}bg-green-50 border-l-4 border-green-400{{else}}bg-gray-50 border-l-4 border-blue-400{{/if}} p-4 rounded-lg flex justify-between items-start">
     <div class="flex-1">
@@ -989,7 +1004,9 @@ handlebars todoItemPartial = `
     </div>
   </li>
 `
+
 pg getUserQuery = `SELECT 1 as id, 'Auto Named User' as name`
+
 pg getTeamsQuery = `SELECT 1 as id, 'Auto Team' as name`
 
 GET /test/auto-naming/:id
