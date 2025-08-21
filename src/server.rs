@@ -164,13 +164,13 @@ impl WebPipeServer {
     pub async fn serve(self, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         
-        info!("WebPipe server starting on {}", addr);
+        info!("Web Pipe server starting on {}", addr);
         
         axum::serve(listener, self.router())
             .with_graceful_shutdown(shutdown_signal())
             .await?;
             
-        info!("WebPipe server shutdown complete");
+        info!("Web Pipe server shutdown complete");
         Ok(())
     }
 
@@ -184,13 +184,13 @@ impl WebPipeServer {
     {
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
-        info!("WebPipe server starting on {}", addr);
+        info!("Web Pipe server starting on {}", addr);
 
         axum::serve(listener, self.router())
             .with_graceful_shutdown(shutdown)
             .await?;
 
-        info!("WebPipe server shutdown complete");
+        info!("Web Pipe server shutdown complete");
         Ok(())
     }
 }
