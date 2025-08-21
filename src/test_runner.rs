@@ -125,7 +125,7 @@ mod tests {
             and output `.s` matches `^<p>x</p>$`
         "#;
         let (_rest, program) = crate::ast::parse_program(program_src).unwrap();
-        let summary = run_tests(program).await.unwrap();
+        let summary = run_tests(program, false).await.unwrap();
         assert_eq!(summary.total, 1);
         assert_eq!(summary.failed, 0);
     }
@@ -187,7 +187,7 @@ fn find_variable<'a>(variables: &'a [Variable], var_type: &str, name: &str) -> O
     variables.iter().find(|v| v.var_type == var_type && v.name == name)
 }
 
-pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
+pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, WebPipeError> {
     // Initialize global config (Context builder will also set globals and register partials)
     config::init_global(program.configs.clone());
 
@@ -371,7 +371,10 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                 match (field, cmp) {
                     ("status", "is") | ("status", "equals") => {
                         if let Ok(expected) = val_str.parse::<u16>() {
-                            if status != expected { cond_pass = false; failure_msgs.push(format!("expected status {} got {}", expected, status)); }
+                            if status != expected { 
+                                cond_pass = false; 
+                                failure_msgs.push(format!("expected status {} got {}", expected, status)); 
+                            }
                         } else { cond_pass = false; failure_msgs.push(format!("invalid expected status: {}", val_str)); }
                     }
                     ("status", "in") => {
@@ -399,11 +402,31 @@ pub async fn run_tests(program: Program) -> Result<TestSummary, WebPipeError> {
                         match op {
                             "equals" => {
                                 let expected = parse_backticked_json(val_str)?;
-                                if target != expected { cond_pass = false; failure_msgs.push("output mismatch".to_string()); }
+                                if target != expected { 
+                                    cond_pass = false; 
+                                    if verbose {
+                                        failure_msgs.push(format!("output mismatch\nExpected: {}\nActual: {}", 
+                                            serde_json::to_string_pretty(&expected).unwrap_or_else(|_| "<invalid JSON>".to_string()),
+                                            serde_json::to_string_pretty(&target).unwrap_or_else(|_| "<invalid JSON>".to_string()
+                                        )));
+                                    } else {
+                                        failure_msgs.push("output mismatch".to_string());
+                                    }
+                                }
                             }
                             "contains" => {
                                 let expected = parse_backticked_json(val_str)?;
-                                if !deep_contains(&target, &expected) { cond_pass = false; failure_msgs.push("output missing expected fragment".to_string()); }
+                                if !deep_contains(&target, &expected) { 
+                                    cond_pass = false; 
+                                    if verbose {
+                                        failure_msgs.push(format!("output missing expected fragment\nExpected to contain: {}\nActual output: {}", 
+                                            serde_json::to_string_pretty(&expected).unwrap_or_else(|_| "<invalid JSON>".to_string()),
+                                            serde_json::to_string_pretty(&target).unwrap_or_else(|_| "<invalid JSON>".to_string()
+                                        )));
+                                    } else {
+                                        failure_msgs.push("output missing expected fragment".to_string());
+                                    }
+                                }
                             }
                             "matches" => {
                                 let expected = parse_backticked_json(val_str)?;

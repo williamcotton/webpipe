@@ -4,16 +4,20 @@ use tokio::{sync::{mpsc as tokio_mpsc, oneshot}, signal};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use webpipe::{ast::parse_program, WebPipeServer, run_tests};
 
-fn load_env_files(env_dir: &Path, override_existing: bool) {
+fn load_env_files(env_dir: &Path, override_existing: bool, debug: bool) {
     // Load .env files located next to the WebPipe file
     let files = [".env", ".env.local"];
     for fname in files.iter() {
         let p = env_dir.join(fname);
         if p.exists() {
-            if override_existing {
-                let _ = dotenvy::from_filename_override(&p);
+            let result = if override_existing {
+                dotenvy::from_filename_override(&p)
             } else {
-                let _ = dotenvy::from_filename(&p);
+                dotenvy::from_filename(&p)
+            };
+            if debug && result.is_err() {
+                eprintln!("Warning: Failed to load {}: {}", p.display(), result.unwrap_err());
+                eprintln!("Hint: Check .env file syntax - each line should be KEY=VALUE format");
             }
         }
     }
@@ -33,13 +37,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     
     if args.len() < 2 {
-        eprintln!("Usage: {} <webpipe_file> [host:port|--test]", args[0]);
+        eprintln!("Usage: {} <webpipe_file> [host:port|--test] [--verbose]", args[0]);
         std::process::exit(1);
     }
 
     let file_path = &args[1];
-    // Determine if test mode
+    // Determine if test mode and verbose mode
     let test_mode = args.iter().any(|a| a == "--test");
+    let verbose_mode = args.iter().any(|a| a == "--verbose");
     let default_addr = "127.0.0.1:8090".to_string();
     // If explicit CLI addr is provided (and not --test), use it. Otherwise, if PORT env is set (Heroku), bind 0.0.0.0:PORT.
     let explicit_cli_addr = args.get(2).filter(|v| v.as_str() != "--test").cloned();
@@ -66,7 +71,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Initial load of .env files (do not override already-set process vars)
-    load_env_files(env_dir, false);
+    load_env_files(env_dir, false, verbose_mode);
 
     // File change notification: bridge notify (std thread) -> tokio
     let (raw_tx, raw_rx): (std_mpsc::Sender<notify::Result<notify::Event>>, std_mpsc::Receiver<notify::Result<notify::Event>>) = std_mpsc::channel();
@@ -93,7 +98,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     loop {
         // Reload .env files each iteration so edits take effect on hot-reload
-        load_env_files(env_dir, true);
+        load_env_files(env_dir, true, false);
 
         // Parse the WebPipe file
         let input = std::fs::read_to_string(file_path)?;
@@ -102,7 +107,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         if test_mode {
             // Run tests once and exit
-            match run_tests(program).await {
+            match run_tests(program, verbose_mode).await {
                 Ok(summary) => {
                     println!("Test Results: {}/{} passed ({} failed)", summary.passed, summary.total, summary.failed);
                     for o in summary.outcomes {
