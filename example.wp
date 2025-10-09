@@ -165,7 +165,7 @@ GET /lua/echo/:id
 GET /lua/teams/:id
   |> lua: `
     local id = tonumber(request.params.id)
-    local result, err = executeSql("SELECT * FROM teams WHERE id = " .. id)
+    local result, err = executeSql("SELECT * FROM teams WHERE id = $1", {id})
     if err then
       return { errors = { { type = "sqlError", message = err } } }
     end

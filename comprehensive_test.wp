@@ -277,19 +277,20 @@ GET /test6
 
 GET /test7
   |> lua: `
-    -- Test executeSql function in Lua
-    local result, err = executeSql("SELECT * FROM teams LIMIT 5")
-    
+    -- Test executeSql function in Lua with parameterized queries
+    local limit = 5
+    local result, err = executeSql("SELECT * FROM teams LIMIT $1", {limit})
+
     if err then
       return {
         error = "Database error: " .. err,
-        sql = "SELECT * FROM teams LIMIT 5"
+        sql = "SELECT * FROM teams LIMIT $1"
       }
     end
-    
+
     return {
-      message = "Lua executeSql test successful",
-      sql = "SELECT * FROM teams LIMIT 5",
+      message = "Lua executeSql test successful (parameterized)",
+      sql = "SELECT * FROM teams LIMIT $1",
       data = result,
       luaVersion = _VERSION
     }

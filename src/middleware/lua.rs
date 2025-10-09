@@ -75,12 +75,63 @@ impl LuaMiddleware {
                 Self::load_scripts_from_dir(&lua)?;
 
                 let pool_opt = self.ctx.pg.clone();
-                let exec_sql_fn = lua.create_function(move |lua, query: String| {
+                let exec_sql_fn = lua.create_function(move |lua, (query, params): (String, Option<LuaValue>)| {
                     let pool = match pool_opt.clone() { Some(p) => p, None => { let err = lua.create_string("database not configured")?; return Ok((LuaValue::Nil, LuaValue::String(err))); } };
+
+                    // Convert Lua params to JSON values for binding
+                    let param_values: Vec<Value> = match params {
+                        Some(LuaValue::Table(table)) => {
+                            let mut values = Vec::new();
+                            let mut i = 1;
+                            loop {
+                                match table.get::<i32, LuaValue>(i) {
+                                    Ok(val) => {
+                                        match LuaMiddleware::lua_to_json_with_depth(val, 0) {
+                                            Ok(json_val) => values.push(json_val),
+                                            Err(_) => break,
+                                        }
+                                        i += 1;
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                            values
+                        }
+                        Some(_) => {
+                            let err = lua.create_string("params must be a table/array")?;
+                            return Ok((LuaValue::Nil, LuaValue::String(err)));
+                        }
+                        None => Vec::new(),
+                    };
+
                     let handle = Handle::current();
                     let fut = async move {
                         let wrapped_sql = format!("WITH t AS ({}) SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) AS rows FROM t", query);
-                        let rows_json_res = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql).fetch_one(&pool).await;
+
+                        // Build query with parameters
+                        let mut query_builder = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql);
+                        for param in param_values {
+                            query_builder = match param {
+                                Value::Null => query_builder.bind(None::<String>),
+                                Value::Bool(b) => query_builder.bind(b),
+                                Value::Number(n) => {
+                                    if let Some(i) = n.as_i64() {
+                                        query_builder.bind(i)
+                                    } else if let Some(f) = n.as_f64() {
+                                        query_builder.bind(f)
+                                    } else {
+                                        query_builder.bind(0)
+                                    }
+                                }
+                                Value::String(s) => query_builder.bind(s),
+                                Value::Array(_) | Value::Object(_) => {
+                                    // Bind complex types as JSON
+                                    query_builder.bind(sqlx::types::Json(param))
+                                }
+                            };
+                        }
+
+                        let rows_json_res = query_builder.fetch_one(&pool).await;
                         match rows_json_res {
                             Ok(json) => { let rows = json.0; let row_count = rows.as_array().map(|a| a.len()).unwrap_or(0); let val = serde_json::json!({ "rows": rows, "rowCount": row_count }); Ok::<Value, String>(val) }
                             Err(e) => Err(e.to_string()),
