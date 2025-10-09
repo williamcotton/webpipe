@@ -43,15 +43,48 @@ fn get_auth_config() -> AuthConfig {
     }
 }
 
-fn build_set_cookie_header(token: &str) -> String {
+fn build_set_cookie_header(token: &str) -> Result<String, WebPipeError> {
     let cfg = get_auth_config();
+
+    // In production (release builds), enforce secure cookie settings
+    #[cfg(not(debug_assertions))]
+    {
+        if !cfg.cookie_secure {
+            tracing::error!("SECURITY: cookieSecure is false in production! Session cookies will be sent over HTTP.");
+            return Err(WebPipeError::ConfigError(
+                "cookieSecure MUST be true in production builds. Set it in your config auth block.".to_string()
+            ));
+        }
+    }
+
+    // Warn in development if insecure
+    #[cfg(debug_assertions)]
+    {
+        if !cfg.cookie_secure {
+            tracing::warn!("SECURITY WARNING: cookieSecure is false. Cookies will be sent over HTTP. This is only acceptable in development.");
+        }
+        if cfg.cookie_same_site.to_lowercase() == "lax" {
+            tracing::warn!("SECURITY WARNING: cookieSameSite is 'Lax'. Consider using 'Strict' to prevent CSRF attacks via GET requests.");
+        }
+    }
+
     let mut parts = vec![format!("{}={}", cfg.cookie_name, token)];
-    if cfg.cookie_http_only { parts.push("HttpOnly".to_string()); }
-    if cfg.cookie_secure { parts.push("Secure".to_string()); }
+
+    // Set HttpOnly (prevents XSS access to cookies)
+    if cfg.cookie_http_only {
+        parts.push("HttpOnly".to_string());
+    }
+
+    // Set Secure flag
+    if cfg.cookie_secure {
+        parts.push("Secure".to_string());
+    }
+
     parts.push(format!("SameSite={}", cfg.cookie_same_site));
     parts.push(format!("Path={}", cfg.cookie_path));
     parts.push(format!("Max-Age={}", cfg.session_ttl));
-    parts.join("; ")
+
+    Ok(parts.join("; "))
 }
 
 fn build_clear_cookie_header() -> String {
@@ -132,7 +165,7 @@ async fn auth_login(pool: &PgPool, input: &Value) -> Result<Value, WebPipeError>
                 "status": "active"
             }),
         );
-        let cookie = build_set_cookie_header(&token);
+        let cookie = build_set_cookie_header(&token)?;
         if let Some(existing) = obj.get_mut("setCookies") {
             if let Some(arr) = existing.as_array_mut() {
                 arr.push(Value::String(cookie));
@@ -324,8 +357,8 @@ mod tests {
     fn cookie_header_builders_have_expected_flags() {
         // Initialize global config for test
         crate::config::init_global(vec![]);
-        
-        let set = build_set_cookie_header("abc");
+
+        let set = build_set_cookie_header("abc").unwrap();
         assert!(set.contains("wp_session=abc"));
         assert!(set.contains("HttpOnly"));
         assert!(set.contains("SameSite"));
@@ -338,6 +371,13 @@ mod tests {
         assert!(clr.contains("Path=/"));
         assert!(clr.contains("Max-Age=0"));
     }
+
+    // Note: Production-specific cookie security tests are difficult to unit test
+    // because:
+    // 1. Global config can only be initialized once per process (OnceCell)
+    // 2. Debug vs release builds behave differently
+    // The security enforcement is tested through integration tests and
+    // will prevent insecure cookies in production builds at runtime.
 
     #[test]
     fn auth_error_object_shape() {

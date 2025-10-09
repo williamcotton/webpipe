@@ -13,4 +13,55 @@ Cookies:
 
 Errors: `authError { message }`.
 
+## Security Configuration
+
+**IMPORTANT: Production builds enforce secure cookie settings.**
+
+### Required Settings for Production
+
+```wp
+config auth {
+  sessionTtl: 604800
+  cookieName: "wp_session"
+  cookieSecure: true        # REQUIRED in production (enforced)
+  cookieHttpOnly: true      # Prevents XSS attacks
+  cookieSameSite: "Strict"  # Recommended: prevents CSRF attacks
+  cookiePath: "/"
+}
+```
+
+### Cookie Security Flags
+
+- **`cookieSecure: true`** - Cookies only sent over HTTPS (ENFORCED in production builds)
+  - Production builds will ERROR if this is false
+  - Development builds will WARN but allow for local testing
+
+- **`cookieHttpOnly: true`** - Prevents JavaScript access to cookies (protects against XSS)
+  - Should always be enabled (default: true)
+
+- **`cookieSameSite`** - CSRF protection:
+  - `"Strict"` - Most secure, prevents all cross-site requests (recommended)
+  - `"Lax"` - Allows top-level GET navigation (default)
+  - `"None"` - Allows all cross-site requests (requires `cookieSecure: true`)
+
+### Attack Prevention
+
+| Attack Type | Protection | Configuration |
+|-------------|-----------|---------------|
+| Session Hijacking (MITM) | HTTPS + Secure flag | `cookieSecure: true` |
+| XSS Cookie Theft | HttpOnly flag | `cookieHttpOnly: true` |
+| CSRF | SameSite flag | `cookieSameSite: "Strict"` |
+
+### Development vs Production
+
+**Development (debug builds):**
+- Insecure settings trigger warnings
+- Allows HTTP for local testing
+- `cookieSecure: false` permitted
+
+**Production (release builds):**
+- Insecure settings cause errors
+- `cookieSecure: false` will prevent server from issuing session cookies
+- Always deploy with HTTPS
+
 
