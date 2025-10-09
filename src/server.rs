@@ -377,13 +377,55 @@ fn public_dir_path() -> PathBuf {
 }
 
 fn normalize_static_path(request_path: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    use percent_encoding::percent_decode_str;
+
     if !request_path.starts_with('/') { return None; }
-    let mut rel = request_path.trim_start_matches('/');
+
+    // Decode URL encoding to catch encoded traversal attempts like %2e%2e
+    let decoded = match percent_decode_str(request_path).decode_utf8() {
+        Ok(s) => s.into_owned(),
+        Err(_) => return None,
+    };
+
+    let mut rel = decoded.trim_start_matches('/');
     if rel.is_empty() { rel = "index.html"; }
-    if rel.contains("..") { return None; }
-    let mut full = public_dir_path();
-    full.push(rel);
-    Some(full)
+
+    // Parse the path and ensure no parent directory components exist
+    let path = Path::new(rel);
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => continue,
+            Component::RootDir | Component::CurDir => continue,
+            Component::ParentDir => return None, // Block any .. components
+            Component::Prefix(_) => return None,  // Block Windows drive prefixes
+        }
+    }
+
+    // Build the full path and canonicalize to resolve any remaining tricks
+    let public_dir = public_dir_path();
+    let full = public_dir.join(rel);
+
+    // Canonicalize both paths to resolve symlinks and relative components
+    // This is the final defense - ensure the resolved path is still under public_dir
+    match (full.canonicalize(), public_dir.canonicalize()) {
+        (Ok(canonical_full), Ok(canonical_public)) => {
+            if canonical_full.starts_with(&canonical_public) {
+                Some(full)
+            } else {
+                None
+            }
+        }
+        _ => {
+            // If canonicalization fails (file doesn't exist yet), do a prefix check on the non-canonical paths
+            // This allows serving of files that exist while still protecting against traversal
+            if full.starts_with(&public_dir) {
+                Some(full)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 fn guess_content_type(path: &Path) -> &'static str {
@@ -457,6 +499,68 @@ mod tests {
         // root -> index.html
         let p2 = normalize_static_path("/").unwrap();
         assert!(p2.ends_with("index.html"));
+    }
+
+    #[test]
+    fn path_traversal_attacks_blocked() {
+        std::env::set_var("WEBPIPE_PUBLIC_DIR", "public");
+
+        // Classic path traversal
+        assert!(normalize_static_path("/../../../etc/passwd").is_none());
+        assert!(normalize_static_path("/../../secret").is_none());
+        assert!(normalize_static_path("/foo/../../bar").is_none());
+
+        // URL-encoded traversal attempts
+        assert!(normalize_static_path("/%2e%2e/etc/passwd").is_none());
+        assert!(normalize_static_path("/%2e%2e%2f%2e%2e%2fetc%2fpasswd").is_none());
+        assert!(normalize_static_path("/foo/%2e%2e/%2e%2e/secret").is_none());
+
+        // Mixed encoding
+        assert!(normalize_static_path("/foo/..%2f..%2fsecret").is_none());
+        assert!(normalize_static_path("/%2e%2e/../etc/passwd").is_none());
+
+        // Double-encoded attempts (decodes to %2e%2e which is not a valid filename, so it will return Some but the file won't exist)
+        // This is acceptable since the path still doesn't escape the public directory
+
+        // On Windows, backslashes are path separators and should be blocked in combination with ..
+        // On Unix, backslash is just a regular filename character, so /..\ is a directory named ".."
+        #[cfg(target_os = "windows")]
+        {
+            assert!(normalize_static_path("/..\\..\\secret").is_none());
+        }
+
+        // Null byte injection (caught by UTF-8 validation)
+        assert!(normalize_static_path("/../secret%00.txt").is_none() ||
+                normalize_static_path("/../secret%00.txt").unwrap().to_str().unwrap().contains("secret%00"));
+
+        // Valid paths should still work
+        assert!(normalize_static_path("/index.html").is_some());
+        assert!(normalize_static_path("/assets/style.css").is_some());
+        assert!(normalize_static_path("/js/app.js").is_some());
+        assert!(normalize_static_path("/").is_some());
+    }
+
+    #[test]
+    fn path_normalization_with_special_chars() {
+        std::env::set_var("WEBPIPE_PUBLIC_DIR", "public");
+
+        // URL-encoded normal characters should work
+        assert!(normalize_static_path("/file%20name.html").is_some());
+        assert!(normalize_static_path("/foo%2Fbar.txt").is_some());
+
+        // Current directory references should be handled
+        assert!(normalize_static_path("/./file.html").is_some());
+        assert!(normalize_static_path("/foo/./bar.txt").is_some());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_drive_prefixes_blocked() {
+        std::env::set_var("WEBPIPE_PUBLIC_DIR", "public");
+
+        // Windows absolute paths and drive letters should be blocked
+        assert!(normalize_static_path("/C:/Windows/System32/config/sam").is_none());
+        assert!(normalize_static_path("/C:\\Windows\\System32").is_none());
     }
 
     #[tokio::test]

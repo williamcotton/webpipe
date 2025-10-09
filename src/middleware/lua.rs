@@ -83,17 +83,12 @@ impl LuaMiddleware {
                         Some(LuaValue::Table(table)) => {
                             let mut values = Vec::new();
                             let mut i = 1;
-                            loop {
-                                match table.get::<i32, LuaValue>(i) {
-                                    Ok(val) => {
-                                        match LuaMiddleware::lua_to_json_with_depth(val, 0) {
-                                            Ok(json_val) => values.push(json_val),
-                                            Err(_) => break,
-                                        }
-                                        i += 1;
-                                    }
+                            while let Ok(val) = table.get::<i32, LuaValue>(i) {
+                                match LuaMiddleware::lua_to_json_with_depth(val, 0) {
+                                    Ok(json_val) => values.push(json_val),
                                     Err(_) => break,
                                 }
+                                i += 1;
                             }
                             values
                         }
