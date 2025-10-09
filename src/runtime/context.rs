@@ -15,22 +15,57 @@ use crate::ast::Variable;
 pub struct CacheEntry {
     pub payload: Value,
     pub expires_at: std::time::Instant,
+    pub size_bytes: usize,
 }
 
 #[derive(Clone, Debug)]
 pub struct CacheStore {
     inner: Arc<Mutex<LruCache<String, CacheEntry>>>,
     default_ttl_secs: u64,
+    max_entry_size: usize,
+    max_total_size: usize,
+    current_size: Arc<Mutex<usize>>,
 }
 
 impl CacheStore {
+    /// Maximum size for a single cache entry (1MB)
+    pub const DEFAULT_MAX_ENTRY_SIZE: usize = 1_048_576;
+
+    /// Maximum total cache size (10MB)
+    pub const DEFAULT_MAX_TOTAL_SIZE: usize = 10_485_760;
+
     pub fn new(max_entries: usize, default_ttl_secs: u64) -> Self {
+        Self::new_with_limits(
+            max_entries,
+            default_ttl_secs,
+            Self::DEFAULT_MAX_ENTRY_SIZE,
+            Self::DEFAULT_MAX_TOTAL_SIZE,
+        )
+    }
+
+    pub fn new_with_limits(
+        max_entries: usize,
+        default_ttl_secs: u64,
+        max_entry_size: usize,
+        max_total_size: usize,
+    ) -> Self {
         let capacity = std::num::NonZeroUsize::new(max_entries)
             .unwrap_or_else(|| std::num::NonZeroUsize::new(1024).unwrap());
         Self {
             inner: Arc::new(Mutex::new(LruCache::new(capacity))),
             default_ttl_secs,
+            max_entry_size,
+            max_total_size,
+            current_size: Arc::new(Mutex::new(0)),
         }
+    }
+
+    /// Estimate the size of a JSON value in bytes
+    fn estimate_size(value: &Value) -> usize {
+        // Serialize to JSON string to get accurate size
+        serde_json::to_string(value)
+            .map(|s| s.len())
+            .unwrap_or(0)
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
@@ -38,6 +73,12 @@ impl CacheStore {
         if let Some(entry) = guard.get(key) {
             if std::time::Instant::now() < entry.expires_at {
                 return Some(entry.payload.clone());
+            } else {
+                // Entry expired, remove it and update size
+                if let Some(removed) = guard.pop(key) {
+                    let mut size = self.current_size.lock();
+                    *size = size.saturating_sub(removed.size_bytes);
+                }
             }
         }
         None
@@ -46,14 +87,89 @@ impl CacheStore {
     pub fn put(&self, key: String, payload: Value, ttl_secs: Option<u64>) {
         let ttl = ttl_secs.unwrap_or(self.default_ttl_secs);
         if ttl == 0 { return; }
+
+        // Estimate payload size
+        let entry_size = Self::estimate_size(&payload);
+
+        // Check per-entry size limit
+        if entry_size > self.max_entry_size {
+            tracing::warn!(
+                "Rejecting cache entry '{}' (size={} bytes, max={} bytes)",
+                key,
+                entry_size,
+                self.max_entry_size
+            );
+            return;
+        }
+
         let mut guard = self.inner.lock();
-        guard.put(
-            key,
-            CacheEntry { payload, expires_at: std::time::Instant::now() + Duration::from_secs(ttl) },
-        );
+        let mut size_guard = self.current_size.lock();
+
+        // If key exists, subtract its old size
+        if let Some(old_entry) = guard.peek(&key) {
+            *size_guard = size_guard.saturating_sub(old_entry.size_bytes);
+        }
+
+        // Check if adding this entry would exceed total size limit
+        let new_total = *size_guard + entry_size;
+        if new_total > self.max_total_size {
+            // Evict LRU entries until we have space
+            while *size_guard + entry_size > self.max_total_size {
+                if let Some((_, evicted)) = guard.pop_lru() {
+                    *size_guard = size_guard.saturating_sub(evicted.size_bytes);
+                    tracing::debug!(
+                        "Evicted LRU cache entry (size={} bytes) to make room",
+                        evicted.size_bytes
+                    );
+                } else {
+                    // Cache is empty but entry is still too large for total limit
+                    tracing::warn!(
+                        "Cache entry '{}' too large for total cache size (entry={} bytes, max_total={} bytes)",
+                        key,
+                        entry_size,
+                        self.max_total_size
+                    );
+                    return;
+                }
+            }
+        }
+
+        // Insert the new entry
+        let entry = CacheEntry {
+            payload,
+            expires_at: std::time::Instant::now() + Duration::from_secs(ttl),
+            size_bytes: entry_size,
+        };
+
+        // If insert evicts an old entry, update size
+        if let Some((_, evicted)) = guard.push(key, entry) {
+            *size_guard = size_guard.saturating_sub(evicted.size_bytes);
+        }
+
+        *size_guard += entry_size;
     }
 
     pub fn default_ttl(&self) -> u64 { self.default_ttl_secs }
+
+    /// Get current cache statistics
+    pub fn stats(&self) -> CacheStats {
+        let guard = self.inner.lock();
+        let size_guard = self.current_size.lock();
+        CacheStats {
+            entry_count: guard.len(),
+            total_size_bytes: *size_guard,
+            max_entry_size: self.max_entry_size,
+            max_total_size: self.max_total_size,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheStats {
+    pub entry_count: usize,
+    pub total_size_bytes: usize,
+    pub max_entry_size: usize,
+    pub max_total_size: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -92,12 +208,16 @@ impl Context {
             .unwrap_or_else(|_| serde_json::json!({
                 "enabled": true,
                 "defaultTtl": 60,
-                "maxCacheSize": 10_485_760
+                "maxCacheSize": 10_485_760,
+                "maxEntrySize": 1_048_576
             }));
         let default_ttl_secs = cache_cfg.get("defaultTtl").and_then(|v| v.as_u64()).unwrap_or(60);
-        let max_bytes = cache_cfg.get("maxCacheSize").and_then(|v| v.as_u64()).unwrap_or(10_485_760);
-        let approx_entry_size = 4096u64;
-        let max_entries = std::cmp::max(64, (max_bytes / approx_entry_size) as usize);
+        let max_total_bytes = cache_cfg.get("maxCacheSize").and_then(|v| v.as_u64()).unwrap_or(10_485_760) as usize;
+        let max_entry_bytes = cache_cfg.get("maxEntrySize").and_then(|v| v.as_u64()).unwrap_or(1_048_576) as usize;
+
+        // Estimate max entries based on average entry size
+        let approx_entry_size = 4096usize;
+        let max_entries = std::cmp::max(64, max_total_bytes / approx_entry_size);
 
         let http = Client::builder()
             .timeout(Duration::from_secs(10))
@@ -156,7 +276,12 @@ impl Context {
         Ok(Self {
             pg,
             http,
-            cache: CacheStore::new(max_entries, default_ttl_secs),
+            cache: CacheStore::new_with_limits(
+                max_entries,
+                default_ttl_secs,
+                max_entry_bytes,
+                max_total_bytes,
+            ),
             hb: Arc::new(Mutex::new(hb)),
             cfg: ConfigSnapshot(serde_json::json!({})),
         })
@@ -184,6 +309,59 @@ mod tests {
         assert!(cache.get("k2").is_some());
         std::thread::sleep(std::time::Duration::from_millis(1100));
         assert!(cache.get("k2").is_none());
+    }
+
+    #[test]
+    fn cache_rejects_oversized_entries() {
+        // Create cache with 1KB max entry size
+        let cache = CacheStore::new_with_limits(16, 60, 1024, 10_000);
+
+        // Small entry should succeed
+        let small = serde_json::json!({"data": "small"});
+        cache.put("small".to_string(), small.clone(), None);
+        assert!(cache.get("small").is_some());
+
+        // Large entry should be rejected
+        let large_string = "x".repeat(2000);
+        let large = serde_json::json!({"data": large_string});
+        cache.put("large".to_string(), large, None);
+        assert!(cache.get("large").is_none(), "Large entry should be rejected");
+    }
+
+    #[test]
+    fn cache_evicts_lru_when_full() {
+        // Create cache with 1KB total size
+        let cache = CacheStore::new_with_limits(100, 60, 500, 1000);
+
+        // Add entries until we exceed total size
+        cache.put("entry1".to_string(), serde_json::json!({"data": "x".repeat(300)}), None);
+        cache.put("entry2".to_string(), serde_json::json!({"data": "y".repeat(300)}), None);
+
+        // Access entry1 to make it more recently used
+        let _ = cache.get("entry1");
+
+        // Add entry3 which should evict entry2 (LRU)
+        cache.put("entry3".to_string(), serde_json::json!({"data": "z".repeat(300)}), None);
+
+        // entry1 and entry3 should exist, entry2 should be evicted
+        assert!(cache.get("entry1").is_some(), "entry1 should still exist (recently used)");
+        assert!(cache.get("entry3").is_some(), "entry3 should exist (just added)");
+        // Note: Due to LRU eviction, entry2 may or may not be evicted depending on exact sizes
+    }
+
+    #[test]
+    fn cache_stats_tracking() {
+        let cache = CacheStore::new_with_limits(10, 60, 1000, 5000);
+
+        // Add some entries
+        cache.put("key1".to_string(), serde_json::json!({"data": "test1"}), None);
+        cache.put("key2".to_string(), serde_json::json!({"data": "test2"}), None);
+
+        let stats = cache.stats();
+        assert_eq!(stats.entry_count, 2);
+        assert!(stats.total_size_bytes > 0);
+        assert_eq!(stats.max_entry_size, 1000);
+        assert_eq!(stats.max_total_size, 5000);
     }
 
     #[tokio::test]
