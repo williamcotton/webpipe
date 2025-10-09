@@ -83,9 +83,19 @@ impl LuaMiddleware {
                         Some(LuaValue::Table(table)) => {
                             let mut values = Vec::new();
                             let mut i = 1;
-                            while let Ok(val) = table.get::<i32, LuaValue>(i) {
-                                match LuaMiddleware::lua_to_json_with_depth(val, 0) {
-                                    Ok(json_val) => values.push(json_val),
+                            loop {
+                                match table.get::<i32, LuaValue>(i) {
+                                    Ok(LuaValue::Nil) => break,
+                                    Ok(val) => {
+                                        match LuaMiddleware::lua_to_json_with_depth(val, 0) {
+                                            Ok(json_val) => {
+                                                values.push(json_val);
+                                            }
+                                            Err(_) => {
+                                                break;
+                                            }
+                                        }
+                                    }
                                     Err(_) => break,
                                 }
                                 i += 1;
@@ -105,10 +115,10 @@ impl LuaMiddleware {
 
                         // Build query with parameters
                         let mut query_builder = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql);
-                        for param in param_values {
+                        for (_, param) in param_values.iter().enumerate() {  
                             query_builder = match param {
                                 Value::Null => query_builder.bind(None::<String>),
-                                Value::Bool(b) => query_builder.bind(b),
+                                Value::Bool(b) => query_builder.bind(*b),
                                 Value::Number(n) => {
                                     if let Some(i) = n.as_i64() {
                                         query_builder.bind(i)
@@ -118,10 +128,10 @@ impl LuaMiddleware {
                                         query_builder.bind(0)
                                     }
                                 }
-                                Value::String(s) => query_builder.bind(s),
+                                Value::String(s) => query_builder.bind(s.clone()),
                                 Value::Array(_) | Value::Object(_) => {
                                     // Bind complex types as JSON
-                                    query_builder.bind(sqlx::types::Json(param))
+                                    query_builder.bind(sqlx::types::Json(param.clone()))
                                 }
                             };
                         }
@@ -129,12 +139,21 @@ impl LuaMiddleware {
                         let rows_json_res = query_builder.fetch_one(&pool).await;
                         match rows_json_res {
                             Ok(json) => { let rows = json.0; let row_count = rows.as_array().map(|a| a.len()).unwrap_or(0); let val = serde_json::json!({ "rows": rows, "rowCount": row_count }); Ok::<Value, String>(val) }
-                            Err(e) => Err(e.to_string()),
+                            Err(e) => {
+                                tracing::error!("SQL error: {}", e);
+                                Err(e.to_string())
+                            },
                         }
                     };
                     match tokio::task::block_in_place(|| handle.block_on(fut)) {
-                        Ok(json_val) => { let lua_val = LuaMiddleware::json_to_lua(lua, &json_val)?; Ok((lua_val, LuaValue::Nil)) }
-                        Err(err_msg) => { let err = lua.create_string(&err_msg)?; Ok((LuaValue::Nil, LuaValue::String(err))) }
+                        Ok(json_val) => {
+                            let lua_val = LuaMiddleware::json_to_lua(lua, &json_val)?;
+                            Ok((lua_val, LuaValue::Nil))
+                        }
+                        Err(err_msg) => {
+                            let err = lua.create_string(&err_msg)?;
+                            Ok((LuaValue::Nil, LuaValue::String(err)))
+                        }
                     }
                 }).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create executeSql: {}", e)))?;
                 if let Err(e) = lua.globals().set("executeSql", exec_sql_fn) { return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to register executeSql: {}", e))); }
