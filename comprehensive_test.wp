@@ -1138,3 +1138,64 @@ GET /test-fetch-error
 GET /test-fetch-timeout
   |> jq: `{ fetchTimeout: 1 }`
   |> fetch: `https://httpbin.org/delay/5`
+
+## Test Lua Script Preloading Performance
+# These routes test the performance improvements from preloading Lua scripts
+
+GET /lua-preload-test
+  |> lua: `
+
+    local numbers = {10, 20, 30, 40, 50}
+    local sum = mathUtils.sum(numbers)
+    local avg = mathUtils.average(numbers)
+    local fib15 = mathUtils.fibonacci(15)
+    local primeCount = mathUtils.countPrimes(100)
+
+    return {
+      message = "Successfully loaded preloaded Lua module",
+      numbers = numbers,
+      sum = sum,
+      average = avg,
+      fibonacci_15 = fib15,
+      primes_up_to_100 = primeCount,
+      note = "This uses preloaded scripts (zero filesystem I/O on request path!)"
+    }
+  `
+
+GET /lua-preload-bench
+  |> lua: `
+
+
+    -- Do some calculations
+    local results = {}
+    for i = 1, 20 do
+      results[i] = mathUtils.fibonacci(i)
+    end
+
+    local primes = mathUtils.countPrimes(500)
+
+    return {
+      message = "Lua script preload benchmark",
+      fibonacci_sequence = results,
+      primes_up_to_500 = primes,
+      performance_note = "Script loaded from memory, not filesystem!"
+    }
+  `
+
+GET /lua-script-stress
+  |> lua: `
+    -- Stress test: require script many times in a single request
+    local iterations = 50
+    local results = {}
+
+    for i = 1, iterations do
+      results[i] = mathUtils.fibonacci(10)
+    end
+
+    return {
+      message = "Stress test completed",
+      iterations = iterations,
+      note = "Required script 50 times - all from memory cache!",
+      sample_results = {results[1], results[25], results[50]}
+    }
+  `

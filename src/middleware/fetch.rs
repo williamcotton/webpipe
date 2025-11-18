@@ -194,6 +194,7 @@ mod tests {
             cache: CacheStore::new(64, 1),
             hb: std::sync::Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
+            lua_scripts: std::sync::Arc::new(std::collections::HashMap::new()),
         })
     }
 

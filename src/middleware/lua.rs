@@ -4,8 +4,6 @@ use async_trait::async_trait;
 use mlua::{Lua, Value as LuaValue, Result as LuaResult};
 use serde_json::Value;
 use sqlx::{self};
-use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 use tokio::runtime::Handle;
 
@@ -21,26 +19,18 @@ pub struct LuaMiddleware { pub(crate) ctx: Arc<Context> }
 impl LuaMiddleware {
     pub fn new(ctx: Arc<Context>) -> Self { Self { ctx } }
 
-    fn load_scripts_from_dir(lua: &Lua) -> Result<(), WebPipeError> {
-        let scripts_dir = std::env::var("WEBPIPE_SCRIPTS_DIR").unwrap_or_else(|_| "scripts".to_string());
-        let dir_path = Path::new(&scripts_dir);
-        if !dir_path.is_dir() { return Ok(()); }
-        let entries = fs::read_dir(dir_path)
-            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to read scripts directory '{}': {}", scripts_dir, e)))?;
-        for entry in entries {
-            let entry = match entry { Ok(e) => e, Err(e) => { return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to iterate scripts directory: {}", e))); } };
-            let path = entry.path();
-            if path.is_file() {
-                let is_lua = path.extension().and_then(|ext| ext.to_str()).map(|ext| ext.eq_ignore_ascii_case("lua")).unwrap_or(false);
-                if !is_lua { continue; }
-                let module_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                if module_name.is_empty() { continue; }
-                let source = fs::read_to_string(&path)
-                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to read Lua script '{}': {}", path.display(), e)))?;
-                let chunk = lua.load(&source).set_name(format!("@{}", module_name));
-                let returned: LuaValue = chunk.eval().map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Lua script '{}' execution error: {}", module_name, e)))?;
-                lua.globals().set(module_name, returned).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to register Lua module as global: {}", e)))?;
-            }
+    fn load_scripts_from_dir(&self, lua: &Lua) -> Result<(), WebPipeError> {
+        // Use preloaded scripts from Context (no blocking I/O!)
+        for (module_name, source) in self.ctx.lua_scripts.iter() {
+            let chunk = lua.load(source).set_name(format!("@{}", module_name));
+            let returned: LuaValue = chunk.eval()
+                .map_err(|e| WebPipeError::MiddlewareExecutionError(
+                    format!("Lua script '{}' execution error: {}", module_name, e)
+                ))?;
+            lua.globals().set(module_name.as_str(), returned)
+                .map_err(|e| WebPipeError::MiddlewareExecutionError(
+                    format!("Failed to register Lua module as global: {}", e)
+                ))?;
         }
         Ok(())
     }
@@ -62,18 +52,23 @@ impl LuaMiddleware {
                 }).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create getEnv: {}", e)))?;
                 if let Err(e) = lua.globals().set("getEnv", get_env_fn) { return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to register getEnv: {}", e))); }
 
-                let require_fn = lua.create_function(|lua, name: String| {
-                    let mut path = std::env::var("WEBPIPE_SCRIPTS_DIR").unwrap_or_else(|_| "scripts".to_string());
-                    if !path.ends_with('/') { path.push('/'); }
-                    let full = format!("{}{}.lua", path, name);
-                    match std::fs::read_to_string(&full) {
-                        Ok(src) => { let chunk = lua.load(&src).set_name(format!("@{}", name)); let val: LuaValue = chunk.eval().map_err(|e| mlua::Error::external(e.to_string()))?; lua.globals().set(name, val.clone())?; Ok(val) },
-                        Err(_) => Ok(LuaValue::Nil)
+                // Clone Arc to move into closure (cheap - just increments ref count)
+                let scripts = self.ctx.lua_scripts.clone();
+                let require_fn = lua.create_function(move |lua, name: String| {
+                    // Use preloaded scripts from Context (no blocking I/O!)
+                    match scripts.get(&name) {
+                        Some(src) => {
+                            let chunk = lua.load(src).set_name(format!("@{}", name));
+                            let val: LuaValue = chunk.eval().map_err(|e| mlua::Error::external(e.to_string()))?;
+                            lua.globals().set(name, val.clone())?;
+                            Ok(val)
+                        },
+                        None => Ok(LuaValue::Nil)
                     }
                 }).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create requireScript: {}", e)))?;
                 if let Err(e) = lua.globals().set("requireScript", require_fn) { return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to register requireScript: {}", e))); }
 
-                Self::load_scripts_from_dir(&lua)?;
+                self.load_scripts_from_dir(&lua)?;
 
                 let pool_opt = self.ctx.pg.clone();
                 let exec_sql_fn = lua.create_function(move |lua, (query, params): (String, Option<LuaValue>)| {
@@ -258,6 +253,34 @@ mod tests {
             cache: CacheStore::new(64, 1),
             hb: std::sync::Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
+            lua_scripts: std::sync::Arc::new(std::collections::HashMap::new()),
+        })
+    }
+
+    fn ctx_with_scripts() -> Arc<Context> {
+        let mut scripts = std::collections::HashMap::new();
+        // Try to load scripts from the scripts directory for testing
+        let scripts_dir = std::env::var("WEBPIPE_SCRIPTS_DIR").unwrap_or_else(|_| "scripts".to_string());
+        if let Ok(entries) = std::fs::read_dir(&scripts_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("lua")).unwrap_or(false) {
+                    if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            scripts.insert(name.to_string(), content);
+                        }
+                    }
+                }
+            }
+        }
+
+        Arc::new(Context {
+            pg: None,
+            http: reqwest::Client::builder().build().unwrap(),
+            cache: CacheStore::new(64, 1),
+            hb: std::sync::Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
+            cfg: ConfigSnapshot(serde_json::json!({})),
+            lua_scripts: std::sync::Arc::new(scripts),
         })
     }
 
@@ -274,7 +297,7 @@ mod tests {
     #[tokio::test]
     async fn require_script_and_get_env_registered() {
         std::env::set_var("WEBPIPE_SCRIPTS_DIR", "scripts");
-        let mw = LuaMiddleware::new(ctx_no_db());
+        let mw = LuaMiddleware::new(ctx_with_scripts());
         let out = mw.execute("local c = requireScript('dateFormatter'); return type(c) ~= 'nil'", &serde_json::json!({})).await.unwrap();
         assert!(out.as_bool().unwrap() || out.is_string());
         let out2 = mw.execute("return getEnv('PATH') ~= nil", &serde_json::json!({})).await.unwrap();

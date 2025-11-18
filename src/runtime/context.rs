@@ -182,6 +182,7 @@ pub struct Context {
     pub cache: CacheStore,
     pub hb: Arc<Mutex<Handlebars<'static>>>,
     pub cfg: ConfigSnapshot,
+    pub lua_scripts: Arc<std::collections::HashMap<String, String>>,
 }
 
 impl std::fmt::Debug for Context {
@@ -195,6 +196,57 @@ impl std::fmt::Debug for Context {
 }
 
 impl Context {
+    /// Load all Lua scripts from the scripts directory into memory
+    fn load_lua_scripts() -> std::collections::HashMap<String, String> {
+        let scripts_dir = std::env::var("WEBPIPE_SCRIPTS_DIR").unwrap_or_else(|_| "scripts".to_string());
+        let dir_path = std::path::Path::new(&scripts_dir);
+        let mut scripts = std::collections::HashMap::new();
+
+        if !dir_path.is_dir() {
+            tracing::debug!("Lua scripts directory '{}' not found, skipping preload", scripts_dir);
+            return scripts;
+        }
+
+        match std::fs::read_dir(dir_path) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let is_lua = path.extension()
+                            .and_then(|ext| ext.to_str())
+                            .map(|ext| ext.eq_ignore_ascii_case("lua"))
+                            .unwrap_or(false);
+
+                        if !is_lua { continue; }
+
+                        let module_name = path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        if module_name.is_empty() { continue; }
+
+                        match std::fs::read_to_string(&path) {
+                            Ok(source) => {
+                                tracing::debug!("Preloaded Lua script: {}", module_name);
+                                scripts.insert(module_name, source);
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to read Lua script '{}': {}", path.display(), e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to read scripts directory '{}': {}", scripts_dir, e);
+            }
+        }
+
+        tracing::info!("Preloaded {} Lua script(s)", scripts.len());
+        scripts
+    }
+
     pub async fn from_program_configs(
         configs: Vec<crate::ast::Config>,
         variables: &[Variable],
@@ -273,6 +325,9 @@ impl Context {
             }
         }
 
+        // Preload all Lua scripts at startup (non-blocking since we're in async context)
+        let lua_scripts = Arc::new(Self::load_lua_scripts());
+
         Ok(Self {
             pg,
             http,
@@ -284,6 +339,7 @@ impl Context {
             ),
             hb: Arc::new(Mutex::new(hb)),
             cfg: ConfigSnapshot(serde_json::json!({})),
+            lua_scripts,
         })
     }
 }
