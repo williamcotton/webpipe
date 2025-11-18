@@ -12,6 +12,7 @@ use tokio::runtime::Handle;
 // Thread-local Lua state since Lua is not Send + Sync
 thread_local! {
     static LUA_STATE: std::cell::RefCell<Option<Lua>> = const { std::cell::RefCell::new(None) };
+    static LUA_INITIALIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(Debug)]
@@ -115,7 +116,7 @@ impl LuaMiddleware {
 
                         // Build query with parameters
                         let mut query_builder = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql);
-                        for (_, param) in param_values.iter().enumerate() {  
+                        for (_, param) in param_values.iter().enumerate() {
                             query_builder = match param {
                                 Value::Null => query_builder.bind(None::<String>),
                                 Value::Bool(b) => query_builder.bind(*b),
@@ -159,6 +160,9 @@ impl LuaMiddleware {
                 if let Err(e) = lua.globals().set("executeSql", exec_sql_fn) { return Err(WebPipeError::MiddlewareExecutionError(format!("Failed to register executeSql: {}", e))); }
 
                 *state = Some(lua);
+
+                // Mark as initialized to avoid future checks
+                LUA_INITIALIZED.with(|initialized| initialized.set(true));
             }
             Ok(())
         })
@@ -215,7 +219,12 @@ impl LuaMiddleware {
     }
 
     fn execute_lua_script(&self, script: &str, input: &Value) -> Result<Value, WebPipeError> {
-        self.ensure_lua_initialized()?;
+        // Fast path: check if already initialized without function call overhead
+        let initialized = LUA_INITIALIZED.with(|initialized| initialized.get());
+        if !initialized {
+            self.ensure_lua_initialized()?;
+        }
+
         LUA_STATE.with(|state| {
             let state = state.borrow();
             let lua = state.as_ref().unwrap();
