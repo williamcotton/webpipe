@@ -134,6 +134,7 @@ impl WebPipeServer {
             named_pipelines: Arc::new(named_pipelines),
             invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
             environment: std::env::var("WEBPIPE_ENV").ok(),
+            async_registry: crate::executor::AsyncTaskRegistry::new(),
         };
 
         let server_state = ServerState {
@@ -595,6 +596,7 @@ mod tests {
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(RealInvoker::new(registry.clone())),
             environment: None,
+            async_registry: crate::executor::AsyncTaskRegistry::new(),
         };
         let state = ServerState {
             middleware_registry: registry.clone(),

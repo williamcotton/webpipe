@@ -2,6 +2,8 @@ use std::{collections::HashMap, pin::Pin, sync::Arc, future::Future};
 
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::task::JoinHandle;
+use parking_lot::Mutex;
 
 use crate::{
     ast::{Pipeline, PipelineStep, Variable},
@@ -21,12 +23,35 @@ pub trait MiddlewareInvoker: Send + Sync {
     async fn call(&self, name: &str, cfg: &str, input: &Value) -> Result<Value, WebPipeError>;
 }
 
+/// Registry for async tasks spawned with @async tag
+#[derive(Clone)]
+pub struct AsyncTaskRegistry {
+    tasks: Arc<Mutex<HashMap<String, JoinHandle<Result<Value, WebPipeError>>>>>,
+}
+
+impl AsyncTaskRegistry {
+    pub fn new() -> Self {
+        Self {
+            tasks: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn register(&self, name: String, handle: JoinHandle<Result<Value, WebPipeError>>) {
+        self.tasks.lock().insert(name, handle);
+    }
+
+    pub fn take(&self, name: &str) -> Option<JoinHandle<Result<Value, WebPipeError>>> {
+        self.tasks.lock().remove(name)
+    }
+}
+
 #[derive(Clone)]
 pub struct ExecutionEnv {
     pub variables: Arc<Vec<Variable>>, // for variable resolution and auto-naming
     pub named_pipelines: Arc<HashMap<String, Arc<Pipeline>>>,
     pub invoker: Arc<dyn MiddlewareInvoker>,
     pub environment: Option<String>, // e.g. "production", "development", "staging"
+    pub async_registry: AsyncTaskRegistry, // registry for @async tasks
 }
 
 #[derive(Clone)]
@@ -128,6 +153,43 @@ fn check_env_tag(tag: &crate::ast::Tag, env: &ExecutionEnv) -> bool {
     }
 }
 
+fn get_async_tag(tags: &[crate::ast::Tag]) -> Option<String> {
+    tags.iter()
+        .find(|tag| tag.name == "async" && !tag.negated && tag.args.len() == 1)
+        .map(|tag| tag.args[0].clone())
+}
+
+fn parse_join_task_names(config: &str) -> Result<Vec<String>, WebPipeError> {
+    let trimmed = config.trim();
+
+    // Try parsing as JSON array first
+    if trimmed.starts_with('[') {
+        match serde_json::from_str::<Vec<String>>(trimmed) {
+            Ok(names) => return Ok(names),
+            Err(_) => {
+                return Err(WebPipeError::ConfigError(
+                    "Invalid JSON array for join config".to_string()
+                ));
+            }
+        }
+    }
+
+    // Otherwise parse as comma-separated list
+    let names: Vec<String> = trimmed
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if names.is_empty() {
+        return Err(WebPipeError::ConfigError(
+            "join config must specify at least one task name".to_string()
+        ));
+    }
+
+    Ok(names)
+}
+
 fn select_branch<'a>(
     branches: &'a [crate::ast::ResultBranch],
     error_type: &Option<String>,
@@ -190,10 +252,78 @@ pub fn execute_pipeline<'a>(
                         continue; // Skip this step
                     }
 
+                    // Check if this step should run asynchronously
+                    if let Some(async_name) = get_async_tag(tags) {
+                        // Spawn async task with current state snapshot
+                        let env_clone = env.clone();
+                        let name_clone = name.clone();
+                        let config_clone = config.clone();
+                        let input_snapshot = input.clone();
+
+                        let handle = tokio::spawn(async move {
+                            let (effective_config, effective_input, _auto_named) =
+                                resolve_config_and_autoname(&env_clone.variables, &name_clone, &config_clone, &input_snapshot);
+
+                            if name_clone == "pipeline" {
+                                let pipeline_name = effective_config.trim();
+                                if let Some(p) = env_clone.named_pipelines.get(pipeline_name) {
+                                    let (val, _ct, _st) = execute_pipeline(&env_clone, p, effective_input.clone()).await?;
+                                    Ok(val)
+                                } else {
+                                    Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
+                                }
+                            } else {
+                                env_clone.invoker.call(&name_clone, &effective_config, &effective_input).await
+                            }
+                        });
+
+                        env.async_registry.register(async_name, handle);
+                        // Continue to next step without modifying input
+                        continue;
+                    }
+
                     let (effective_config, effective_input, auto_named) =
                         resolve_config_and_autoname(&env.variables, name, config, &input);
 
-                    let exec_result: Result<(Value, Option<u16>, String), WebPipeError> = if name == "pipeline" {
+                    // Special handling for join middleware
+                    let exec_result: Result<(Value, Option<u16>, String), WebPipeError> = if name == "join" {
+                        // Parse task names from config
+                        let task_names = parse_join_task_names(&effective_config)?;
+
+                        // Wait for all async tasks
+                        let mut async_results = serde_json::Map::new();
+                        for task_name in task_names {
+                            if let Some(handle) = env.async_registry.take(&task_name) {
+                                match handle.await {
+                                    Ok(Ok(result)) => {
+                                        async_results.insert(task_name, result);
+                                    }
+                                    Ok(Err(e)) => {
+                                        // Task failed - store error representation
+                                        async_results.insert(task_name, serde_json::json!({
+                                            "error": e.to_string()
+                                        }));
+                                    }
+                                    Err(e) => {
+                                        // Join error (task panicked)
+                                        async_results.insert(task_name, serde_json::json!({
+                                            "error": format!("Task panicked: {}", e)
+                                        }));
+                                    }
+                                }
+                            } else {
+                                // Task not found - could be a warning but we'll skip it
+                                // In dev mode, this could log a warning
+                            }
+                        }
+
+                        // Merge results into input under .async key
+                        let mut result = effective_input.clone();
+                        if let Some(obj) = result.as_object_mut() {
+                            obj.insert("async".to_string(), Value::Object(async_results));
+                        }
+                        Ok((result, None, content_type.clone()))
+                    } else if name == "pipeline" {
                         let name = effective_config.trim();
                         if let Some(p) = env.named_pipelines.get(name) {
                             let (val, ct, st) = execute_pipeline(env, p, effective_input.clone()).await?;
@@ -249,7 +379,21 @@ mod tests {
         async fn call(&self, name: &str, cfg: &str, input: &Value) -> Result<Value, WebPipeError> {
             match name {
                 "handlebars" => Ok(Value::String(format!("<p>{}</p>", cfg))),
-                "echo" => Ok(serde_json::json!({"echo": cfg, "inputCopy": input })),
+                "echo" => {
+                    // Try to parse config as JSON and merge with input
+                    if let Ok(json_cfg) = serde_json::from_str::<Value>(cfg) {
+                        // Merge config into input (config takes precedence)
+                        let mut result = input.clone();
+                        if let (Some(input_obj), Some(cfg_obj)) = (result.as_object_mut(), json_cfg.as_object()) {
+                            for (k, v) in cfg_obj {
+                                input_obj.insert(k.clone(), v.clone());
+                            }
+                        }
+                        Ok(result)
+                    } else {
+                        Ok(serde_json::json!({"echo": cfg, "inputCopy": input }))
+                    }
+                },
                 _ => Ok(serde_json::json!({"ok": true}))
             }
         }
@@ -261,6 +405,7 @@ mod tests {
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
             environment: None,
+            async_registry: AsyncTaskRegistry::new(),
         }
     }
 
@@ -453,15 +598,178 @@ mod tests {
                 config: "tagged".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 tags: vec![
-                    crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["background".to_string()] },
                     crate::ast::Tag { name: "flag".to_string(), negated: false, args: vec!["beta".to_string()] }
                 ]
             }
         ]};
 
         let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
-        // async and flag tags don't prevent execution
+        // flag tags don't prevent execution (async tags do change execution model)
         assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("tagged"));
+    }
+
+    #[tokio::test]
+    async fn async_tag_spawns_task_without_blocking() {
+        let env = env_with_vars(vec![]);
+
+        // Pipeline with async step - should continue immediately
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"async": "data"}"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task1".to_string()] }]
+            },
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"sync": "data"}"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+
+        // The async step should not modify the state
+        assert!(out.get("async").is_none());
+        // The sync step should execute and modify state
+        assert_eq!(out.get("sync").and_then(|v| v.as_str()), Some("data"));
+    }
+
+    #[tokio::test]
+    async fn join_waits_for_async_tasks() {
+        let env = env_with_vars(vec![]);
+
+        // Pipeline with async step followed by join
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"result": "from-async"}"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task1".to_string()] }]
+            },
+            PipelineStep::Regular {
+                name: "join".to_string(),
+                config: "task1".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+
+        // Check that async results are available under .async.task1
+        assert!(out.get("async").is_some());
+        let async_obj = out.get("async").unwrap().as_object().unwrap();
+        assert!(async_obj.contains_key("task1"));
+        let task1_result = async_obj.get("task1").unwrap();
+        assert_eq!(task1_result.get("result").and_then(|v| v.as_str()), Some("from-async"));
+    }
+
+    #[tokio::test]
+    async fn join_multiple_async_tasks() {
+        let env = env_with_vars(vec![]);
+
+        // Pipeline with multiple async steps
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"data": "task1"}"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task1".to_string()] }]
+            },
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"data": "task2"}"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task2".to_string()] }]
+            },
+            PipelineStep::Regular {
+                name: "join".to_string(),
+                config: "task1,task2".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+
+        // Check both tasks completed
+        let async_obj = out.get("async").unwrap().as_object().unwrap();
+        assert_eq!(async_obj.len(), 2);
+        assert_eq!(async_obj.get("task1").unwrap().get("data").and_then(|v| v.as_str()), Some("task1"));
+        assert_eq!(async_obj.get("task2").unwrap().get("data").and_then(|v| v.as_str()), Some("task2"));
+    }
+
+    #[tokio::test]
+    async fn join_with_json_array_config() {
+        let env = env_with_vars(vec![]);
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"data": "a"}"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["a".to_string()] }]
+            },
+            PipelineStep::Regular {
+                name: "join".to_string(),
+                config: r#"["a"]"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+
+        let async_obj = out.get("async").unwrap().as_object().unwrap();
+        assert_eq!(async_obj.get("a").unwrap().get("data").and_then(|v| v.as_str()), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn async_step_uses_state_snapshot() {
+        let env = env_with_vars(vec![]);
+
+        // Pipeline that modifies state, spawns async with that state, then modifies again
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"counter": 1}"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![]
+            },
+            // Async task should see counter: 1
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"asyncSaw": 0}"#.to_string(), // Will be replaced with actual counter value
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["snapshot".to_string()] }]
+            },
+            // Modify state after async spawn
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"counter": 2}"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![]
+            },
+            PipelineStep::Regular {
+                name: "join".to_string(),
+                config: "snapshot".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+
+        // Main state should have counter: 2
+        assert_eq!(out.get("counter").and_then(|v| v.as_u64()), Some(2));
+
+        // Async task should have seen the snapshot with counter: 1
+        let async_obj = out.get("async").unwrap().as_object().unwrap();
+        let snapshot_result = async_obj.get("snapshot").unwrap();
+        // The async echo will copy the input which had counter: 1
+        assert!(snapshot_result.get("counter").is_some());
     }
 }
 

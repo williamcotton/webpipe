@@ -35,6 +35,7 @@ async fn build_env(program: &webpipe::ast::Program) -> ExecutionEnv {
         named_pipelines: Arc::new(named),
         invoker: Arc::new(RealInvoker::new(registry)),
         environment: None,
+        async_registry: webpipe::executor::AsyncTaskRegistry::new(),
     }
 }
 

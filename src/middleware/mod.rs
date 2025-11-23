@@ -15,6 +15,7 @@ mod cache;
 mod lua;
 mod log;
 mod debug;
+mod join;
 
 pub use jq::JqMiddleware;
 pub use auth::AuthMiddleware;
@@ -26,6 +27,7 @@ pub use cache::CacheMiddleware;
 pub use lua::LuaMiddleware;
 pub use log::LogMiddleware;
 pub use debug::DebugMiddleware;
+pub use join::JoinMiddleware;
 
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
@@ -57,6 +59,7 @@ impl MiddlewareRegistry {
         registry.register("lua", Box::new(LuaMiddleware::new(ctx.clone())));
         registry.register("log", Box::new(LogMiddleware));
         registry.register("debug", Box::new(DebugMiddleware));
+        registry.register("join", Box::new(JoinMiddleware));
         registry
     }
 

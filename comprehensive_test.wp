@@ -1226,3 +1226,175 @@ GET /tagged-route
 # @flag(beta,staff) - Multiple feature flag args
 
 # Set environment with: WEBPIPE_ENV=production or WEBPIPE_ENV=development
+
+## Async/Join Feature Demo (v2.0+)
+
+GET /dashboard-sync
+  |> fetch: `https://jsonplaceholder.typicode.com/users/1`
+  |> jq: `{ user: .data.response }`
+  |> fetch: `https://jsonplaceholder.typicode.com/posts?userId=1&_limit=5`
+  |> jq: `. + { posts: .data.response }`
+  |> fetch: `https://jsonplaceholder.typicode.com/todos?userId=1&_limit=5`
+  |> jq: `. + { todos: .data.response }`
+  |> jq: `{
+    pageTitle: "User Dashboard (Sync)",
+    user: .user,
+    recentPosts: .posts,
+    pendingTodos: .todos | map(select(.completed == false))
+  }`
+  |> handlebars: `
+    <html>
+      <head><title>{{pageTitle}}</title></head>
+      <body>
+        <h1>{{pageTitle}}</h1>
+
+        <section>
+          <h2>User Info</h2>
+          <p><strong>Name:</strong> {{user.name}}</p>
+          <p><strong>Email:</strong> {{user.email}}</p>
+          <p><strong>Company:</strong> {{user.company.name}}</p>
+        </section>
+
+        <section>
+          <h2>Recent Posts</h2>
+          <ul>
+            {{#each recentPosts}}
+              <li><strong>{{title}}</strong><br>{{body}}</li>
+            {{/each}}
+          </ul>
+        </section>
+
+        <section>
+          <h2>Pending Todos</h2>
+          <ul>
+            {{#each pendingTodos}}
+              <li>{{title}}</li>
+            {{/each}}
+          </ul>
+        </section>
+      </body>
+    </html>
+  `
+
+GET /dashboard
+  |> fetch: `https://jsonplaceholder.typicode.com/users/1` @async(user)
+  |> fetch: `https://jsonplaceholder.typicode.com/posts?userId=1&_limit=5` @async(posts)
+  |> fetch: `https://jsonplaceholder.typicode.com/todos?userId=1&_limit=5` @async(todos)
+  |> jq: `{
+    pageTitle: "User Dashboard",
+    timestamp: now
+  }`
+  |> join: `user,posts,todos`
+  |> jq: `{
+    page: .pageTitle,
+    loadedAt: .timestamp,
+    user: .async.user.data.response,
+    recentPosts: .async.posts.data.response,
+    pendingTodos: .async.todos.data.response
+  }`
+  |> handlebars: `
+    <html>
+      <head><title>{{page}}</title></head>
+      <body>
+        <h1>{{page}}</h1>
+        <p>Loaded at: {{loadedAt}}</p>
+
+        <section>
+          <h2>User Info</h2>
+          <p><strong>Name:</strong> {{user.name}}</p>
+          <p><strong>Email:</strong> {{user.email}}</p>
+          <p><strong>Company:</strong> {{user.company.name}}</p>
+        </section>
+
+        <section>
+          <h2>Recent Posts</h2>
+          <ul>
+            {{#each recentPosts}}
+              <li><strong>{{title}}</strong><br>{{body}}</li>
+            {{/each}}
+          </ul>
+        </section>
+
+        <section>
+          <h2>Pending Todos</h2>
+          <ul>
+            {{#each pendingTodos}}
+              <li>{{title}}</li>
+            {{/each}}
+          </ul>
+        </section>
+      </body>
+    </html>
+  `
+
+GET /weather/:city
+  |> jq: `{
+    fetchUrl: "https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&current_weather=true",
+    fetchMethod: "GET"
+  }` @async(openmeteo)
+  |> jq: `{
+    fetchUrl: "https://goweather.herokuapp.com/weather/" + .params.city,
+    fetchMethod: "GET"
+  }` @async(goweather)
+  |> join: `openmeteo,goweather`
+  |> jq: `{
+    city: .params.city,
+    temperature: (.async.openmeteo.fetchedData.current_weather.temperature // .async.goweather.fetchedData.temperature),
+    description: (.async.goweather.fetchedData.description // "Data from Open-Meteo"),
+    sources: {
+      openmeteo: (.async.openmeteo.error // "success"),
+      goweather: (.async.goweather.error // "success")
+    }
+  }`
+  |> handlebars: `
+    <h1>Weather for {{city}}</h1>
+    <p><strong>Temperature:</strong> {{temperature}}°C</p>
+    <p><strong>Conditions:</strong> {{description}}</p>
+    <details>
+      <summary>API Sources</summary>
+      <ul>
+        <li>Open-Meteo: {{sources.openmeteo}}</li>
+        <li>GoWeather: {{sources.goweather}}</li>
+      </ul>
+    </details>
+  `
+
+GET /parallel-api-demo
+  |> fetch: `https://api.github.com/users/github` @async(github)
+  |> fetch: `https://api.coindesk.com/v1/bpi/currentprice.json` @async(bitcoin)
+  |> fetch: `https://official-joke-api.appspot.com/random_joke` @async(joke)
+  |> join: `["github","bitcoin","joke"]`
+  |> jq: `{
+    githubUser: .async.github.data.response.login,
+    bitcoinPrice: .async.bitcoin.data.response.bpi.USD.rate,
+    randomJoke: .async.joke.data.response.setup + " - " + .async.joke.data.response.punchline
+  }`
+
+GET /slow-sync
+  |> fetch: `https://httpbin.org/delay/2`
+  |> jq: `{ first: .data.response, step: "1/3" }`
+  |> fetch: `https://httpbin.org/delay/2`
+  |> jq: `. + { second: .data.response, step: "2/3" }`
+  |> fetch: `https://httpbin.org/delay/2`
+  |> jq: `. + { third: .data.response, step: "3/3" }`
+  |> jq: `{
+    message: "All requests completed synchronously",
+    totalTime: "~6 seconds (2+2+2)",
+    results: [.first.url, .second.url, .third.url]
+  }`
+
+GET /slow-async
+  |> fetch: `https://httpbin.org/delay/2` @async(req1)
+  |> fetch: `https://httpbin.org/delay/2` @async(req2)
+  |> fetch: `https://httpbin.org/delay/2` @async(req3)
+  |> join: `req1,req2,req3`
+  |> jq: `{
+    message: "All requests completed in parallel",
+    totalTime: "~2 seconds (all parallel)",
+    results: [
+      .async.req1.data.response.url,
+      .async.req2.data.response.url,
+      .async.req3.data.response.url
+    ]
+  }`
+

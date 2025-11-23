@@ -74,6 +74,7 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
         named_pipelines: Arc::new(named),
         invoker: Arc::new(RealInvoker::new(registry)),
         environment: None,
+        async_registry: webpipe::executor::AsyncTaskRegistry::new(),
     };
     (env, ctx)
 }
