@@ -26,6 +26,7 @@ pub struct ExecutionEnv {
     pub variables: Arc<Vec<Variable>>, // for variable resolution and auto-naming
     pub named_pipelines: Arc<HashMap<String, Arc<Pipeline>>>,
     pub invoker: Arc<dyn MiddlewareInvoker>,
+    pub environment: Option<String>, // e.g. "production", "development", "staging"
 }
 
 #[derive(Clone)]
@@ -91,6 +92,42 @@ fn extract_error_type(input: &Value) -> Option<String> {
     None
 }
 
+fn should_execute_step(tags: &[crate::ast::Tag], env: &ExecutionEnv) -> bool {
+    tags.iter().all(|tag| check_tag(tag, env))
+}
+
+fn check_tag(tag: &crate::ast::Tag, env: &ExecutionEnv) -> bool {
+    match tag.name.as_str() {
+        "env" => check_env_tag(tag, env),
+        "async" => true, // async doesn't affect execution, just how it runs
+        "flag" => true,  // future: check_flag_tag(tag, env)
+        _ => true,       // unknown tags don't prevent execution
+    }
+}
+
+fn check_env_tag(tag: &crate::ast::Tag, env: &ExecutionEnv) -> bool {
+    if tag.args.len() != 1 {
+        return true; // Invalid @env() tag, don't prevent execution
+    }
+
+    let required_env = &tag.args[0];
+
+    match &env.environment {
+        Some(current_env) => {
+            let matches = current_env == required_env;
+            if tag.negated {
+                !matches // @!env(production) - execute if NOT production
+            } else {
+                matches  // @env(production) - execute if IS production
+            }
+        }
+        None => {
+            // No environment set: execute non-negated tags, skip negated ones
+            !tag.negated
+        }
+    }
+}
+
 fn select_branch<'a>(
     branches: &'a [crate::ast::ResultBranch],
     error_type: &Option<String>,
@@ -147,7 +184,12 @@ pub fn execute_pipeline<'a>(
         for (idx, step) in pipeline.steps.iter().enumerate() {
             let is_last_step = idx + 1 == pipeline.steps.len();
             match step {
-                PipelineStep::Regular { name, config, config_type: _, .. } => {
+                PipelineStep::Regular { name, config, config_type: _, tags } => {
+                    // Check if this step should execute based on tags
+                    if !should_execute_step(tags, env) {
+                        continue; // Skip this step
+                    }
+
                     let (effective_config, effective_input, auto_named) =
                         resolve_config_and_autoname(&env.variables, name, config, &input);
 
@@ -218,6 +260,7 @@ mod tests {
             variables: Arc::new(vars),
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
+            environment: None,
         }
     }
 
@@ -279,6 +322,146 @@ mod tests {
         assert!(out.get("resultName").is_none());
         // Ensure output is an object and not empty
         assert!(out.is_object());
+    }
+
+    #[tokio::test]
+    async fn env_tag_executes_step_when_environment_matches() {
+        let mut env = env_with_vars(vec![]);
+        env.environment = Some("production".to_string());
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "test".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] }]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        assert!(out.is_object());
+        assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("test"));
+    }
+
+    #[tokio::test]
+    async fn env_tag_skips_step_when_environment_doesnt_match() {
+        let mut env = env_with_vars(vec![]);
+        env.environment = Some("development".to_string());
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"message": "production only"}"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] }]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({"initial": "data"})).await.unwrap();
+        // Should return initial input unchanged since step was skipped
+        assert_eq!(out.get("initial").and_then(|v| v.as_str()), Some("data"));
+        assert!(out.get("message").is_none());
+    }
+
+    #[tokio::test]
+    async fn negated_env_tag_skips_when_environment_matches() {
+        let mut env = env_with_vars(vec![]);
+        env.environment = Some("production".to_string());
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: r#"{"debug": true}"#.to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: true, args: vec!["production".to_string()] }]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({"initial": "data"})).await.unwrap();
+        // Should skip the debug step in production
+        assert!(out.get("debug").is_none());
+        assert_eq!(out.get("initial").and_then(|v| v.as_str()), Some("data"));
+    }
+
+    #[tokio::test]
+    async fn negated_env_tag_executes_when_environment_doesnt_match() {
+        let mut env = env_with_vars(vec![]);
+        env.environment = Some("development".to_string());
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "dev".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: true, args: vec!["production".to_string()] }]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        // Should execute in development (not production)
+        assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("dev"));
+    }
+
+    #[tokio::test]
+    async fn multiple_env_tags_all_must_match() {
+        let mut env = env_with_vars(vec![]);
+        env.environment = Some("production".to_string());
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "executed".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![
+                    crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] },
+                    crate::ast::Tag { name: "env".to_string(), negated: true, args: vec!["staging".to_string()] }
+                ]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        // Should execute: env is production (✓) and env is not staging (✓)
+        assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("executed"));
+    }
+
+    #[tokio::test]
+    async fn no_environment_set_executes_non_negated_tags() {
+        let env = env_with_vars(vec![]);
+        // env.environment is None
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "noenv".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] }]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        // When no environment is set, non-negated tags execute
+        assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("noenv"));
+    }
+
+    #[tokio::test]
+    async fn non_env_tags_do_not_prevent_execution() {
+        let env = env_with_vars(vec![]);
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "tagged".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![
+                    crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["background".to_string()] },
+                    crate::ast::Tag { name: "flag".to_string(), negated: false, args: vec!["beta".to_string()] }
+                ]
+            }
+        ]};
+
+        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        // async and flag tags don't prevent execution
+        assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("tagged"));
     }
 }
 

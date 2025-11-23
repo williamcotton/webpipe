@@ -1203,24 +1203,26 @@ GET /lua-script-stress
 ## Tags Feature Demo (v2.0+)
 
 # Tags can be used for environment-specific code, feature flags, or execution hints
-# Syntax: @tagname, @!negated, @flag(arg1,arg2)
+# Syntax: @tagname, @!negated, @tag(arg1,arg2)
 
 pipeline taggedExample =
-  |> jq: `{ message: "Production ready" }` @prod
-  |> log: `level: info` @prod @async(background)
-  |> pg: `SELECT * FROM users LIMIT 10` @dev @flag(new-ui)
-  |> cache: `ttl: 300` @!dev
+  |> jq: `{ message: "Production ready" }` @env(production)
+  |> log: `level: info` @env(production) @async(background)
+  |> pg: `SELECT * FROM users LIMIT 10` @env(development) @flag(new-ui)
+  |> cache: `ttl: 300` @!env(development)
   |> handlebars: `<div>{{message}}</div>` @flag(beta,staff)
 
 GET /tagged-route
-  |> jq: `{ env: "production", debug: false }` @prod
-  |> jq: `{ env: "development", debug: true }` @dev
-  |> log: `level: debug` @!prod @async(logger)
+  |> jq: `{ env: "production", debug: false }` @env(production)
+  |> jq: `{ env: "development", debug: true }` @env(development)
+  |> log: `level: debug` @!env(production) @async(logger)
   |> handlebars: `<pre>{{env}}: debug={{debug}}</pre>`
 
 # Example use cases for tags:
-# @prod, @dev, @staging - Environment-specific steps
-# @!prod - Run in all environments except production
+# @env(production), @env(development), @env(staging) - Environment-specific steps
+# @!env(production) - Run in all environments except production
 # @async(worker) - Execution hints for async processing
 # @flag(feature-name) - Feature flags
 # @flag(beta,staff) - Multiple feature flag args
+
+# Set environment with: WEBPIPE_ENV=production or WEBPIPE_ENV=development

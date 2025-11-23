@@ -73,6 +73,7 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
         variables: Arc::new(program.variables.clone()),
         named_pipelines: Arc::new(named),
         invoker: Arc::new(RealInvoker::new(registry)),
+        environment: None,
     };
     (env, ctx)
 }

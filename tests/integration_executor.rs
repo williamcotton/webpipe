@@ -34,6 +34,7 @@ async fn build_env(program: &webpipe::ast::Program) -> ExecutionEnv {
         variables: Arc::new(program.variables.clone()),
         named_pipelines: Arc::new(named),
         invoker: Arc::new(RealInvoker::new(registry)),
+        environment: None,
     }
 }
 
