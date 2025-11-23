@@ -148,7 +148,7 @@ GET /search
     enabled: true,
     ttl: 120
   `
-  |> fetch: `_`  # overridden by fetchUrl above
+  |> fetch: `_`
   |> jq: `{
     status: .data.api.status,
     headers: .data.api.headers,
