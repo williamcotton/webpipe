@@ -147,7 +147,7 @@ pub fn execute_pipeline<'a>(
         for (idx, step) in pipeline.steps.iter().enumerate() {
             let is_last_step = idx + 1 == pipeline.steps.len();
             match step {
-                PipelineStep::Regular { name, config, config_type: _ } => {
+                PipelineStep::Regular { name, config, config_type: _, .. } => {
                     let (effective_config, effective_input, auto_named) =
                         resolve_config_and_autoname(&env.variables, name, config, &input);
 
@@ -233,7 +233,7 @@ mod tests {
     async fn result_branch_selection_and_status() {
         let env = env_with_vars(vec![]);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "echo".to_string(), config: "{}".to_string(), config_type: crate::ast::ConfigType::Quoted },
+            PipelineStep::Regular { name: "echo".to_string(), config: "{}".to_string(), config_type: crate::ast::ConfigType::Quoted, tags: vec![] },
             PipelineStep::Result { branches: vec![
                 crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Ok, status_code: 201, pipeline: Pipeline { steps: vec![] } },
                 crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 200, pipeline: Pipeline { steps: vec![] } },
@@ -262,7 +262,7 @@ mod tests {
     async fn handlebars_sets_html_content_type() {
         let env = env_with_vars(vec![]);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "handlebars".to_string(), config: "Hello".to_string(), config_type: crate::ast::ConfigType::Quoted }
+            PipelineStep::Regular { name: "handlebars".to_string(), config: "Hello".to_string(), config_type: crate::ast::ConfigType::Quoted, tags: vec![] }
         ]};
         let (_out, ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
         assert_eq!(ct, "text/html");
@@ -273,7 +273,7 @@ mod tests {
         let vars = vec![Variable { var_type: "echo".to_string(), name: "myVar".to_string(), value: "{}".to_string() }];
         let env = env_with_vars(vars);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "echo".to_string(), config: "myVar".to_string(), config_type: crate::ast::ConfigType::Identifier }
+            PipelineStep::Regular { name: "echo".to_string(), config: "myVar".to_string(), config_type: crate::ast::ConfigType::Identifier, tags: vec![] }
         ]};
         let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
         assert!(out.get("resultName").is_none());

@@ -310,7 +310,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                         (200u16, mock.clone(), "application/json".to_string(), true, String::new())
                     } else {
                         // Single-step pipeline invoking the variable's middleware
-                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick }] };
+                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, tags: vec![] }] };
                         let named: HashMap<String, Arc<Pipeline>> = program
                             .pipelines
                             .iter()

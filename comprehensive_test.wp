@@ -1199,3 +1199,28 @@ GET /lua-script-stress
       sample_results = {results[1], results[25], results[50]}
     }
   `
+
+## Tags Feature Demo (v2.0+)
+
+# Tags can be used for environment-specific code, feature flags, or execution hints
+# Syntax: @tagname, @!negated, @flag(arg1,arg2)
+
+pipeline taggedExample =
+  |> jq: `{ message: "Production ready" }` @prod
+  |> log: `level: info` @prod @async(background)
+  |> pg: `SELECT * FROM users LIMIT 10` @dev @flag(new-ui)
+  |> cache: `ttl: 300` @!dev
+  |> handlebars: `<div>{{message}}</div>` @flag(beta,staff)
+
+GET /tagged-route
+  |> jq: `{ env: "production", debug: false }` @prod
+  |> jq: `{ env: "development", debug: true }` @dev
+  |> log: `level: debug` @!prod @async(logger)
+  |> handlebars: `<pre>{{env}}: debug={{debug}}</pre>`
+
+# Example use cases for tags:
+# @prod, @dev, @staging - Environment-specific steps
+# @!prod - Run in all environments except production
+# @async(worker) - Execution hints for async processing
+# @flag(feature-name) - Feature flags
+# @flag(beta,staff) - Multiple feature flag args

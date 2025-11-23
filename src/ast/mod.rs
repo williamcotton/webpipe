@@ -78,8 +78,20 @@ pub enum ConfigType {
 }
 
 #[derive(Debug, Clone)]
+pub struct Tag {
+    /// Tag name, e.g. "prod", "dev", "async", "flag"
+    pub name: String,
+
+    /// True if tag was written as @!name
+    pub negated: bool,
+
+    /// Arguments inside parentheses, e.g. ["new-ui", "beta"] for @flag(new-ui,beta)
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum PipelineStep {
-    Regular { name: String, config: String, config_type: ConfigType },
+    Regular { name: String, config: String, config_type: ConfigType, tags: Vec<Tag> },
     Result { branches: Vec<ResultBranch> },
 }
 
@@ -224,16 +236,38 @@ impl Display for Pipeline {
     }
 }
 
+impl Display for Tag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "@")?;
+        if self.negated {
+            write!(f, "!")?;
+        }
+        write!(f, "{}", self.name)?;
+        if !self.args.is_empty() {
+            write!(f, "({})", self.args.join(","))?;
+        }
+        Ok(())
+    }
+}
+
 impl Display for PipelineStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PipelineStep::Regular { name, config, config_type } => {
+            PipelineStep::Regular { name, config, config_type, tags } => {
                 let formatted_config = match config_type {
                     ConfigType::Backtick => format!("`{}`", config),
                     ConfigType::Quoted => format!("\"{}\"", config),
                     ConfigType::Identifier => config.clone(),
                 };
-                write!(f, "  |> {}: {}", name, formatted_config)
+                write!(f, "  |> {}: {}", name, formatted_config)?;
+
+                // Append tags if any
+                if !tags.is_empty() {
+                    for tag in tags {
+                        write!(f, " {}", tag)?;
+                    }
+                }
+                Ok(())
             }
             PipelineStep::Result { branches } => {
                 writeln!(f, "  |> result")?;
@@ -454,6 +488,45 @@ fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
     )).parse(input)
 }
 
+// Tag parsing
+fn parse_tag(input: &str) -> IResult<&str, Tag> {
+    let (input, _) = char('@')(input)?;
+
+    // Check for negation
+    let (input, negated) = opt(char('!')).parse(input)?;
+    let negated = negated.is_some();
+
+    // Parse tag name
+    let (input, name) = parse_identifier(input)?;
+
+    // Parse optional arguments
+    let (input, args) = opt(parse_tag_args).parse(input)?;
+    let args = args.unwrap_or_default();
+
+    Ok((input, Tag { name, negated, args }))
+}
+
+fn parse_tag_args(input: &str) -> IResult<&str, Vec<String>> {
+    delimited(
+        char('('),
+        nom::multi::separated_list1(
+            char(','),
+            parse_identifier
+        ),
+        char(')')
+    ).parse(input)
+}
+
+fn parse_tags(input: &str) -> IResult<&str, Vec<Tag>> {
+    many0(
+        preceded(
+            // Skip inline spaces before each tag
+            nom::bytes::complete::take_while(|c| c == ' ' || c == '\t'),
+            parse_tag
+        )
+    ).parse(input)
+}
+
 fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("|>")(input)?;
@@ -462,8 +535,12 @@ fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, _) = char(':')(input)?;
     let (input, _) = multispace0(input)?;
     let (input, (config, config_type)) = parse_step_config(input)?;
+
+    // Parse tags (before consuming trailing whitespace)
+    let (input, tags) = parse_tags(input)?;
+
     let (input, _) = multispace0(input)?;
-    Ok((input, PipelineStep::Regular { name, config, config_type }))
+    Ok((input, PipelineStep::Regular { name, config, config_type, tags }))
 }
 
 fn parse_result_step(input: &str) -> IResult<&str, PipelineStep> {
@@ -832,25 +909,25 @@ template`
         assert_eq!(pipeline.steps.len(), 3);
         
         // Test backtick config type
-        if let PipelineStep::Regular { name, config, config_type } = &pipeline.steps[0] {
+        if let PipelineStep::Regular { name, config, config_type, .. } = &pipeline.steps[0] {
             assert_eq!(name, "handlebars");
             assert_eq!(config, "multi\nline\ntemplate");
             assert!(matches!(config_type, ConfigType::Backtick));
         } else {
             panic!("Expected Regular step");
         }
-        
+
         // Test quoted config type
-        if let PipelineStep::Regular { name, config, config_type } = &pipeline.steps[1] {
+        if let PipelineStep::Regular { name, config, config_type, .. } = &pipeline.steps[1] {
             assert_eq!(name, "jq");
             assert_eq!(config, "{ hello: world }");
             assert!(matches!(config_type, ConfigType::Quoted));
         } else {
             panic!("Expected Regular step");
         }
-        
+
         // Test identifier config type
-        if let PipelineStep::Regular { name, config, config_type } = &pipeline.steps[2] {
+        if let PipelineStep::Regular { name, config, config_type, .. } = &pipeline.steps[2] {
             assert_eq!(name, "echo");
             assert_eq!(config, "myVariable");
             assert!(matches!(config_type, ConfigType::Identifier));
@@ -863,5 +940,138 @@ template`
         assert!(displayed.contains("`multi\nline\ntemplate`"));
         assert!(displayed.contains("\"{ hello: world }\""));
         assert!(displayed.contains("myVariable")); // identifier without quotes
+    }
+
+    #[test]
+    fn parse_tags_on_regular_steps() {
+        let src = r#"
+pipeline test =
+  |> jq: `{ hello: "world" }` @prod
+  |> pg: `SELECT * FROM users` @dev @flag(new-ui)
+  |> log: `level: debug` @!prod @async(user)
+  |> echo: myVar @flag(beta,staff)
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        assert_eq!(program.pipelines.len(), 1);
+
+        let pipeline = &program.pipelines[0].pipeline;
+        assert_eq!(pipeline.steps.len(), 4);
+
+        // Step 0: @prod
+        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[0] {
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0].name, "prod");
+            assert_eq!(tags[0].negated, false);
+            assert_eq!(tags[0].args.len(), 0);
+        } else {
+            panic!("Expected Regular step");
+        }
+
+        // Step 1: @dev @flag(new-ui)
+        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[1] {
+            assert_eq!(tags.len(), 2);
+            assert_eq!(tags[0].name, "dev");
+            assert_eq!(tags[1].name, "flag");
+            assert_eq!(tags[1].args, vec!["new-ui"]);
+        } else {
+            panic!("Expected Regular step");
+        }
+
+        // Step 2: @!prod @async(user)
+        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[2] {
+            assert_eq!(tags.len(), 2);
+            assert_eq!(tags[0].name, "prod");
+            assert_eq!(tags[0].negated, true);
+            assert_eq!(tags[1].name, "async");
+            assert_eq!(tags[1].args, vec!["user"]);
+        } else {
+            panic!("Expected Regular step");
+        }
+
+        // Step 3: @flag(beta,staff)
+        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[3] {
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0].name, "flag");
+            assert_eq!(tags[0].args, vec!["beta", "staff"]);
+        } else {
+            panic!("Expected Regular step");
+        }
+
+        // Test roundtrip
+        let displayed = format!("{}", pipeline);
+        assert!(displayed.contains("@prod"));
+        assert!(displayed.contains("@dev @flag(new-ui)"));
+        assert!(displayed.contains("@!prod @async(user)"));
+        assert!(displayed.contains("@flag(beta,staff)"));
+    }
+
+    #[test]
+    fn parse_steps_without_tags() {
+        let src = r#"
+pipeline test =
+  |> jq: `.`
+  |> echo: foo
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        let pipeline = &program.pipelines[0].pipeline;
+
+        // Steps without tags should have empty tags vec
+        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[0] {
+            assert_eq!(tags.len(), 0);
+        }
+        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[1] {
+            assert_eq!(tags.len(), 0);
+        }
+    }
+
+    #[test]
+    fn format_tags_correctly() {
+        let src = r#"
+pipeline test =
+  |> jq: `.` @prod @dev
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        let formatted = format!("{}", program);
+
+        assert!(formatted.contains("@prod @dev"));
+    }
+
+    #[test]
+    fn format_negated_tag() {
+        let src = r#"
+pipeline test =
+  |> jq: `.` @!prod
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        let formatted = format!("{}", program);
+
+        assert!(formatted.contains("@!prod"));
+    }
+
+    #[test]
+    fn format_tag_with_args() {
+        let src = r#"
+pipeline test =
+  |> jq: `.` @flag(a,b,c)
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        let formatted = format!("{}", program);
+
+        assert!(formatted.contains("@flag(a,b,c)"));
+    }
+
+    #[test]
+    fn result_steps_do_not_have_tags() {
+        let src = r#"
+pipeline test =
+  |> result
+    ok(200):
+      |> jq: `{ok: true}`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        let pipeline = &program.pipelines[0].pipeline;
+        let step = &pipeline.steps[0];
+
+        assert!(matches!(step, PipelineStep::Result { .. }));
     }
 }
