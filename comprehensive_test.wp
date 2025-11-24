@@ -1536,7 +1536,6 @@ query randomNumber =
 
 # Query resolver: return mock users
 query users =
-  |> debug: "users resolver - start"
   |> pg: `
     SELECT
       id,
@@ -1545,9 +1544,7 @@ query users =
       NOW() - (id || ' days')::interval as "createdAt"
     FROM generate_series(1, 5) as id
   `
-  |> debug: "users resolver - after pg"
   |> jq: `.data.rows`
-  |> debug: "users resolver - after jq"
 
 # Query resolver: return single user by ID
 query user =
@@ -1673,13 +1670,10 @@ POST /test-graphql-mutation
 GET /test-graphql-multi
   |> jq: `.resultName = "time"`
   |> graphql: `query { currentTime }`
-  |> debug: "After first graphql call"
   |> jq: `.resultName = "users"`
   |> graphql: `query { users { id name email } }`
-  |> debug: "After second graphql call"
   |> jq: `.resultName = "stats"`
   |> graphql: `query { stats { totalUsers totalPosts activeUsers } }`
-  |> debug: "After third graphql call"
 
 # Test route: single query with users (for debugging)
 GET /test-graphql-users-only

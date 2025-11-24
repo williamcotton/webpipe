@@ -88,9 +88,6 @@ impl Middleware for GraphQLMiddleware {
 
         // Check for resultName pattern (auto-naming)
         if let Some(result_name) = input.get("resultName").and_then(|v| v.as_str()) {
-            // DEBUG: Log the GraphQL response
-            eprintln!("GraphQL response for resultName '{}': {}", result_name, serde_json::to_string_pretty(&response).unwrap_or_else(|_| "invalid json".to_string()));
-
             // Extract the data from GraphQL response and store under .data.<resultName>
             let mut output = input.clone();
             if let Some(obj) = output.as_object_mut() {
@@ -103,10 +100,8 @@ impl Middleware for GraphQLMiddleware {
                 // GraphQL response format is: { data: { fieldName: value }, errors?: [...] }
                 // We want to store the entire data object under the result name
                 if let Some(graphql_data) = response.get("data") {
-                    eprintln!("Storing graphql_data under '{}': {}", result_name, serde_json::to_string_pretty(&graphql_data).unwrap_or_else(|_| "invalid".to_string()));
                     data_obj.insert(result_name.to_string(), graphql_data.clone());
                 } else {
-                    eprintln!("No 'data' field in GraphQL response for '{}'", result_name);
                     data_obj.insert(result_name.to_string(), Value::Null);
                 }
 

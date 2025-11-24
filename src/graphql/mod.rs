@@ -124,7 +124,6 @@ impl GraphQLRuntime {
             }
 
             // Execute the resolver pipeline
-            eprintln!("Executing GraphQL resolver '{}' with state: {}", field_name, serde_json::to_string_pretty(&field_state).unwrap_or_else(|_| "invalid".to_string()));
             let result = crate::executor::execute_pipeline(
                 env,
                 pipeline,
@@ -133,11 +132,9 @@ impl GraphQLRuntime {
 
             match result {
                 Ok((field_data, _, _)) => {
-                    eprintln!("GraphQL resolver '{}' returned: {}", field_name, serde_json::to_string_pretty(&field_data).unwrap_or_else(|_| "invalid".to_string()));
                     data.insert(field_name.clone(), field_data);
                 }
                 Err(e) => {
-                    eprintln!("GraphQL resolver '{}' error: {}", field_name, e);
                     errors.push(json!({
                         "message": e.to_string(),
                         "path": [field_name.clone()]
