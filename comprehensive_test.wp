@@ -1331,16 +1331,18 @@ GET /weather/:city
   |> jq: `{
     fetchUrl: "https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&current_weather=true",
     fetchMethod: "GET"
-  }` @async(openmeteo)
+  }` 
+  |> fetch: `_` @async(openmeteo)
   |> jq: `{
     fetchUrl: "https://goweather.herokuapp.com/weather/" + .params.city,
     fetchMethod: "GET"
-  }` @async(goweather)
+  }` 
+  |> fetch: `_` @async(goweather)
   |> join: `openmeteo,goweather`
   |> jq: `{
     city: .params.city,
-    temperature: (.async.openmeteo.fetchedData.current_weather.temperature // .async.goweather.fetchedData.temperature),
-    description: (.async.goweather.fetchedData.description // "Data from Open-Meteo"),
+    temperature: (.async.openmeteo.data.response.current_weather.temperature // .async.goweather.data.temperature),
+    description: (.async.goweather.data.response.description // "Data from Open-Meteo"),
     sources: {
       openmeteo: (.async.openmeteo.error // "success"),
       goweather: (.async.goweather.error // "success")
