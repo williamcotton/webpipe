@@ -274,20 +274,21 @@ async fn unified_handler(
         _ => return StatusCode::METHOD_NOT_ALLOWED.into_response(),
     };
 
-    respond_with_pipeline(state, method, headers, path_params, query_params, body, pipeline).await
+    respond_with_pipeline(state, method, headers, path, path_params, query_params, body, pipeline).await
 }
 
 async fn respond_with_pipeline(
     state: ServerState,
     method: Method,
     headers: HeaderMap,
+    path: String,
     path_params: HashMap<String, String>,
     query_params: HashMap<String, String>,
     body: Bytes,
     pipeline: Arc<Pipeline>,
 ) -> Response {
     // Build unified request JSON and content type via shared helper
-    let (request_json, _content_type) = build_request_from_axum(&method, &headers, &path_params, &query_params, &body);
+    let (request_json, _content_type) = build_request_from_axum(&method, &headers, &path, &path_params, &query_params, &body);
     
     // Keep a snapshot for post_execute (contains _metadata, originalRequest, headers)
     let request_snapshot = request_json.clone();
@@ -651,6 +652,7 @@ mod tests {
             state.clone(),
             Method::GET,
             HeaderMap::new(),
+            "/test".to_string(),
             HashMap::new(),
             HashMap::new(),
             axum::body::Bytes::new(),
@@ -668,6 +670,7 @@ mod tests {
             state,
             Method::GET,
             HeaderMap::new(),
+            "/test".to_string(),
             HashMap::new(),
             HashMap::new(),
             axum::body::Bytes::new(),

@@ -144,6 +144,7 @@ pub fn assemble_request_object(opts: RequestAssembly) -> Value {
 pub fn build_request_from_axum(
     method: &Method,
     headers: &HeaderMap,
+    path: &str,
     path_params: &HashMap<String, String>,
     query_params: &HashMap<String, String>,
     body: &Bytes,
@@ -168,7 +169,7 @@ pub fn build_request_from_axum(
 
     let req = assemble_request_object(RequestAssembly {
         method: method.as_str(),
-        path: "",
+        path,
         path_params,
         query_params,
         headers: Some(&headers_map),
@@ -275,9 +276,10 @@ mod tests {
         query_params.insert("q".to_string(), "term".to_string());
         let body = Bytes::from_static(br#"{"a":1}"#);
 
-        let (req, ct) = build_request_from_axum(&method, &headers, &path_params, &query_params, &body);
+        let (req, ct) = build_request_from_axum(&method, &headers, "/test/42", &path_params, &query_params, &body);
         assert_eq!(ct, "application/json");
         assert_eq!(req["method"], serde_json::json!("POST"));
+        assert_eq!(req["path"], serde_json::json!("/test/42"));
         assert_eq!(req["cookies"]["sid"], serde_json::json!("abc"));
         assert_eq!(req["originalRequest"]["method"], serde_json::json!("POST"));
         assert_eq!(req["originalRequest"]["params"]["id"], serde_json::json!(42));
