@@ -255,7 +255,7 @@ mod tests {
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: std::sync::Arc::new(std::collections::HashMap::new()),
             graphql: None,
-            execution_env: None,
+            execution_env: Arc::new(parking_lot::RwLock::new(None)),
         })
     }
 
@@ -284,7 +284,7 @@ mod tests {
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: std::sync::Arc::new(scripts),
             graphql: None,
-            execution_env: None,
+            execution_env: Arc::new(parking_lot::RwLock::new(None)),
         })
     }
 

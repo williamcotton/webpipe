@@ -28,6 +28,7 @@ use crate::http::request::build_request_from_axum;
 pub struct WebPipeServer {
     program: Program,
     middleware_registry: Arc<MiddlewareRegistry>,
+    ctx: Arc<Context>,
 }
 
 #[derive(Clone)]
@@ -85,11 +86,13 @@ impl WebPipeServer {
         ctx.graphql = graphql_runtime;
 
         // 4. Build middleware registry with context
-        let middleware_registry = Arc::new(MiddlewareRegistry::with_builtins(Arc::new(ctx)));
+        let ctx_arc = Arc::new(ctx);
+        let middleware_registry = Arc::new(MiddlewareRegistry::with_builtins(ctx_arc.clone()));
 
         Ok(Self {
             program,
             middleware_registry,
+            ctx: ctx_arc,
         })
     }
 
@@ -160,13 +163,16 @@ impl WebPipeServer {
             );
         }
 
-        let env = ExecutionEnv {
+        let env = Arc::new(ExecutionEnv {
             variables: Arc::new(self.program.variables.clone()),
             named_pipelines: Arc::new(named_pipelines),
             invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
             environment: std::env::var("WEBPIPE_ENV").ok(),
             async_registry: crate::executor::AsyncTaskRegistry::new(),
-        };
+        });
+
+        // Set the execution environment in the Context so GraphQL middleware can access it
+        *self.ctx.execution_env.write() = Some(env.clone());
 
         let server_state = ServerState {
             middleware_registry: self.middleware_registry.clone(),
@@ -174,7 +180,7 @@ impl WebPipeServer {
             post_router: Arc::new(post_router),
             put_router: Arc::new(put_router),
             delete_router: Arc::new(delete_router),
-            env: Arc::new(env),
+            env: env.clone(),
         };
 
         // Single catch-all per method

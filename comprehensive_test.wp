@@ -1483,3 +1483,217 @@ mutation toggleTodo =
     RETURNING *
   `
   |> jq: `.data.rows[0]`
+
+## GraphQL Schema and Resolvers Demo
+
+graphql schema = `
+  type User {
+    id: ID!
+    name: String!
+    email: String!
+    createdAt: String!
+  }
+
+  type Post {
+    id: ID!
+    title: String!
+    body: String!
+    userId: Int!
+    published: Boolean!
+  }
+
+  type Stats {
+    totalUsers: Int!
+    totalPosts: Int!
+    activeUsers: Int!
+  }
+
+  type Query {
+    currentTime: String!
+    randomNumber: Int!
+    users: [User!]!
+    user(id: Int!): User
+    posts(limit: Int): [Post!]!
+    stats: Stats!
+  }
+
+  type Mutation {
+    createPost(title: String!, body: String!): Post!
+    updatePost(id: Int!, title: String, body: String): Post!
+    deletePost(id: Int!): Boolean!
+  }
+`
+
+# Query resolver: return current timestamp
+query currentTime =
+  |> pg: `SELECT NOW()::text as time`
+  |> jq: `.data.rows[0].time`
+
+# Query resolver: return a random number
+query randomNumber =
+  |> pg: `SELECT floor(random() * 1000)::int as number`
+  |> jq: `.data.rows[0].number`
+
+# Query resolver: return mock users
+query users =
+  |> debug: "users resolver - start"
+  |> pg: `
+    SELECT
+      id,
+      'User ' || id as name,
+      'user' || id || '@example.com' as email,
+      NOW() - (id || ' days')::interval as "createdAt"
+    FROM generate_series(1, 5) as id
+  `
+  |> debug: "users resolver - after pg"
+  |> jq: `.data.rows`
+  |> debug: "users resolver - after jq"
+
+# Query resolver: return single user by ID
+query user =
+  |> jq: `{ sqlParams: [.id] }`
+  |> pg: `
+    SELECT
+      $1 as id,
+      'User ' || $1 as name,
+      'user' || $1 || '@example.com' as email,
+      NOW()::text as "createdAt"
+  `
+  |> jq: `.data.rows[0]`
+
+# Query resolver: return mock posts with optional limit
+query posts =
+  |> jq: `{ sqlParams: [.limit // 10] }`
+  |> pg: `
+    SELECT
+      id,
+      'Post Title ' || id as title,
+      'This is the body content for post ' || id as body,
+      (id % 5) + 1 as "userId",
+      (random() > 0.5) as published
+    FROM generate_series(1, $1) as id
+  `
+  |> jq: `.data.rows`
+
+# Query resolver: return aggregate stats
+query stats =
+  |> pg: `
+    SELECT
+      5 as "totalUsers",
+      100 as "totalPosts",
+      3 as "activeUsers"
+  `
+  |> jq: `.data.rows[0]`
+
+# Mutation resolver: create a post
+mutation createPost =
+  |> validate: `{
+    title: string(5..100),
+    body: string(10..500)
+  }`
+  |> jq: `{ sqlParams: [.title, .body] }`
+  |> pg: `
+    SELECT
+      floor(random() * 1000)::int as id,
+      $1 as title,
+      $2 as body,
+      1 as "userId",
+      true as published
+  `
+  |> jq: `.data.rows[0]`
+
+# Mutation resolver: update a post
+mutation updatePost =
+  |> validate: `{
+    id: number
+  }`
+  |> jq: `{ sqlParams: [.id, .title // "Updated Title", .body // "Updated body"] }`
+  |> pg: `
+    SELECT
+      $1 as id,
+      $2 as title,
+      $3 as body,
+      1 as "userId",
+      true as published
+  `
+  |> jq: `.data.rows[0]`
+
+# Mutation resolver: delete a post
+mutation deletePost =
+  |> jq: `{ sqlParams: [.id] }`
+  |> pg: `SELECT $1 as id`
+  |> jq: `(.data.rows | length > 0)`
+
+# GraphQL endpoint: execute GraphQL queries
+POST /graphql
+  |> jq: `{ graphqlParams: .variables }`
+  |> graphql: `.query`
+
+# Test route: simple query
+GET /test-graphql-simple
+  |> graphql: `
+    query {
+      currentTime
+      randomNumber
+    }
+  `
+
+# Test route: query with arguments
+GET /test-graphql-args
+  |> jq: `.graphqlParams = { id: 1, limit: 3 }`
+  |> graphql: `
+    query($id: Int!, $limit: Int) {
+      user(id: $id) {
+        id
+        name
+        email
+      }
+      posts(limit: $limit) {
+        id
+        title
+      }
+    }
+  `
+
+# Test route: mutation
+POST /test-graphql-mutation
+  |> jq: `.graphqlParams = { title: .body.title, body: .body.body }`
+  |> graphql: `
+    mutation($title: String!, $body: String!) {
+      createPost(title: $title, body: $body) {
+        id
+        title
+        body
+        published
+      }
+    }
+  `
+
+# Test route: multiple queries with resultName
+GET /test-graphql-multi
+  |> jq: `.resultName = "time"`
+  |> graphql: `query { currentTime }`
+  |> debug: "After first graphql call"
+  |> jq: `.resultName = "users"`
+  |> graphql: `query { users { id name email } }`
+  |> debug: "After second graphql call"
+  |> jq: `.resultName = "stats"`
+  |> graphql: `query { stats { totalUsers totalPosts activeUsers } }`
+  |> debug: "After third graphql call"
+
+# Test route: single query with users (for debugging)
+GET /test-graphql-users-only
+  |> graphql: `query { users { id name email } }`
+
+# Test route: single graphql call with resultName
+GET /test-graphql-single-resultname
+  |> jq: `.resultName = "users"`
+  |> graphql: `query { users { id name email } }`
+
+# Test route: test just first step of multi
+GET /test-graphql-first-step
+  |> jq: `.resultName = "time"`
+  |> graphql: `query { currentTime }`
+
+GET /ok
+  |> jq: `.`

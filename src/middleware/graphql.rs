@@ -57,10 +57,12 @@ impl Middleware for GraphQLMiddleware {
 
         // Get the execution environment from context
         let env = self.ctx.execution_env
+            .read()
             .as_ref()
             .ok_or_else(|| WebPipeError::ConfigError(
                 "No execution environment available".into()
-            ))?;
+            ))?
+            .clone();
 
         // Extract GraphQL variables from input.graphqlParams
         let variables = input
@@ -68,9 +70,12 @@ impl Middleware for GraphQLMiddleware {
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
 
-        // Pass the ENTIRE pipeline state to GraphQL
-        // The GraphQL runtime will merge field arguments at root level
-        let pipeline_state = input.clone();
+        // Pass the pipeline state to GraphQL, but remove resultName
+        // resultName is only for the GraphQL middleware, not for resolvers
+        let mut pipeline_state = input.clone();
+        if let Some(obj) = pipeline_state.as_object_mut() {
+            obj.remove("resultName");
+        }
 
         // Execute the GraphQL query
         let query = config;
@@ -78,19 +83,38 @@ impl Middleware for GraphQLMiddleware {
             query,
             variables,
             pipeline_state,
-            env
+            &env
         ).await?;
 
         // Check for resultName pattern (auto-naming)
         if let Some(result_name) = input.get("resultName").and_then(|v| v.as_str()) {
-            // Store result under .data.<resultName>
+            // DEBUG: Log the GraphQL response
+            eprintln!("GraphQL response for resultName '{}': {}", result_name, serde_json::to_string_pretty(&response).unwrap_or_else(|_| "invalid json".to_string()));
+
+            // Extract the data from GraphQL response and store under .data.<resultName>
             let mut output = input.clone();
             if let Some(obj) = output.as_object_mut() {
                 let data_obj = obj.entry("data")
                     .or_insert_with(|| Value::Object(serde_json::Map::new()))
                     .as_object_mut()
                     .unwrap();
-                data_obj.insert(result_name.to_string(), response);
+
+                // Extract just the data portion from the GraphQL response
+                // GraphQL response format is: { data: { fieldName: value }, errors?: [...] }
+                // We want to store the entire data object under the result name
+                if let Some(graphql_data) = response.get("data") {
+                    eprintln!("Storing graphql_data under '{}': {}", result_name, serde_json::to_string_pretty(&graphql_data).unwrap_or_else(|_| "invalid".to_string()));
+                    data_obj.insert(result_name.to_string(), graphql_data.clone());
+                } else {
+                    eprintln!("No 'data' field in GraphQL response for '{}'", result_name);
+                    data_obj.insert(result_name.to_string(), Value::Null);
+                }
+
+                // If there were errors, add them to the output
+                if let Some(errors) = response.get("errors") {
+                    obj.insert("graphqlErrors".to_string(), errors.clone());
+                }
+
                 obj.remove("resultName");
             }
             Ok(output)
@@ -117,7 +141,7 @@ mod tests {
             cfg: crate::runtime::context::ConfigSnapshot(json!({})),
             lua_scripts: Arc::new(std::collections::HashMap::new()),
             graphql: None,
-            execution_env: None,
+            execution_env: Arc::new(parking_lot::RwLock::new(None)),
         });
 
         let middleware = GraphQLMiddleware::new(ctx);

@@ -35,6 +35,8 @@ notify = { version = "6.1", default-features = false, features = ["macos_fsevent
 dotenvy = "0.15"
 parking_lot = "0.12"
 async-graphql = "7.0"
+async-graphql-parser = "7.0"
+async-graphql-value = "7.0"
 
 [features]
 pg_tests = []

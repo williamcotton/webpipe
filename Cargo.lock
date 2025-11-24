@@ -3429,6 +3429,8 @@ dependencies = [
  "anyhow",
  "argon2",
  "async-graphql",
+ "async-graphql-parser",
+ "async-graphql-value",
  "async-trait",
  "axum",
  "chrono",

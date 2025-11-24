@@ -6,6 +6,8 @@ use serde_json::{json, Value};
 use crate::ast::{Pipeline, Program};
 use crate::executor::ExecutionEnv;
 use crate::error::WebPipeError;
+use async_graphql_parser::{parse_query, types::*};
+use async_graphql_value::Value as GraphQLValue;
 
 /// Compiled GraphQL runtime - created ONCE at server startup
 #[derive(Clone)]
@@ -72,205 +74,245 @@ impl GraphQLRuntime {
         &self,
         query: &str,
         variables: Value,
-        mut pipeline_state: Value,
+        pipeline_state: Value,
         env: &ExecutionEnv,
     ) -> Result<Value, WebPipeError> {
-        // Parse the GraphQL query to extract operation type and field name
-        let (operation_type, field_name, field_args) = self.parse_simple_query(query)?;
+        // Parse the GraphQL query to extract operation type and all fields
+        let (operation_type, field_args_list) = self.parse_query_fields_with_variables(query, &variables)?;
 
-        // Get the resolver pipeline
-        let pipeline = match operation_type.as_str() {
-            "query" => {
-                self.query_resolvers
-                    .get(&field_name)
-                    .ok_or_else(|| WebPipeError::ConfigError(
-                        format!("No query resolver found for field '{}'", field_name)
-                    ))?
-            }
-            "mutation" => {
-                self.mutation_resolvers
-                    .get(&field_name)
-                    .ok_or_else(|| WebPipeError::ConfigError(
-                        format!("No mutation resolver found for field '{}'", field_name)
-                    ))?
-            }
-            _ => {
-                return Err(WebPipeError::ConfigError(
-                    format!("Unsupported operation type: {}", operation_type)
-                ));
-            }
-        };
+        // Execute each field resolver and collect results
+        let mut data = serde_json::Map::new();
+        let mut errors = Vec::new();
 
-        // Merge GraphQL variables and field arguments into pipeline state
-        if let Some(state_obj) = pipeline_state.as_object_mut() {
-            // Add variables at root level
-            if let Some(vars_obj) = variables.as_object() {
-                for (k, v) in vars_obj {
-                    state_obj.insert(k.clone(), v.clone());
+        for (field_name, field_args) in field_args_list {
+            // Get the resolver pipeline
+            let pipeline = match operation_type.as_str() {
+                "query" => {
+                    self.query_resolvers.get(&field_name)
                 }
-            }
-            // Add field arguments at root level
-            if let Some(args_obj) = field_args.as_object() {
-                for (k, v) in args_obj {
-                    state_obj.insert(k.clone(), v.clone());
+                "mutation" => {
+                    self.mutation_resolvers.get(&field_name)
                 }
-            }
-        }
+                _ => None
+            };
 
-        // Execute the resolver pipeline
-        let result = crate::executor::execute_pipeline(
-            env,
-            pipeline,
-            pipeline_state
-        ).await;
+            let Some(pipeline) = pipeline else {
+                errors.push(json!({
+                    "message": format!("No {} resolver found for field '{}'", operation_type, field_name),
+                    "path": [field_name.clone()]
+                }));
+                continue;
+            };
 
-        match result {
-            Ok((data, _, _)) => {
-                // Return GraphQL response format
-                Ok(json!({
-                    "data": { field_name: data }
-                }))
-            }
-            Err(err) => {
-                // Return GraphQL error format
-                Ok(json!({
-                    "data": null,
-                    "errors": [{
-                        "message": err.to_string(),
-                        "path": [field_name]
-                    }]
-                }))
-            }
-        }
-    }
+            // Clone pipeline state for each field execution
+            let mut field_state = pipeline_state.clone();
 
-    /// Simplified GraphQL query parser for WebPipe 2.0
-    ///
-    /// Extracts:
-    /// - operation type ("query" or "mutation")
-    /// - field name (e.g., "todos")
-    /// - field arguments (e.g., { "limit": 10 })
-    ///
-    /// This handles simple single-field queries like:
-    /// - query { todos { id title } }
-    /// - mutation { createTodo(title: "test") { id } }
-    /// - query($limit: Int) { todos(limit: $limit) { id } }
-    ///
-    /// Full GraphQL parsing with nested resolvers will be added in 2.1
-    fn parse_simple_query(&self, query: &str) -> Result<(String, String, Value), WebPipeError> {
-        let query = query.trim();
-
-        // Determine operation type (used only to select the resolver registry)
-        let operation_type = if query.starts_with("mutation") {
-            "mutation"
-        } else {
-            "query" // default to query
-        };
-
-        // Find the start of the selection set and parse from INSIDE it.
-        // Example: `query { todos(limit: 10) { id } }`
-        //                          ^
-        let brace_pos = query
-            .find('{')
-            .ok_or_else(|| WebPipeError::ConfigError("Invalid GraphQL query: no opening brace".into()))?;
-
-        let selection = &query[brace_pos + 1..];
-        let selection = selection.trim_start();
-
-        // Extract field name: read until we hit whitespace, '(', or '{'
-        let mut field_name_end = 0;
-        for (idx, ch) in selection.char_indices() {
-            if ch.is_whitespace() || ch == '(' || ch == '{' {
-                break;
-            }
-            field_name_end = idx + ch.len_utf8();
-        }
-
-        let field_name = selection[..field_name_end].trim().to_string();
-        if field_name.is_empty() {
-            return Err(WebPipeError::ConfigError(
-                "Invalid GraphQL query: could not determine root field name".into(),
-            ));
-        }
-
-        // Now look for argument list after the field name, before the next '{'
-        let after_field = selection[field_name_end..].trim_start();
-        let field_args = if after_field.starts_with('(') {
-            // Find matching ')'
-            let mut depth = 0i32;
-            let mut end_idx: Option<usize> = None;
-            for (i, ch) in after_field.char_indices() {
-                if ch == '(' {
-                    depth += 1;
-                } else if ch == ')' {
-                    depth -= 1;
-                    if depth == 0 {
-                        end_idx = Some(i);
-                        break;
+            // Merge GraphQL variables and field arguments into pipeline state
+            if let Some(state_obj) = field_state.as_object_mut() {
+                // Add variables at root level
+                if let Some(vars_obj) = variables.as_object() {
+                    for (k, v) in vars_obj {
+                        state_obj.insert(k.clone(), v.clone());
+                    }
+                }
+                // Add field arguments at root level
+                if let Some(args_obj) = field_args.as_object() {
+                    for (k, v) in args_obj {
+                        state_obj.insert(k.clone(), v.clone());
                     }
                 }
             }
 
-            let end_idx = end_idx.ok_or_else(|| {
-                WebPipeError::ConfigError("Invalid GraphQL query: unclosed argument list".into())
-            })?;
-            let args_str = &after_field[1..end_idx]; // skip the opening '('
-            self.parse_arguments(args_str)?
-        } else {
-            json!({})
-        };
+            // Execute the resolver pipeline
+            eprintln!("Executing GraphQL resolver '{}' with state: {}", field_name, serde_json::to_string_pretty(&field_state).unwrap_or_else(|_| "invalid".to_string()));
+            let result = crate::executor::execute_pipeline(
+                env,
+                pipeline,
+                field_state
+            ).await;
 
-        Ok((operation_type.to_string(), field_name, field_args))
-    }
-
-    /// Parse GraphQL arguments into JSON
-    /// Examples:
-    /// - "limit: 10" -> { "limit": 10 }
-    /// - "title: \"test\"" -> { "title": "test" }
-    /// - "limit: $limit" -> {} (variables are passed separately)
-    fn parse_arguments(&self, args_str: &str) -> Result<Value, WebPipeError> {
-        let mut args = serde_json::Map::new();
-
-        for arg in args_str.split(',') {
-            let arg = arg.trim();
-            if arg.is_empty() || arg.starts_with('$') {
-                // Skip variables passed positionally, e.g. "$limit"
-                continue;
-            }
-
-            if let Some(colon_pos) = arg.find(':') {
-                let key = arg[..colon_pos].trim().to_string();
-                let value_str = arg[colon_pos + 1..].trim();
-
-                // If the value is a variable reference like "$limit", skip it.
-                if value_str.starts_with('$') {
-                    continue;
+            match result {
+                Ok((field_data, _, _)) => {
+                    eprintln!("GraphQL resolver '{}' returned: {}", field_name, serde_json::to_string_pretty(&field_data).unwrap_or_else(|_| "invalid".to_string()));
+                    data.insert(field_name.clone(), field_data);
                 }
-
-                let value = if value_str.starts_with('"') && value_str.ends_with('"') {
-                    // String value
-                    Value::String(value_str[1..value_str.len() - 1].to_string())
-                } else if value_str == "true" {
-                    Value::Bool(true)
-                } else if value_str == "false" {
-                    Value::Bool(false)
-                } else if value_str == "null" {
-                    Value::Null
-                } else if let Ok(num) = value_str.parse::<i64>() {
-                    Value::Number(num.into())
-                } else if let Ok(num) = value_str.parse::<f64>() {
-                    Value::Number(serde_json::Number::from_f64(num).unwrap_or(0.into()))
-                } else {
-                    // Fallback to string
-                    Value::String(value_str.to_string())
-                };
-
-                args.insert(key, value);
+                Err(e) => {
+                    eprintln!("GraphQL resolver '{}' error: {}", field_name, e);
+                    errors.push(json!({
+                        "message": e.to_string(),
+                        "path": [field_name.clone()]
+                    }));
+                    data.insert(field_name.clone(), Value::Null);
+                }
             }
         }
 
-        Ok(Value::Object(args))
+        // Return GraphQL response format
+        let mut response = json!({
+            "data": data
+        });
+
+        if !errors.is_empty() {
+            response["errors"] = json!(errors);
+        }
+
+        Ok(response)
     }
+
+    /// Parse a GraphQL query and extract all root fields with variable resolution
+    ///
+    /// Returns (operation_type, vec![(field_name, field_args)])
+    fn parse_query_fields_with_variables(&self, query: &str, variables: &Value) -> Result<(String, Vec<(String, Value)>), WebPipeError> {
+        let (op_type, fields_with_var_refs) = self.parse_query_fields(query)?;
+
+        // Resolve variable references in field arguments
+        let resolved_fields = fields_with_var_refs
+            .into_iter()
+            .map(|(field_name, args)| {
+                let resolved_args = self.resolve_variables_in_value(&args, variables);
+                (field_name, resolved_args)
+            })
+            .collect();
+
+        Ok((op_type, resolved_fields))
+    }
+
+    /// Resolve variable references in a JSON value
+    /// Replaces {"__variable__": "varName"} with the actual value from variables
+    fn resolve_variables_in_value(&self, value: &Value, variables: &Value) -> Value {
+        match value {
+            Value::Object(obj) => {
+                // Check if this is a variable marker
+                if obj.len() == 1 {
+                    if let Some(var_name) = obj.get("__variable__") {
+                        if let Some(var_name_str) = var_name.as_str() {
+                            // Look up the variable value
+                            return variables.get(var_name_str).cloned().unwrap_or(Value::Null);
+                        }
+                    }
+                }
+
+                // Otherwise, recursively resolve nested objects
+                Value::Object(
+                    obj.iter()
+                        .map(|(k, v)| (k.clone(), self.resolve_variables_in_value(v, variables)))
+                        .collect()
+                )
+            }
+            Value::Array(arr) => {
+                Value::Array(
+                    arr.iter()
+                        .map(|v| self.resolve_variables_in_value(v, variables))
+                        .collect()
+                )
+            }
+            _ => value.clone()
+        }
+    }
+
+    /// Parse a GraphQL query and extract all root fields using async-graphql-parser
+    ///
+    /// Returns (operation_type, vec![(field_name, field_args)])
+    fn parse_query_fields(&self, query: &str) -> Result<(String, Vec<(String, Value)>), WebPipeError> {
+        // Use the proper GraphQL parser from async-graphql-parser
+        let doc = parse_query(query)
+            .map_err(|e| WebPipeError::ConfigError(format!("Invalid GraphQL query: {}", e)))?;
+
+        // Get the first operation definition
+        let operation = doc
+            .operations
+            .iter()
+            .next()
+            .ok_or_else(|| WebPipeError::ConfigError("No operation found in GraphQL query".into()))?;
+
+        let (operation_type, selection_set) = match &operation.1.node.ty {
+            OperationType::Query => ("query", &operation.1.node.selection_set),
+            OperationType::Mutation => ("mutation", &operation.1.node.selection_set),
+            OperationType::Subscription => {
+                return Err(WebPipeError::ConfigError(
+                    "Subscriptions are not supported in WebPipe 2.0".into()
+                ));
+            }
+        };
+
+        // Extract all root-level fields
+        let mut fields = Vec::new();
+        for selection in &selection_set.node.items {
+            match &selection.node {
+                Selection::Field(field) => {
+                    let field_name = field.node.name.node.to_string();
+
+                    // Store arguments as-is (including Variable references)
+                    // We'll resolve them at execution time against the variables parameter
+                    let args = Value::Object(
+                        field.node.arguments
+                            .iter()
+                            .map(|(name, value)| {
+                                (name.node.to_string(), self.graphql_value_to_json(&value.node).unwrap_or(Value::Null))
+                            })
+                            .collect()
+                    );
+
+                    fields.push((field_name, args));
+                }
+                Selection::FragmentSpread(_) | Selection::InlineFragment(_) => {
+                    return Err(WebPipeError::ConfigError(
+                        "Fragments are not supported in WebPipe 2.0".into()
+                    ));
+                }
+            }
+        }
+
+        if fields.is_empty() {
+            return Err(WebPipeError::ConfigError(
+                "No fields found in GraphQL query".into()
+            ));
+        }
+
+        Ok((operation_type.to_string(), fields))
+    }
+
+    /// Convert async-graphql Value to serde_json Value
+    fn graphql_value_to_json(&self, value: &GraphQLValue) -> Result<Value, WebPipeError> {
+        match value {
+            GraphQLValue::Null => Ok(Value::Null),
+            GraphQLValue::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    Ok(json!(i))
+                } else if let Some(f) = n.as_f64() {
+                    Ok(json!(f))
+                } else {
+                    Ok(json!(n.to_string()))
+                }
+            }
+            GraphQLValue::String(s) => Ok(json!(s)),
+            GraphQLValue::Boolean(b) => Ok(json!(b)),
+            GraphQLValue::Enum(e) => Ok(json!(e.to_string())),
+            GraphQLValue::List(list) => {
+                let mut arr = Vec::new();
+                for item in list {
+                    arr.push(self.graphql_value_to_json(item)?);
+                }
+                Ok(Value::Array(arr))
+            }
+            GraphQLValue::Object(obj) => {
+                let mut map = serde_json::Map::new();
+                for (key, val) in obj {
+                    map.insert(key.to_string(), self.graphql_value_to_json(val)?);
+                }
+                Ok(Value::Object(map))
+            }
+            GraphQLValue::Variable(var_name) => {
+                // Return a special marker that we'll resolve later
+                // Format: {"__variable__": "varName"}
+                Ok(json!({"__variable__": var_name.to_string()}))
+            }
+            GraphQLValue::Binary(_) => {
+                Err(WebPipeError::ConfigError("Binary values not supported".into()))
+            }
+        }
+    }
+
 }
 
 impl std::fmt::Debug for GraphQLRuntime {
@@ -294,10 +336,11 @@ mod tests {
             mutation_resolvers: Arc::new(HashMap::new()),
         };
 
-        let (op, field, args) = runtime.parse_simple_query("query { todos { id title } }").unwrap();
+        let (op, fields) = runtime.parse_query_fields("query { todos { id title } }").unwrap();
         assert_eq!(op, "query");
-        assert_eq!(field, "todos");
-        assert_eq!(args, json!({}));
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].0, "todos");
+        assert_eq!(fields[0].1, json!({}));
     }
 
     #[test]
@@ -308,13 +351,14 @@ mod tests {
             mutation_resolvers: Arc::new(HashMap::new()),
         };
 
-        let (op, field, args) = runtime.parse_simple_query(
+        let (op, fields) = runtime.parse_query_fields(
             "query { todos(limit: 10, completed: true) { id } }"
         ).unwrap();
         assert_eq!(op, "query");
-        assert_eq!(field, "todos");
-        assert_eq!(args["limit"], 10);
-        assert_eq!(args["completed"], true);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].0, "todos");
+        assert_eq!(fields[0].1["limit"], 10);
+        assert_eq!(fields[0].1["completed"], true);
     }
 
     #[test]
@@ -325,12 +369,13 @@ mod tests {
             mutation_resolvers: Arc::new(HashMap::new()),
         };
 
-        let (op, field, args) = runtime.parse_simple_query(
+        let (op, fields) = runtime.parse_query_fields(
             r#"mutation { createTodo(title: "test") { id } }"#
         ).unwrap();
         assert_eq!(op, "mutation");
-        assert_eq!(field, "createTodo");
-        assert_eq!(args["title"], "test");
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].0, "createTodo");
+        assert_eq!(fields[0].1["title"], "test");
     }
 
     #[test]
@@ -341,12 +386,21 @@ mod tests {
             mutation_resolvers: Arc::new(HashMap::new()),
         };
 
-        let (op, field, args) = runtime.parse_simple_query(
+        let (op, fields) = runtime.parse_query_fields(
             "query($limit: Int) { todos(limit: $limit) { id } }"
         ).unwrap();
         assert_eq!(op, "query");
-        assert_eq!(field, "todos");
-        // Variable args are skipped in field args (they come from variables param)
-        assert_eq!(args, json!({}));
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].0, "todos");
+        // Variable references are marked for resolution
+        assert_eq!(fields[0].1["limit"], json!({"__variable__": "limit"}));
+
+        // Test variable resolution
+        let variables = json!({"limit": 5});
+        let (_, resolved_fields) = runtime.parse_query_fields_with_variables(
+            "query($limit: Int) { todos(limit: $limit) { id } }",
+            &variables
+        ).unwrap();
+        assert_eq!(resolved_fields[0].1["limit"], 5);
     }
 }
