@@ -1371,11 +1371,41 @@ GET /parallel-api-demo
   }`
 
 GET /slow-sync
-  |> fetch: `https://httpbin.org/delay/2`
+  |> lua: `
+    -- Simulate ~2s delay and preserve prior fields
+    local start = os.time()
+    while os.time() - start < 2 do end
+    local out = {}
+    if type(request) == "table" then
+      for k, v in pairs(request) do out[k] = v end
+    end
+    out.data = { response = { url = "lua://delay/2/step1" } }
+    return out
+  `
   |> jq: `{ first: .data.response, step: "1/3" }`
-  |> fetch: `https://httpbin.org/delay/2`
+  |> lua: `
+    -- Simulate ~2s delay and preserve prior fields
+    local start = os.time()
+    while os.time() - start < 2 do end
+    local out = {}
+    if type(request) == "table" then
+      for k, v in pairs(request) do out[k] = v end
+    end
+    out.data = { response = { url = "lua://delay/2/step2" } }
+    return out
+  `
   |> jq: `. + { second: .data.response, step: "2/3" }`
-  |> fetch: `https://httpbin.org/delay/2`
+  |> lua: `
+    -- Simulate ~2s delay and preserve prior fields
+    local start = os.time()
+    while os.time() - start < 2 do end
+    local out = {}
+    if type(request) == "table" then
+      for k, v in pairs(request) do out[k] = v end
+    end
+    out.data = { response = { url = "lua://delay/2/step3" } }
+    return out
+  `
   |> jq: `. + { third: .data.response, step: "3/3" }`
   |> jq: `{
     message: "All requests completed synchronously",
@@ -1384,9 +1414,39 @@ GET /slow-sync
   }`
 
 GET /slow-async
-  |> fetch: `https://httpbin.org/delay/2` @async(req1)
-  |> fetch: `https://httpbin.org/delay/2` @async(req2)
-  |> fetch: `https://httpbin.org/delay/2` @async(req3)
+  |> lua: `
+    -- Simulate ~2s delay and preserve prior fields
+    local start = os.time()
+    while os.time() - start < 2 do end
+    local out = {}
+    if type(request) == "table" then
+      for k, v in pairs(request) do out[k] = v end
+    end
+    out.data = { response = { url = "lua://delay/2/step1" } }
+    return out
+  ` @async(req1)
+  |> lua: `
+    -- Simulate ~2s delay and preserve prior fields
+    local start = os.time()
+    while os.time() - start < 2 do end
+    local out = {}
+    if type(request) == "table" then
+      for k, v in pairs(request) do out[k] = v end
+    end
+    out.data = { response = { url = "lua://delay/2/step2" } }
+    return out
+  ` @async(req2)
+  |> lua: `
+    -- Simulate ~2s delay and preserve prior fields
+    local start = os.time()
+    while os.time() - start < 2 do end
+    local out = {}
+    if type(request) == "table" then
+      for k, v in pairs(request) do out[k] = v end
+    end
+    out.data = { response = { url = "lua://delay/2/step3" } }
+    return out
+  ` @async(req3)
   |> join: `req1,req2,req3`
   |> jq: `{
     message: "All requests completed in parallel",
