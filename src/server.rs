@@ -68,8 +68,23 @@ pub struct WebPipeRequest {
 
 impl WebPipeServer {
     pub async fn from_program(program: Program) -> Result<Self, WebPipeError> {
-        // Build a Context from program configs (also initializes global config)
-        let ctx = Context::from_program_configs(program.configs.clone(), &program.variables).await?;
+        // 1. Build GraphQL runtime first (if schema exists)
+        let graphql_runtime = if program.graphql_schema.is_some() {
+            Some(Arc::new(
+                crate::graphql::GraphQLRuntime::from_program(&program)
+                    .map_err(|e| WebPipeError::ConfigError(format!("GraphQL initialization failed: {}", e)))?
+            ))
+        } else {
+            None
+        };
+
+        // 2. Build a Context from program configs (also initializes global config)
+        let mut ctx = Context::from_program_configs(program.configs.clone(), &program.variables).await?;
+
+        // 3. Add GraphQL runtime to context
+        ctx.graphql = graphql_runtime;
+
+        // 4. Build middleware registry with context
         let middleware_registry = Arc::new(MiddlewareRegistry::with_builtins(Arc::new(ctx)));
 
         Ok(Self {
@@ -123,11 +138,27 @@ impl WebPipeServer {
             }
         }
 
-        let named_pipelines: HashMap<String, Arc<Pipeline>> = self.program
+        let mut named_pipelines: HashMap<String, Arc<Pipeline>> = self.program
             .pipelines
             .iter()
             .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
             .collect();
+
+        // Add GraphQL query resolvers to named_pipelines
+        for query in &self.program.queries {
+            named_pipelines.insert(
+                format!("query::{}", query.name),
+                Arc::new(query.pipeline.clone())
+            );
+        }
+
+        // Add GraphQL mutation resolvers to named_pipelines
+        for mutation in &self.program.mutations {
+            named_pipelines.insert(
+                format!("mutation::{}", mutation.name),
+                Arc::new(mutation.pipeline.clone())
+            );
+        }
 
         let env = ExecutionEnv {
             variables: Arc::new(self.program.variables.clone()),

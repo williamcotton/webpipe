@@ -183,12 +183,16 @@ pub struct Context {
     pub hb: Arc<Mutex<Handlebars<'static>>>,
     pub cfg: ConfigSnapshot,
     pub lua_scripts: Arc<std::collections::HashMap<String, String>>,
+    pub graphql: Option<Arc<crate::graphql::GraphQLRuntime>>,
+    pub execution_env: Option<Arc<crate::executor::ExecutionEnv>>,
 }
 
 impl std::fmt::Debug for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Context")
             .field("pg", &self.pg.is_some())
+            .field("graphql", &self.graphql.is_some())
+            .field("execution_env", &self.execution_env.is_some())
             .field("cache", &"CacheStore")
             .field("cfg", &"ConfigSnapshot")
             .finish()
@@ -340,6 +344,8 @@ impl Context {
             hb: Arc::new(Mutex::new(hb)),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts,
+            graphql: None,
+            execution_env: None,
         })
     }
 }

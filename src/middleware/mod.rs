@@ -16,6 +16,7 @@ mod lua;
 mod log;
 mod debug;
 mod join;
+mod graphql;
 
 pub use jq::JqMiddleware;
 pub use auth::AuthMiddleware;
@@ -28,6 +29,7 @@ pub use lua::LuaMiddleware;
 pub use log::LogMiddleware;
 pub use debug::DebugMiddleware;
 pub use join::JoinMiddleware;
+pub use graphql::GraphQLMiddleware;
 
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
@@ -60,6 +62,7 @@ impl MiddlewareRegistry {
         registry.register("log", Box::new(LogMiddleware));
         registry.register("debug", Box::new(DebugMiddleware));
         registry.register("join", Box::new(JoinMiddleware));
+        registry.register("graphql", Box::new(GraphQLMiddleware::new(ctx.clone())));
         registry
     }
 
@@ -102,6 +105,8 @@ mod tests {
             hb: std::sync::Arc::new(parking_lot::Mutex::new(Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: std::sync::Arc::new(std::collections::HashMap::new()),
+            graphql: None,
+            execution_env: None,
         })
     }
 

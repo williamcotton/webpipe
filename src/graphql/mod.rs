@@ -160,70 +160,92 @@ impl GraphQLRuntime {
     fn parse_simple_query(&self, query: &str) -> Result<(String, String, Value), WebPipeError> {
         let query = query.trim();
 
-        // Determine operation type
+        // Determine operation type (used only to select the resolver registry)
         let operation_type = if query.starts_with("mutation") {
             "mutation"
         } else {
             "query" // default to query
         };
 
-        // Extract field name and arguments
-        // Look for pattern: fieldName(args) { or fieldName {
-        let field_start = query.find('{')
+        // Find the start of the selection set and parse from INSIDE it.
+        // Example: `query { todos(limit: 10) { id } }`
+        //                          ^
+        let brace_pos = query
+            .find('{')
             .ok_or_else(|| WebPipeError::ConfigError("Invalid GraphQL query: no opening brace".into()))?;
 
-        let field_section = &query[..field_start];
+        let selection = &query[brace_pos + 1..];
+        let selection = selection.trim_start();
 
-        // Remove operation keyword and variable declarations
-        let field_section = if let Some(vars_end) = field_section.rfind(')') {
-            // Has variable declaration like query($limit: Int)
-            let after_vars = &field_section[vars_end + 1..];
-            after_vars.trim()
+        // Extract field name: read until we hit whitespace, '(', or '{'
+        let mut field_name_end = 0;
+        for (idx, ch) in selection.char_indices() {
+            if ch.is_whitespace() || ch == '(' || ch == '{' {
+                break;
+            }
+            field_name_end = idx + ch.len_utf8();
+        }
+
+        let field_name = selection[..field_name_end].trim().to_string();
+        if field_name.is_empty() {
+            return Err(WebPipeError::ConfigError(
+                "Invalid GraphQL query: could not determine root field name".into(),
+            ));
+        }
+
+        // Now look for argument list after the field name, before the next '{'
+        let after_field = selection[field_name_end..].trim_start();
+        let field_args = if after_field.starts_with('(') {
+            // Find matching ')'
+            let mut depth = 0i32;
+            let mut end_idx: Option<usize> = None;
+            for (i, ch) in after_field.char_indices() {
+                if ch == '(' {
+                    depth += 1;
+                } else if ch == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        end_idx = Some(i);
+                        break;
+                    }
+                }
+            }
+
+            let end_idx = end_idx.ok_or_else(|| {
+                WebPipeError::ConfigError("Invalid GraphQL query: unclosed argument list".into())
+            })?;
+            let args_str = &after_field[1..end_idx]; // skip the opening '('
+            self.parse_arguments(args_str)?
         } else {
-            // Remove 'query' or 'mutation' keyword
-            field_section
-                .trim_start_matches("query")
-                .trim_start_matches("mutation")
-                .trim()
+            json!({})
         };
 
-        // Parse field name and arguments
-        if let Some(args_start) = field_section.find('(') {
-            // Has arguments: todos(limit: 10)
-            let field_name = field_section[..args_start].trim().to_string();
-
-            let args_end = field_section.find(')')
-                .ok_or_else(|| WebPipeError::ConfigError("Invalid GraphQL query: unclosed argument list".into()))?;
-
-            let args_str = &field_section[args_start + 1..args_end];
-            let field_args = self.parse_arguments(args_str)?;
-
-            Ok((operation_type.to_string(), field_name, field_args))
-        } else {
-            // No arguments: todos { id }
-            let field_name = field_section.trim().to_string();
-            Ok((operation_type.to_string(), field_name, json!({})))
-        }
+        Ok((operation_type.to_string(), field_name, field_args))
     }
 
     /// Parse GraphQL arguments into JSON
     /// Examples:
     /// - "limit: 10" -> { "limit": 10 }
     /// - "title: \"test\"" -> { "title": "test" }
-    /// - "$limit" -> {} (variables are passed separately)
+    /// - "limit: $limit" -> {} (variables are passed separately)
     fn parse_arguments(&self, args_str: &str) -> Result<Value, WebPipeError> {
         let mut args = serde_json::Map::new();
 
         for arg in args_str.split(',') {
             let arg = arg.trim();
             if arg.is_empty() || arg.starts_with('$') {
-                // Skip variables (they're passed in variables object)
+                // Skip variables passed positionally, e.g. "$limit"
                 continue;
             }
 
             if let Some(colon_pos) = arg.find(':') {
                 let key = arg[..colon_pos].trim().to_string();
                 let value_str = arg[colon_pos + 1..].trim();
+
+                // If the value is a variable reference like "$limit", skip it.
+                if value_str.starts_with('$') {
+                    continue;
+                }
 
                 let value = if value_str.starts_with('"') && value_str.ends_with('"') {
                     // String value
