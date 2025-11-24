@@ -1689,5 +1689,51 @@ GET /test-graphql-first-step
   |> jq: `.resultName = "time"`
   |> graphql: `query { currentTime }`
 
+# Test route: parallel GraphQL queries with async and join
+# Fires multiple independent GraphQL queries in parallel for maximum performance
+GET /test-graphql-async-parallel
+  |> graphql: `query { users { id name email } }` @async(usersQuery)
+  |> graphql: `query { stats { totalUsers totalPosts activeUsers } }` @async(statsQuery)
+  |> graphql: `query { posts(limit: 5) { id title userId published } }` @async(postsQuery)
+  |> graphql: `query { currentTime randomNumber }` @async(timeQuery)
+  |> join: "usersQuery,statsQuery,postsQuery,timeQuery"
+  |> jq: `{
+    dashboard: {
+      loadedAt: .async.timeQuery.data.currentTime,
+      randomNumber: .async.timeQuery.data.randomNumber,
+      statistics: .async.statsQuery.data.stats,
+      users: .async.usersQuery.data.users,
+      recentPosts: .async.postsQuery.data.posts,
+      metadata: {
+        queriesExecuted: 4,
+        executionMode: "parallel"
+      }
+    }
+  }`
+
+# Comparison route: same queries executed synchronously (slower)
+GET /test-graphql-sync-sequential
+  |> jq: `.resultName = "users"`
+  |> graphql: `query { users { id name email } }`
+  |> jq: `.resultName = "stats"`
+  |> graphql: `query { stats { totalUsers totalPosts activeUsers } }`
+  |> jq: `.resultName = "posts"`
+  |> graphql: `query { posts(limit: 5) { id title userId published } }`
+  |> jq: `.resultName = "time"`
+  |> graphql: `query { currentTime randomNumber }`
+  |> jq: `{
+    dashboard: {
+      loadedAt: .data.time.currentTime,
+      randomNumber: .data.time.randomNumber,
+      statistics: .data.stats.stats,
+      users: .data.users.users,
+      recentPosts: .data.posts.posts,
+      metadata: {
+        queriesExecuted: 4,
+        executionMode: "sequential"
+      }
+    }
+  }`
+
 GET /ok
   |> jq: `.`
