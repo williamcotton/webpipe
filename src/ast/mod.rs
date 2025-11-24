@@ -17,6 +17,26 @@ pub struct Program {
     pub variables: Vec<Variable>,
     pub routes: Vec<Route>,
     pub describes: Vec<Describe>,
+    pub graphql_schema: Option<GraphQLSchema>,
+    pub queries: Vec<QueryResolver>,
+    pub mutations: Vec<MutationResolver>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphQLSchema {
+    pub sdl: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueryResolver {
+    pub name: String,
+    pub pipeline: Pipeline,
+}
+
+#[derive(Debug, Clone)]
+pub struct MutationResolver {
+    pub name: String,
+    pub pipeline: Pipeline,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +183,18 @@ impl Display for Program {
         }
         for variable in &self.variables {
             writeln!(f, "{}", variable)?;
+        }
+        if let Some(schema) = &self.graphql_schema {
+            writeln!(f, "{}", schema)?;
+            writeln!(f)?;
+        }
+        for query in &self.queries {
+            writeln!(f, "{}", query)?;
+            writeln!(f)?;
+        }
+        for mutation in &self.mutations {
+            writeln!(f, "{}", mutation)?;
+            writeln!(f)?;
         }
         for route in &self.routes {
             writeln!(f, "{}", route)?;
@@ -369,6 +401,26 @@ impl Display for ConditionType {
             ConditionType::Then => write!(f, "then"),
             ConditionType::And => write!(f, "and"),
         }
+    }
+}
+
+impl Display for GraphQLSchema {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "graphql schema = `{}`", self.sdl)
+    }
+}
+
+impl Display for QueryResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "query {} =", self.name)?;
+        write!(f, "{}", self.pipeline)
+    }
+}
+
+impl Display for MutationResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "mutation {} =", self.name)?;
+        write!(f, "{}", self.pipeline)
     }
 }
 
@@ -625,11 +677,48 @@ fn parse_route(input: &str) -> IResult<&str, Route> {
     let (input, _) = multispace0(input)?;
     let (input, pipeline) = parse_pipeline_ref(input)?;
     let (input, _) = multispace0(input)?;
-    Ok((input, Route { 
-        method, 
-        path: path.to_string(), 
-        pipeline 
+    Ok((input, Route {
+        method,
+        path: path.to_string(),
+        pipeline
     }))
+}
+
+// GraphQL parsing
+fn parse_graphql_schema(input: &str) -> IResult<&str, GraphQLSchema> {
+    let (input, _) = tag("graphql")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("schema")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('=')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, sdl) = parse_multiline_string(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, GraphQLSchema { sdl }))
+}
+
+fn parse_query_resolver(input: &str) -> IResult<&str, QueryResolver> {
+    let (input, _) = tag("query")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, name) = parse_identifier(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('=')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, pipeline) = parse_pipeline(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, QueryResolver { name, pipeline }))
+}
+
+fn parse_mutation_resolver(input: &str) -> IResult<&str, MutationResolver> {
+    let (input, _) = tag("mutation")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, name) = parse_identifier(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('=')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, pipeline) = parse_pipeline(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, MutationResolver { name, pipeline }))
 }
 
 // Test parsing
@@ -813,24 +902,36 @@ fn parse_describe(input: &str) -> IResult<&str, Describe> {
 // Top-level program parsing
 pub fn parse_program(input: &str) -> IResult<&str, Program> {
     let (input, _) = multispace0(input)?;
-    
+
     let mut configs = Vec::new();
     let mut pipelines = Vec::new();
     let mut variables = Vec::new();
     let mut routes = Vec::new();
     let mut describes = Vec::new();
-    
+    let mut graphql_schema = None;
+    let mut queries = Vec::new();
+    let mut mutations = Vec::new();
+
     let mut remaining = input;
-    
+
     while !remaining.is_empty() {
         let (new_remaining, _) = multispace0(remaining)?;
         if new_remaining.is_empty() {
             break;
         }
-        
+
         // Try parsing each type of top-level element
         if let Ok((new_input, config)) = parse_config(new_remaining) {
             configs.push(config);
+            remaining = new_input;
+        } else if let Ok((new_input, schema)) = parse_graphql_schema(new_remaining) {
+            graphql_schema = Some(schema);
+            remaining = new_input;
+        } else if let Ok((new_input, query)) = parse_query_resolver(new_remaining) {
+            queries.push(query);
+            remaining = new_input;
+        } else if let Ok((new_input, mutation)) = parse_mutation_resolver(new_remaining) {
+            mutations.push(mutation);
             remaining = new_input;
         } else if let Ok((new_input, pipeline)) = parse_named_pipeline(new_remaining) {
             pipelines.push(pipeline);
@@ -853,8 +954,8 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
             }
         }
     }
-    
-    Ok((remaining, Program { configs, pipelines, variables, routes, describes }))
+
+    Ok((remaining, Program { configs, pipelines, variables, routes, describes, graphql_schema, queries, mutations }))
 }
 
 #[cfg(test)]
@@ -1073,5 +1174,115 @@ pipeline test =
         let step = &pipeline.steps[0];
 
         assert!(matches!(step, PipelineStep::Result { .. }));
+    }
+
+    #[test]
+    fn parse_graphql_schema() {
+        let src = r#"
+graphql schema = `
+  type Query {
+    hello: String
+  }
+`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        assert!(program.graphql_schema.is_some());
+        let schema = program.graphql_schema.unwrap();
+        assert!(schema.sdl.contains("hello"));
+        assert!(schema.sdl.contains("Query"));
+    }
+
+    #[test]
+    fn parse_query_resolver() {
+        let src = r#"
+query todos =
+  |> auth: "required"
+  |> jq: `{}`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        assert_eq!(program.queries.len(), 1);
+        assert_eq!(program.queries[0].name, "todos");
+        assert_eq!(program.queries[0].pipeline.steps.len(), 2);
+    }
+
+    #[test]
+    fn parse_mutation_resolver() {
+        let src = r#"
+mutation createTodo =
+  |> auth: "required"
+  |> jq: `{ title: .title }`
+  |> pg: `INSERT INTO todos (title) VALUES ($1) RETURNING *`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        assert_eq!(program.mutations.len(), 1);
+        assert_eq!(program.mutations[0].name, "createTodo");
+        assert_eq!(program.mutations[0].pipeline.steps.len(), 3);
+    }
+
+    #[test]
+    fn roundtrip_graphql_constructs() {
+        let src = r#"
+graphql schema = `
+  type Query {
+    hello: String
+  }
+`
+
+query hello =
+  |> jq: `{ hello: "world" }`
+
+mutation update =
+  |> jq: `{ updated: true }`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        let formatted = format!("{}", program);
+        assert!(formatted.contains("graphql schema"));
+        assert!(formatted.contains("query hello"));
+        assert!(formatted.contains("mutation update"));
+        assert!(formatted.contains("type Query"));
+    }
+
+    #[test]
+    fn parse_complete_graphql_program() {
+        let src = r#"
+config cache {
+  enabled: true
+}
+
+graphql schema = `
+  type Todo {
+    id: ID!
+    title: String!
+  }
+
+  type Query {
+    todos: [Todo!]!
+  }
+
+  type Mutation {
+    createTodo(title: String!): Todo!
+  }
+`
+
+query todos =
+  |> auth: "required"
+  |> pg: `SELECT * FROM todos`
+  |> jq: `.data.rows`
+
+mutation createTodo =
+  |> auth: "required"
+  |> jq: `{ sqlParams: [.title] }`
+  |> pg: `INSERT INTO todos (title) VALUES ($1) RETURNING *`
+  |> jq: `.data.rows[0]`
+
+GET /graphql
+  |> graphql: `query { todos { id title } }`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        assert_eq!(program.configs.len(), 1);
+        assert!(program.graphql_schema.is_some());
+        assert_eq!(program.queries.len(), 1);
+        assert_eq!(program.mutations.len(), 1);
+        assert_eq!(program.routes.len(), 1);
     }
 }

@@ -34,6 +34,7 @@ regex = "1.10"
 notify = { version = "6.1", default-features = false, features = ["macos_fsevent"] }
 dotenvy = "0.15"
 parking_lot = "0.12"
+async-graphql = "7.0"
 
 [features]
 pg_tests = []
