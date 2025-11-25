@@ -52,6 +52,7 @@ pub struct ExecutionEnv {
     pub invoker: Arc<dyn MiddlewareInvoker>,
     pub environment: Option<String>, // e.g. "production", "development", "staging"
     pub async_registry: AsyncTaskRegistry, // registry for @async tasks
+    pub flags: Arc<HashMap<String, bool>>, // feature flags for @flag() tag checking
 }
 
 #[derive(Clone)]
@@ -117,17 +118,44 @@ fn extract_error_type(input: &Value) -> Option<String> {
     None
 }
 
-fn should_execute_step(tags: &[crate::ast::Tag], env: &ExecutionEnv) -> bool {
-    tags.iter().all(|tag| check_tag(tag, env))
+fn should_execute_step(tags: &[crate::ast::Tag], env: &ExecutionEnv, input: &Value) -> bool {
+    tags.iter().all(|tag| check_tag(tag, env, input))
 }
 
-fn check_tag(tag: &crate::ast::Tag, env: &ExecutionEnv) -> bool {
+fn check_tag(tag: &crate::ast::Tag, env: &ExecutionEnv, _input: &Value) -> bool {
     match tag.name.as_str() {
         "env" => check_env_tag(tag, env),
         "async" => true, // async doesn't affect execution, just how it runs
-        "flag" => true,  // future: check_flag_tag(tag, env)
+        "flag" => check_flag_tag(tag, env),
+        "needs" => true, // @needs is only for static analysis, doesn't affect runtime
         _ => true,       // unknown tags don't prevent execution
     }
+}
+
+fn check_flag_tag(tag: &crate::ast::Tag, env: &ExecutionEnv) -> bool {
+    if tag.args.is_empty() {
+        return true; // Invalid @flag() tag without args, don't prevent execution
+    }
+
+    // Check all flag arguments - all must be enabled for step to execute
+    for flag_name in &tag.args {
+        let is_enabled = env.flags.get(flag_name.as_str())
+            .copied()
+            .unwrap_or(false); // Default: False (Fail Closed)
+
+        let matches = if tag.negated {
+            !is_enabled // @!flag(beta) - execute if flag is NOT enabled
+        } else {
+            is_enabled  // @flag(beta) - execute if flag IS enabled
+        };
+
+        // If any flag check fails, the step should not execute
+        if !matches {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn check_env_tag(tag: &crate::ast::Tag, env: &ExecutionEnv) -> bool {
@@ -234,6 +262,28 @@ async fn handle_result_step<'a>(
     }
 }
 
+/// Check if all remaining steps in the pipeline will be skipped
+fn all_remaining_steps_will_be_skipped(
+    steps: &[PipelineStep],
+    current_idx: usize,
+    env: &ExecutionEnv,
+    input: &Value
+) -> bool {
+    for step in steps.iter().skip(current_idx + 1) {
+        match step {
+            PipelineStep::Regular { tags, .. } => {
+                if should_execute_step(tags, env, input) {
+                    return false; // Found a step that will execute
+                }
+            }
+            PipelineStep::Result { .. } => {
+                return false; // Result steps always execute
+            }
+        }
+    }
+    true // All remaining steps will be skipped
+}
+
 pub fn execute_pipeline<'a>(
     env: &'a ExecutionEnv,
     pipeline: &'a Pipeline,
@@ -248,7 +298,7 @@ pub fn execute_pipeline<'a>(
             match step {
                 PipelineStep::Regular { name, config, config_type: _, tags } => {
                     // Check if this step should execute based on tags
-                    if !should_execute_step(tags, env) {
+                    if !should_execute_step(tags, env, &input) {
                         continue; // Skip this step
                     }
 
@@ -338,7 +388,10 @@ pub fn execute_pipeline<'a>(
 
                     match exec_result {
                         Ok((result, sub_status, sub_content_type)) => {
-                            let mut next_input = if is_last_step { result } else { merge_values_preserving_input(&effective_input, &result) };
+                            // Check if this is the effective last step (either last in array, or all remaining steps will be skipped)
+                            let is_effective_last_step = is_last_step || all_remaining_steps_will_be_skipped(&pipeline.steps, idx, env, &input);
+
+                            let mut next_input = if is_effective_last_step { result } else { merge_values_preserving_input(&effective_input, &result) };
                             if auto_named {
                                 if let Some(obj) = next_input.as_object_mut() { obj.remove("resultName"); }
                             }
@@ -346,10 +399,10 @@ pub fn execute_pipeline<'a>(
 
                             if name == "handlebars" {
                                 content_type = "text/html".to_string();
-                            } else if name == "pipeline" && is_last_step {
+                            } else if name == "pipeline" && is_effective_last_step {
                                 content_type = sub_content_type;
                             }
-                            if is_last_step { if let Some(s) = sub_status { status_code_out = Some(s); } }
+                            if is_effective_last_step { if let Some(s) = sub_status { status_code_out = Some(s); } }
                         }
                         Err(e) => {
                             return Err(WebPipeError::MiddlewareExecutionError(e.to_string()));
@@ -406,6 +459,7 @@ mod tests {
             invoker: Arc::new(StubInvoker),
             environment: None,
             async_registry: AsyncTaskRegistry::new(),
+            flags: Arc::new(HashMap::new()),
         }
     }
 
@@ -589,8 +643,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_env_tags_do_not_prevent_execution() {
-        let env = env_with_vars(vec![]);
+    async fn flag_tag_skips_when_flag_disabled() {
+        let env_no_flags = env_with_vars(vec![]);
 
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
@@ -603,8 +657,42 @@ mod tests {
             }
         ]};
 
+        // No flags in env - should fail closed (skip the step)
+        let (out, _ct, _st) = execute_pipeline(&env_no_flags, &pipeline, serde_json::json!({})).await.unwrap();
+        assert!(out.get("echo").is_none());
+
+        // With flag enabled in env - should execute
+        let mut flags = HashMap::new();
+        flags.insert("beta".to_string(), true);
+        let env_with_flag = ExecutionEnv {
+            variables: Arc::new(vec![]),
+            named_pipelines: Arc::new(HashMap::new()),
+            invoker: Arc::new(StubInvoker),
+            environment: None,
+            async_registry: AsyncTaskRegistry::new(),
+            flags: Arc::new(flags),
+        };
+        let (out2, _ct2, _st2) = execute_pipeline(&env_with_flag, &pipeline, serde_json::json!({})).await.unwrap();
+        assert_eq!(out2.get("echo").and_then(|v| v.as_str()), Some("tagged"));
+    }
+
+    #[tokio::test]
+    async fn non_flag_tags_do_not_prevent_execution() {
+        let env = env_with_vars(vec![]);
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "tagged".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![
+                    crate::ast::Tag { name: "needs".to_string(), negated: false, args: vec!["flags".to_string()] }
+                ]
+            }
+        ]};
+
         let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
-        // flag tags don't prevent execution (async tags do change execution model)
+        // @needs tags are for static analysis only, don't prevent execution
         assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("tagged"));
     }
 

@@ -1792,3 +1792,102 @@ GET /test-sequential-sleep
       query3: .data.q3.slowQuery3
     }
   }`
+
+## Feature Flags Demo (v2.0+)
+# Demonstrates dynamic feature flags with 2/3 probability rollout
+
+featureFlags =
+  |> lua: `
+    -- Enable "experimental-feature" flag 2/3rds of the time
+    local flags = {}
+
+    -- Generate random number between 0 and 1
+    math.randomseed(os.time() * 1000 + (request.headers and request.headers["x-request-id"] and tonumber(request.headers["x-request-id"]) or 0))
+    local rand = math.random()
+
+    -- Enable flag if random value is less than 0.666 (2/3)
+    flags["experimental-feature"] = (rand < 0.6666)
+
+    -- Always enable beta flag for internal users
+    if request.user and request.user.email and string.find(request.user.email, "@internal.com") then
+      flags["beta-features"] = true
+    else
+      flags["beta-features"] = false
+    end
+
+    -- Return flags via _metadata convention
+    local meta = request._metadata or {}
+    meta.flags = flags
+    return { _metadata = meta }
+  `
+
+GET /feature-test
+  |> jq: `{ message: "Standard feature (no flag required)" }` @!flag(experimental-feature)
+  |> jq: `{ message: "Experimental feature enabled!" }` @flag(experimental-feature)
+
+
+GET /feature-gui
+  |> jq: `{
+    title: "Standard Dashboard",
+    message: "Welcome to your dashboard",
+    version: "1.0"
+  }` @!flag(experimental-feature)
+  |> handlebars: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>{{title}}</title>
+      <style>
+        body { font-family: Arial, sans-serif; background: #f5f5f5; color: #333; padding: 40px; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        .info { background: #ecf0f1; padding: 15px; border-radius: 5px; margin-top: 20px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>{{title}}</h1>
+        <p>{{message}}</p>
+        <div class="info">
+          <strong>Version:</strong> {{version}}
+        </div>
+      </div>
+    </body>
+    </html>
+  ` @!flag(experimental-feature)
+  |> jq: `{
+    title: "Experimental Dashboard",
+    features: ["Real-time Analytics", "AI-Powered Insights", "Advanced Filtering"],
+    theme: "modern"
+  }` @flag(experimental-feature)
+  |> handlebars: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>{{title}}</title>
+      <style>
+        body { font-family: 'Segoe UI', sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 40px; }
+        .container { max-width: 800px; margin: 0 auto; background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); padding: 30px; border-radius: 15px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+        h1 { font-size: 2.5em; margin-bottom: 10px; }
+        .badge { background: #10b981; padding: 5px 15px; border-radius: 20px; font-size: 0.8em; display: inline-block; margin-bottom: 20px; }
+        .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 30px; }
+        .feature-card { background: rgba(255,255,255,0.2); padding: 20px; border-radius: 10px; text-align: center; transition: transform 0.2s; }
+        .feature-card:hover { transform: translateY(-5px); }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>{{title}}</h1>
+        <span class="badge">EXPERIMENTAL</span>
+        <p style="font-size: 1.2em; opacity: 0.9;">Experience the next generation of features</p>
+        <div class="features">
+          {{#each features}}
+          <div class="feature-card">
+            <strong>{{this}}</strong>
+          </div>
+          {{/each}}
+        </div>
+      </div>
+    </body>
+    </html>
+  ` @flag(experimental-feature)

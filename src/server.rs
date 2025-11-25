@@ -1,4 +1,4 @@
-use crate::ast::{Program, Pipeline, PipelineRef};
+use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep};
 use crate::middleware::MiddlewareRegistry;
 use crate::error::WebPipeError;
 use axum::{
@@ -25,6 +25,47 @@ use crate::http::request::build_request_from_axum;
 
 // merge helper moved to shared executor
 
+/// Recursive function to detect if a pipeline requires feature flags
+fn pipeline_needs_flags(
+    pipeline: &Pipeline,
+    named_pipelines: &HashMap<String, Arc<Pipeline>>
+) -> bool {
+    for step in &pipeline.steps {
+        match step {
+            PipelineStep::Regular { name, config, tags, .. } => {
+                // 1. Direct Usage: @flag(...)
+                if tags.iter().any(|t| t.name == "flag") {
+                    return true;
+                }
+
+                // 2. Explicit Opt-in: @needs(flags)
+                if tags.iter().any(|t| t.name == "needs" && t.args.contains(&"flags".to_string())) {
+                    return true;
+                }
+
+                // 3. Recursive Reference: |> pipeline: name
+                if name == "pipeline" {
+                    let target = config.trim();
+                    if let Some(sub) = named_pipelines.get(target) {
+                        if pipeline_needs_flags(sub, named_pipelines) {
+                            return true;
+                        }
+                    }
+                }
+            },
+            PipelineStep::Result { branches } => {
+                // 4. Recursive Branching: |> result ...
+                for branch in branches {
+                    if pipeline_needs_flags(&branch.pipeline, named_pipelines) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 pub struct WebPipeServer {
     program: Program,
     middleware_registry: Arc<MiddlewareRegistry>,
@@ -32,13 +73,20 @@ pub struct WebPipeServer {
 }
 
 #[derive(Clone)]
+pub struct RoutePayload {
+    pub pipeline: Arc<Pipeline>,
+    pub needs_flags: bool,
+}
+
+#[derive(Clone)]
 pub struct ServerState {
     middleware_registry: Arc<MiddlewareRegistry>,
-    get_router: Arc<matchit::Router<Arc<Pipeline>>>,
-    post_router: Arc<matchit::Router<Arc<Pipeline>>>,
-    put_router: Arc<matchit::Router<Arc<Pipeline>>>,
-    delete_router: Arc<matchit::Router<Arc<Pipeline>>>,
+    get_router: Arc<matchit::Router<RoutePayload>>,
+    post_router: Arc<matchit::Router<RoutePayload>>,
+    put_router: Arc<matchit::Router<RoutePayload>>,
+    delete_router: Arc<matchit::Router<RoutePayload>>,
     env: Arc<ExecutionEnv>,
+    feature_flags: Option<Arc<Pipeline>>,
 }
 
 impl ServerState {
@@ -52,7 +100,34 @@ impl ServerState {
         crate::executor::execute_pipeline(&self.env, pipeline, input)
     }
 
-    
+    /// Extract feature flags from request JSON and create a new ExecutionEnv with those flags
+    fn env_with_flags(&self, request_json: &Value) -> ExecutionEnv {
+        let mut flags = HashMap::new();
+
+        // Extract flags from _metadata.flags
+        if let Some(metadata) = request_json.get("_metadata") {
+            if let Some(flags_obj) = metadata.get("flags") {
+                if let Some(flags_map) = flags_obj.as_object() {
+                    for (key, value) in flags_map {
+                        if let Some(bool_val) = value.as_bool() {
+                            flags.insert(key.clone(), bool_val);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Create a new env with the extracted flags
+        ExecutionEnv {
+            variables: self.env.variables.clone(),
+            named_pipelines: self.env.named_pipelines.clone(),
+            invoker: self.env.invoker.clone(),
+            environment: self.env.environment.clone(),
+            async_registry: crate::executor::AsyncTaskRegistry::new(),
+            flags: Arc::new(flags),
+        }
+    }
+
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -99,48 +174,7 @@ impl WebPipeServer {
     pub fn router(self) -> Router {
         let mut router = Router::new().route("/health", get(health_check));
 
-        // Build method-specific matchers
-        let mut get_router = matchit::Router::new();
-        let mut post_router = matchit::Router::new();
-        let mut put_router = matchit::Router::new();
-        let mut delete_router = matchit::Router::new();
-
-        for route in &self.program.routes {
-            let path = route.path.clone();
-            let pipeline = match &route.pipeline {
-                PipelineRef::Inline(p) => Arc::new(p.clone()),
-                PipelineRef::Named(name) => {
-                    let p = self.program
-                        .pipelines
-                        .iter()
-                        .find(|pl| pl.name == *name)
-                        .expect("pipeline not found")
-                        .pipeline
-                        .clone();
-                    Arc::new(p)
-                }
-            };
-
-            match route.method.as_str() {
-                "GET" => {
-                    let _ = get_router.insert(path.clone(), pipeline.clone());
-                }
-                "POST" => {
-                    let _ = post_router.insert(path.clone(), pipeline.clone());
-                }
-                "PUT" => {
-                    let _ = put_router.insert(path.clone(), pipeline.clone());
-                }
-                "DELETE" => {
-                    let _ = delete_router.insert(path.clone(), pipeline.clone());
-                }
-                other => {
-                    warn!("Unsupported HTTP method: {}", other);
-                    continue;
-                }
-            }
-        }
-
+        // Build named_pipelines first for static analysis
         let mut named_pipelines: HashMap<String, Arc<Pipeline>> = self.program
             .pipelines
             .iter()
@@ -163,12 +197,63 @@ impl WebPipeServer {
             );
         }
 
+        // Build method-specific matchers with RoutePayload
+        let mut get_router = matchit::Router::new();
+        let mut post_router = matchit::Router::new();
+        let mut put_router = matchit::Router::new();
+        let mut delete_router = matchit::Router::new();
+
+        for route in &self.program.routes {
+            let path = route.path.clone();
+            let pipeline = match &route.pipeline {
+                PipelineRef::Inline(p) => Arc::new(p.clone()),
+                PipelineRef::Named(name) => {
+                    let p = self.program
+                        .pipelines
+                        .iter()
+                        .find(|pl| pl.name == *name)
+                        .expect("pipeline not found")
+                        .pipeline
+                        .clone();
+                    Arc::new(p)
+                }
+            };
+
+            // Static analysis: determine if this route needs flags
+            let needs_flags = pipeline_needs_flags(&pipeline, &named_pipelines);
+
+            let payload = RoutePayload {
+                pipeline: pipeline.clone(),
+                needs_flags,
+            };
+
+            match route.method.as_str() {
+                "GET" => {
+                    let _ = get_router.insert(path.clone(), payload.clone());
+                }
+                "POST" => {
+                    let _ = post_router.insert(path.clone(), payload.clone());
+                }
+                "PUT" => {
+                    let _ = put_router.insert(path.clone(), payload.clone());
+                }
+                "DELETE" => {
+                    let _ = delete_router.insert(path.clone(), payload.clone());
+                }
+                other => {
+                    warn!("Unsupported HTTP method: {}", other);
+                    continue;
+                }
+            }
+        }
+
         let env = Arc::new(ExecutionEnv {
             variables: Arc::new(self.program.variables.clone()),
             named_pipelines: Arc::new(named_pipelines),
             invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
             environment: std::env::var("WEBPIPE_ENV").ok(),
             async_registry: crate::executor::AsyncTaskRegistry::new(),
+            flags: Arc::new(HashMap::new()),
         });
 
         // Set the execution environment in the Context so GraphQL middleware can access it
@@ -181,6 +266,7 @@ impl WebPipeServer {
             put_router: Arc::new(put_router),
             delete_router: Arc::new(delete_router),
             env: env.clone(),
+            feature_flags: self.program.feature_flags.as_ref().map(|p| Arc::new(p.clone())),
         };
 
         // Single catch-all per method
@@ -251,7 +337,7 @@ async fn unified_handler(
     if method == Method::GET {
         if let Some(resp) = try_serve_static(&path).await { return resp; }
     }
-    let (pipeline, path_params) = match method.as_str() {
+    let (payload, path_params) = match method.as_str() {
         "GET" => match state.get_router.at(&path) {
             Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
             Err(_) => {
@@ -274,7 +360,7 @@ async fn unified_handler(
         _ => return StatusCode::METHOD_NOT_ALLOWED.into_response(),
     };
 
-    respond_with_pipeline(state, method, headers, path, path_params, query_params, body, pipeline).await
+    respond_with_pipeline(state, method, headers, path, path_params, query_params, body, payload).await
 }
 
 async fn respond_with_pipeline(
@@ -285,16 +371,54 @@ async fn respond_with_pipeline(
     path_params: HashMap<String, String>,
     query_params: HashMap<String, String>,
     body: Bytes,
-    pipeline: Arc<Pipeline>,
+    payload: RoutePayload,
 ) -> Response {
     // Build unified request JSON and content type via shared helper
-    let (request_json, _content_type) = build_request_from_axum(&method, &headers, &path, &path_params, &query_params, &body);
-    
+    let (mut request_json, _content_type) = build_request_from_axum(&method, &headers, &path, &path_params, &query_params, &body);
+
+    // --- PRE-FLIGHT CHECK: Execute feature flags pipeline if needed ---
+    if payload.needs_flags {
+        if let Some(flag_pipeline) = &state.feature_flags {
+            // Execute Flag Pipeline with Timeout (50ms)
+            let flag_result = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                state.execute_pipeline(flag_pipeline, request_json.clone())
+            ).await;
+
+            match flag_result {
+                Ok(Ok((result_json, _, _))) => {
+                    // Merge _metadata from result back into request_json
+                    if let Some(new_meta) = result_json.get("_metadata") {
+                        if let Some(obj) = request_json.as_object_mut() {
+                            obj.insert("_metadata".to_string(), new_meta.clone());
+                        }
+                    }
+
+                    // Merge user (if auth happened in pre-flight)
+                    if let Some(user) = result_json.get("user") {
+                        if let Some(obj) = request_json.as_object_mut() {
+                            obj.insert("user".to_string(), user.clone());
+                        }
+                    }
+                },
+                Ok(Err(e)) => {
+                    warn!("Flag resolution error: {}", e);
+                },
+                Err(_) => {
+                    warn!("Flag resolution timed out");
+                }
+            }
+        }
+    }
+
     // Keep a snapshot for post_execute (contains _metadata, originalRequest, headers)
     let request_snapshot = request_json.clone();
 
-    // Execute the pipeline
-    match state.execute_pipeline(&pipeline, request_json).await {
+    // Create ExecutionEnv with feature flags from request
+    let env_with_flags = state.env_with_flags(&request_json);
+
+    // Execute the pipeline with the flags-aware environment
+    match crate::executor::execute_pipeline(&env_with_flags, &payload.pipeline, request_json).await {
         Ok((result, content_type, status_code)) => {
             // Determine the HTTP status code
             let http_status = if let Some(code) = status_code {
@@ -635,6 +759,7 @@ mod tests {
             invoker: Arc::new(RealInvoker::new(registry.clone())),
             environment: None,
             async_registry: crate::executor::AsyncTaskRegistry::new(),
+            flags: Arc::new(HashMap::new()),
         };
         let state = ServerState {
             middleware_registry: registry.clone(),
@@ -643,6 +768,7 @@ mod tests {
             put_router: Arc::new(matchit::Router::new()),
             delete_router: Arc::new(matchit::Router::new()),
             env: Arc::new(env),
+            feature_flags: None,
         };
         // Craft a tiny pipeline that sets cookies via jq
         let p_set_cookie = Arc::new(Pipeline { steps: vec![
@@ -656,7 +782,7 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
             axum::body::Bytes::new(),
-            p_set_cookie.clone(),
+            RoutePayload { pipeline: p_set_cookie.clone(), needs_flags: false },
         ).await;
         assert_eq!(resp.status(), StatusCode::OK);
         // Header present
@@ -674,7 +800,7 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
             axum::body::Bytes::new(),
-            p_html.clone(),
+            RoutePayload { pipeline: p_html.clone(), needs_flags: false },
         ).await;
         assert_eq!(resp2.status(), StatusCode::OK);
         assert_eq!(resp2.headers().get(axum::http::header::CONTENT_TYPE).unwrap(), "text/html; charset=utf-8");

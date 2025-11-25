@@ -20,6 +20,7 @@ pub struct Program {
     pub graphql_schema: Option<GraphQLSchema>,
     pub queries: Vec<QueryResolver>,
     pub mutations: Vec<MutationResolver>,
+    pub feature_flags: Option<Pipeline>,
 }
 
 #[derive(Debug, Clone)]
@@ -183,6 +184,11 @@ impl Display for Program {
         }
         for variable in &self.variables {
             writeln!(f, "{}", variable)?;
+        }
+        if let Some(flags) = &self.feature_flags {
+            writeln!(f, "featureFlags =")?;
+            write!(f, "{}", flags)?;
+            writeln!(f)?;
         }
         if let Some(schema) = &self.graphql_schema {
             writeln!(f, "{}", schema)?;
@@ -641,6 +647,16 @@ fn parse_named_pipeline(input: &str) -> IResult<&str, NamedPipeline> {
     Ok((input, NamedPipeline { name, pipeline }))
 }
 
+fn parse_feature_flags(input: &str) -> IResult<&str, Pipeline> {
+    let (input, _) = tag("featureFlags")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('=')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, pipeline) = parse_pipeline(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, pipeline))
+}
+
 fn parse_pipeline_ref(input: &str) -> IResult<&str, PipelineRef> {
     alt((
         // Inline pipeline (prefer inline so routes can chain steps after a pipeline call)
@@ -911,6 +927,7 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
     let mut graphql_schema = None;
     let mut queries = Vec::new();
     let mut mutations = Vec::new();
+    let mut feature_flags = None;
 
     let mut remaining = input;
 
@@ -923,6 +940,9 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
         // Try parsing each type of top-level element
         if let Ok((new_input, config)) = parse_config(new_remaining) {
             configs.push(config);
+            remaining = new_input;
+        } else if let Ok((new_input, flags)) = parse_feature_flags(new_remaining) {
+            feature_flags = Some(flags);
             remaining = new_input;
         } else if let Ok((new_input, schema)) = parse_graphql_schema(new_remaining) {
             graphql_schema = Some(schema);
@@ -955,7 +975,7 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
         }
     }
 
-    Ok((remaining, Program { configs, pipelines, variables, routes, describes, graphql_schema, queries, mutations }))
+    Ok((remaining, Program { configs, pipelines, variables, routes, describes, graphql_schema, queries, mutations, feature_flags }))
 }
 
 #[cfg(test)]
