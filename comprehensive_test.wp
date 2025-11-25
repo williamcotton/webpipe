@@ -1486,7 +1486,7 @@ mutation toggleTodo =
 
 ## GraphQL Schema and Resolvers Demo
 
-graphql schema = `
+graphqlSchema = `
   type User {
     id: ID!
     name: String!
@@ -1652,19 +1652,19 @@ GET /test-graphql-args
     }
   `
 
-# Test route: mutation
+graphql testMutation = `
+  mutation($title: String!, $body: String!) {
+    createPost(title: $title, body: $body) {
+      id
+      title
+      body
+    }
+  }
+`
+
 POST /test-graphql-mutation
   |> jq: `.graphqlParams = { title: .body.title, body: .body.body }`
-  |> graphql: `
-    mutation($title: String!, $body: String!) {
-      createPost(title: $title, body: $body) {
-        id
-        title
-        body
-        published
-      }
-    }
-  `
+  |> graphql: testMutation
 
 # Test route: multiple queries with resultName
 GET /test-graphql-multi
@@ -1755,11 +1755,15 @@ query slowQuery3 =
   |> pg: `SELECT pg_sleep(2), 'Query 3 complete' as result, NOW()::text as completed_at`
   |> jq: `.data.rows[0]`
 
+graphql slowQuery1 = `query { slowQuery1 { result completed_at } }`
+graphql slowQuery2 = `query { slowQuery2 { result completed_at } }`
+graphql slowQuery3 = `query { slowQuery3 { result completed_at } }`
+
 # Parallel execution route - should complete in ~2 seconds
 GET /test-parallel-sleep
-  |> graphql: `query { slowQuery1 { result completed_at } }` @async(q1)
-  |> graphql: `query { slowQuery2 { result completed_at } }` @async(q2)
-  |> graphql: `query { slowQuery3 { result completed_at } }` @async(q3)
+  |> graphql: slowQuery1 @async(q1)
+  |> graphql: slowQuery2 @async(q2)
+  |> graphql: slowQuery3 @async(q3)
   |> jq: `{ startedAt: now }`
   |> join: `q1, q2, q3`
   |> jq: `{ totalTime: (now - .startedAt) }`
@@ -1777,11 +1781,11 @@ GET /test-parallel-sleep
 GET /test-sequential-sleep
   |> jq: `{ startedAt: now }`
   |> jq: `.resultName = "q1"`
-  |> graphql: `query { slowQuery1 { result completed_at } }`
+  |> graphql: slowQuery1
   |> jq: `.resultName = "q2"`
-  |> graphql: `query { slowQuery2 { result completed_at } }`
+  |> graphql: slowQuery2
   |> jq: `.resultName = "q3"`
-  |> graphql: `query { slowQuery3 { result completed_at } }`
+  |> graphql: slowQuery3
   |> jq: `{ totalTime: (now - .startedAt) }`
   |> jq: `{
     totalTime: .totalTime,

@@ -98,9 +98,28 @@ impl Middleware for GraphQLMiddleware {
 
                 // Extract just the data portion from the GraphQL response
                 // GraphQL response format is: { data: { fieldName: value }, errors?: [...] }
-                // We want to store the entire data object under the result name
+                //
+                // Special handling: If the GraphQL response has a single top-level field
+                // that matches the result name, unwrap it to avoid double nesting.
+                // This is common when using graphql variables like:
+                //   graphql slowQuery1 = `query { slowQuery1 { result } }`
+                //   |> graphql: slowQuery1  # auto-names as "slowQuery1"
+                // Without unwrapping, we'd get: .data.slowQuery1.slowQuery1
+                // With unwrapping, we get: .data.slowQuery1 (same as inline queries)
                 if let Some(graphql_data) = response.get("data") {
-                    data_obj.insert(result_name.to_string(), graphql_data.clone());
+                    let value_to_insert = if let Some(data_obj_inner) = graphql_data.as_object() {
+                        // Check if there's a single field matching the result name
+                        if data_obj_inner.len() == 1 && data_obj_inner.contains_key(result_name) {
+                            // Unwrap: use the field's value directly
+                            data_obj_inner.get(result_name).unwrap().clone()
+                        } else {
+                            // Multiple fields or no match: use the entire data object
+                            graphql_data.clone()
+                        }
+                    } else {
+                        graphql_data.clone()
+                    };
+                    data_obj.insert(result_name.to_string(), value_to_insert);
                 } else {
                     data_obj.insert(result_name.to_string(), Value::Null);
                 }

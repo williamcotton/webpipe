@@ -412,7 +412,7 @@ impl Display for ConditionType {
 
 impl Display for GraphQLSchema {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "graphql schema = `{}`", self.sdl)
+        write!(f, "graphqlSchema = `{}`", self.sdl)
     }
 }
 
@@ -702,9 +702,7 @@ fn parse_route(input: &str) -> IResult<&str, Route> {
 
 // GraphQL parsing
 fn parse_graphql_schema(input: &str) -> IResult<&str, GraphQLSchema> {
-    let (input, _) = tag("graphql")(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, _) = tag("schema")(input)?;
+    let (input, _) = tag("graphqlSchema")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char('=')(input)?;
     let (input, _) = multispace0(input)?;
@@ -1199,7 +1197,7 @@ pipeline test =
     #[test]
     fn parse_graphql_schema() {
         let src = r#"
-graphql schema = `
+graphqlSchema = `
   type Query {
     hello: String
   }
@@ -1242,7 +1240,7 @@ mutation createTodo =
     #[test]
     fn roundtrip_graphql_constructs() {
         let src = r#"
-graphql schema = `
+graphqlSchema = `
   type Query {
     hello: String
   }
@@ -1256,7 +1254,7 @@ mutation update =
 "#;
         let (_rest, program) = parse_program(src).unwrap();
         let formatted = format!("{}", program);
-        assert!(formatted.contains("graphql schema"));
+        assert!(formatted.contains("graphqlSchema"));
         assert!(formatted.contains("query hello"));
         assert!(formatted.contains("mutation update"));
         assert!(formatted.contains("type Query"));
@@ -1269,7 +1267,7 @@ config cache {
   enabled: true
 }
 
-graphql schema = `
+graphqlSchema = `
   type Todo {
     id: ID!
     title: String!
