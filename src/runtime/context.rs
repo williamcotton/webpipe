@@ -172,6 +172,100 @@ pub struct CacheStats {
     pub max_total_size: usize,
 }
 
+/// Entry for tracking rate limit counters with sliding window
+#[derive(Clone, Debug)]
+pub struct RateLimitEntry {
+    /// Number of requests in the current window
+    pub count: u64,
+    /// When the current window started
+    pub window_start: std::time::Instant,
+    /// Window duration in seconds
+    pub window_secs: u64,
+}
+
+/// Store for rate limiting counters
+#[derive(Clone, Debug)]
+pub struct RateLimitStore {
+    inner: Arc<Mutex<LruCache<String, RateLimitEntry>>>,
+}
+
+impl RateLimitStore {
+    /// Default max entries for rate limit tracking
+    pub const DEFAULT_MAX_ENTRIES: usize = 10_000;
+
+    pub fn new(max_entries: usize) -> Self {
+        let capacity = std::num::NonZeroUsize::new(max_entries)
+            .unwrap_or_else(|| std::num::NonZeroUsize::new(Self::DEFAULT_MAX_ENTRIES).unwrap());
+        Self {
+            inner: Arc::new(Mutex::new(LruCache::new(capacity))),
+        }
+    }
+
+    /// Check and increment the rate limit counter for a key.
+    /// Returns (allowed, current_count, limit, retry_after_secs) where:
+    /// - allowed: whether the request should be allowed
+    /// - current_count: the count after this request (if allowed) or current count (if denied)
+    /// - limit: the configured limit
+    /// - retry_after_secs: seconds until the window resets (useful for Retry-After header)
+    pub fn check_and_increment(
+        &self,
+        key: &str,
+        limit: u64,
+        window_secs: u64,
+        burst: Option<u64>,
+    ) -> (bool, u64, u64, u64) {
+        let effective_limit = limit + burst.unwrap_or(0);
+        let now = std::time::Instant::now();
+        let mut guard = self.inner.lock();
+
+        if let Some(entry) = guard.get_mut(key) {
+            let elapsed = now.duration_since(entry.window_start);
+            let window_duration = Duration::from_secs(entry.window_secs);
+
+            if elapsed >= window_duration {
+                // Window expired, reset
+                entry.count = 1;
+                entry.window_start = now;
+                entry.window_secs = window_secs;
+                let retry_after = window_secs;
+                (true, 1, effective_limit, retry_after)
+            } else if entry.count < effective_limit {
+                // Within limit, increment
+                entry.count += 1;
+                let retry_after = (window_duration - elapsed).as_secs();
+                (true, entry.count, effective_limit, retry_after)
+            } else {
+                // Rate limited
+                let retry_after = (window_duration - elapsed).as_secs();
+                (false, entry.count, effective_limit, retry_after)
+            }
+        } else {
+            // First request for this key
+            let entry = RateLimitEntry {
+                count: 1,
+                window_start: now,
+                window_secs,
+            };
+            guard.put(key.to_string(), entry);
+            (true, 1, effective_limit, window_secs)
+        }
+    }
+
+    /// Get the current count for a key without incrementing
+    pub fn get_count(&self, key: &str) -> Option<u64> {
+        let mut guard = self.inner.lock();
+        guard.get(key).map(|e| {
+            let now = std::time::Instant::now();
+            let elapsed = now.duration_since(e.window_start);
+            if elapsed >= Duration::from_secs(e.window_secs) {
+                0 // Window expired
+            } else {
+                e.count
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ConfigSnapshot(pub serde_json::Value);
 
@@ -180,6 +274,7 @@ pub struct Context {
     pub pg: Option<PgPool>,
     pub http: Client,
     pub cache: CacheStore,
+    pub rate_limit: RateLimitStore,
     pub hb: Arc<Mutex<Handlebars<'static>>>,
     pub cfg: ConfigSnapshot,
     pub lua_scripts: Arc<std::collections::HashMap<String, String>>,
@@ -194,6 +289,7 @@ impl std::fmt::Debug for Context {
             .field("graphql", &self.graphql.is_some())
             .field("execution_env", &self.execution_env.read().is_some())
             .field("cache", &"CacheStore")
+            .field("rate_limit", &"RateLimitStore")
             .field("cfg", &"ConfigSnapshot")
             .finish()
     }
@@ -332,6 +428,14 @@ impl Context {
         // Preload all Lua scripts at startup (non-blocking since we're in async context)
         let lua_scripts = Arc::new(Self::load_lua_scripts());
 
+        // Configure rate limit store
+        let rate_limit_cfg = cfg_mgr.resolve_config_as_json("rateLimit");
+        let rate_limit_max_entries = if let Ok(rl_cfg) = rate_limit_cfg {
+            rl_cfg.get("maxEntries").and_then(|v| v.as_u64()).unwrap_or(RateLimitStore::DEFAULT_MAX_ENTRIES as u64) as usize
+        } else {
+            RateLimitStore::DEFAULT_MAX_ENTRIES
+        };
+
         Ok(Self {
             pg,
             http,
@@ -341,6 +445,7 @@ impl Context {
                 max_entry_bytes,
                 max_total_bytes,
             ),
+            rate_limit: RateLimitStore::new(rate_limit_max_entries),
             hb: Arc::new(Mutex::new(hb)),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts,

@@ -151,6 +151,7 @@ mod tests {
             pg: None,
             http: reqwest::Client::new(),
             cache: crate::runtime::context::CacheStore::new(8, 60),
+            rate_limit: crate::runtime::context::RateLimitStore::new(1000),
             hb: Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
             cfg: crate::runtime::context::ConfigSnapshot(json!({})),
             lua_scripts: Arc::new(std::collections::HashMap::new()),

@@ -3,7 +3,7 @@ use crate::middleware::MiddlewareRegistry;
 use crate::error::WebPipeError;
 use axum::{
     body::{Bytes, Body},
-    extract::{Query, State, OriginalUri},
+    extract::{Query, State, OriginalUri, ConnectInfo},
     http::{Method, StatusCode, HeaderMap},
     response::{IntoResponse, Json, Html, Response},
     routing::{get, on, MethodFilter},
@@ -19,7 +19,7 @@ use tokio::fs as tokio_fs;
 use std::path::{Path, PathBuf};
 use crate::runtime::Context;
 use crate::executor::{ExecutionEnv, RealInvoker, PipelineExecFuture};
-use crate::http::request::build_request_from_axum;
+use crate::http::request::build_request_from_axum_with_ip;
 
 // number coercion helpers moved to http::request
 
@@ -291,7 +291,7 @@ impl WebPipeServer {
         
         info!("Web Pipe server starting on {}", addr);
         
-        axum::serve(listener, self.router())
+        axum::serve(listener, self.router().into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(shutdown_signal())
             .await?;
             
@@ -311,7 +311,7 @@ impl WebPipeServer {
 
         info!("Web Pipe server starting on {}", addr);
 
-        axum::serve(listener, self.router())
+        axum::serve(listener, self.router().into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(shutdown)
             .await?;
 
@@ -324,6 +324,7 @@ impl WebPipeServer {
 
 async fn unified_handler(
     State(state): State<ServerState>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     method: Method,
     headers: HeaderMap,
     OriginalUri(orig_uri): OriginalUri,
@@ -332,6 +333,9 @@ async fn unified_handler(
 ) -> impl IntoResponse {
     // Select router based on method
     let path = orig_uri.path().to_string();
+    
+    // Extract remote IP from connection (if available)
+    let remote_ip = connect_info.map(|ConnectInfo(addr)| addr.ip().to_string());
 
     // Try static first on GET so dynamic catch-alls don't shadow assets
     if method == Method::GET {
@@ -360,7 +364,7 @@ async fn unified_handler(
         _ => return StatusCode::METHOD_NOT_ALLOWED.into_response(),
     };
 
-    respond_with_pipeline(state, method, headers, path, path_params, query_params, body, payload).await
+    respond_with_pipeline(state, method, headers, path, path_params, query_params, body, payload, remote_ip.as_deref()).await
 }
 
 async fn respond_with_pipeline(
@@ -372,9 +376,10 @@ async fn respond_with_pipeline(
     query_params: HashMap<String, String>,
     body: Bytes,
     payload: RoutePayload,
+    remote_ip: Option<&str>,
 ) -> Response {
     // Build unified request JSON and content type via shared helper
-    let (mut request_json, _content_type) = build_request_from_axum(&method, &headers, &path, &path_params, &query_params, &body);
+    let (mut request_json, _content_type) = build_request_from_axum_with_ip(&method, &headers, &path, &path_params, &query_params, &body, remote_ip);
 
     // --- PRE-FLIGHT CHECK: Execute feature flags pipeline if needed ---
     if payload.needs_flags {
@@ -783,6 +788,7 @@ mod tests {
             HashMap::new(),
             axum::body::Bytes::new(),
             RoutePayload { pipeline: p_set_cookie.clone(), needs_flags: false },
+            Some("127.0.0.1"),
         ).await;
         assert_eq!(resp.status(), StatusCode::OK);
         // Header present
@@ -801,6 +807,7 @@ mod tests {
             HashMap::new(),
             axum::body::Bytes::new(),
             RoutePayload { pipeline: p_html.clone(), needs_flags: false },
+            Some("127.0.0.1"),
         ).await;
         assert_eq!(resp2.status(), StatusCode::OK);
         assert_eq!(resp2.headers().get(axum::http::header::CONTENT_TYPE).unwrap(), "text/html; charset=utf-8");

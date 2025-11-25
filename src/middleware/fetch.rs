@@ -192,6 +192,7 @@ mod tests {
             pg: None,
             http: Client::builder().timeout(Duration::from_secs(1)).build().unwrap(),
             cache: CacheStore::new(64, 1),
+            rate_limit: crate::runtime::context::RateLimitStore::new(1000),
             hb: std::sync::Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: std::sync::Arc::new(std::collections::HashMap::new()),

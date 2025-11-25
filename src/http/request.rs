@@ -70,6 +70,7 @@ pub struct RequestAssembly<'a> {
     pub cookies: Option<&'a HashMap<String, String>>, // None -> {}
     pub body: Value,
     pub content_type: &'a str,
+    pub ip: Option<&'a str>, // Client IP address
 }
 
 pub fn assemble_request_object(opts: RequestAssembly) -> Value {
@@ -82,10 +83,16 @@ pub fn assemble_request_object(opts: RequestAssembly) -> Value {
         cookies,
         body,
         content_type,
+        ip,
     } = opts;
     let mut req_obj = serde_json::Map::new();
     req_obj.insert("method".to_string(), Value::String(method.to_string()));
     req_obj.insert("path".to_string(), Value::String(path.to_string()));
+    
+    // Add IP address if available
+    if let Some(ip_addr) = ip {
+        req_obj.insert("ip".to_string(), Value::String(ip_addr.to_string()));
+    }
     req_obj.insert(
         "query".to_string(),
         string_map_to_json_with_number_coercion(query_params),
@@ -141,6 +148,29 @@ pub fn assemble_request_object(opts: RequestAssembly) -> Value {
     Value::Object(req_obj)
 }
 
+/// Extract client IP from headers (X-Forwarded-For, X-Real-IP) or return None
+fn extract_client_ip(headers: &HashMap<String, String>) -> Option<String> {
+    // Check X-Forwarded-For first (may contain multiple IPs, take the first)
+    if let Some(xff) = headers.get("x-forwarded-for") {
+        if let Some(first_ip) = xff.split(',').next() {
+            let ip = first_ip.trim();
+            if !ip.is_empty() {
+                return Some(ip.to_string());
+            }
+        }
+    }
+    
+    // Check X-Real-IP
+    if let Some(xri) = headers.get("x-real-ip") {
+        let ip = xri.trim();
+        if !ip.is_empty() {
+            return Some(ip.to_string());
+        }
+    }
+    
+    None
+}
+
 pub fn build_request_from_axum(
     method: &Method,
     headers: &HeaderMap,
@@ -149,10 +179,10 @@ pub fn build_request_from_axum(
     query_params: &HashMap<String, String>,
     body: &Bytes,
 ) -> (Value, String) {
-    // Convert headers to string map
+    // Convert headers to string map (lowercase keys for consistency)
     let headers_map: HashMap<String, String> = headers
         .iter()
-        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .map(|(k, v)| (k.to_string().to_lowercase(), v.to_str().unwrap_or("").to_string()))
         .collect();
 
     // Determine content type
@@ -166,6 +196,9 @@ pub fn build_request_from_axum(
 
     // Cookies
     let cookies = parse_cookies_from_headers(headers);
+    
+    // Extract client IP
+    let client_ip = extract_client_ip(&headers_map);
 
     let req = assemble_request_object(RequestAssembly {
         method: method.as_str(),
@@ -176,6 +209,52 @@ pub fn build_request_from_axum(
         cookies: Some(&cookies),
         body: parsed_body,
         content_type: &content_type,
+        ip: client_ip.as_deref(),
+    });
+
+    (req, content_type)
+}
+
+pub fn build_request_from_axum_with_ip(
+    method: &Method,
+    headers: &HeaderMap,
+    path: &str,
+    path_params: &HashMap<String, String>,
+    query_params: &HashMap<String, String>,
+    body: &Bytes,
+    remote_ip: Option<&str>,
+) -> (Value, String) {
+    // Convert headers to string map (lowercase keys for consistency)
+    let headers_map: HashMap<String, String> = headers
+        .iter()
+        .map(|(k, v)| (k.to_string().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+
+    // Determine content type
+    let content_type = headers_map
+        .get("content-type")
+        .cloned()
+        .unwrap_or_else(|| "application/json".to_string());
+
+    // Parse body
+    let parsed_body = parse_body_from_content_type(body, &content_type);
+
+    // Cookies
+    let cookies = parse_cookies_from_headers(headers);
+    
+    // Extract client IP from headers first, fall back to remote_ip
+    let client_ip = extract_client_ip(&headers_map).or_else(|| remote_ip.map(|s| s.to_string()));
+
+    let req = assemble_request_object(RequestAssembly {
+        method: method.as_str(),
+        path,
+        path_params,
+        query_params,
+        headers: Some(&headers_map),
+        cookies: Some(&cookies),
+        body: parsed_body,
+        content_type: &content_type,
+        ip: client_ip.as_deref(),
     });
 
     (req, content_type)
@@ -196,6 +275,7 @@ pub fn build_minimal_request_for_tests(
         cookies: None,
         body: Value::Object(serde_json::Map::new()),
         content_type: "application/json",
+        ip: None,
     })
 }
 

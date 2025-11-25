@@ -1891,7 +1891,15 @@ GET /feature-gui
           </div>
           {{/each}}
         </div>
-      </div>
+      </div>x
     </body>
     </html>
   ` @flag(experimental-feature)
+
+GET /test-rate-limit
+  |> rateLimit: `
+    keyTemplate: ip-{ip}-route-{method}-{path}
+    limit: 1
+    window: 10s
+  `
+  |> jq: `{ message: "Rate limited" }`

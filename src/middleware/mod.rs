@@ -17,6 +17,7 @@ mod log;
 mod debug;
 mod join;
 mod graphql;
+mod rate_limit;
 
 pub use jq::JqMiddleware;
 pub use auth::AuthMiddleware;
@@ -30,6 +31,7 @@ pub use log::LogMiddleware;
 pub use debug::DebugMiddleware;
 pub use join::JoinMiddleware;
 pub use graphql::GraphQLMiddleware;
+pub use rate_limit::RateLimitMiddleware;
 
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
@@ -63,6 +65,7 @@ impl MiddlewareRegistry {
         registry.register("debug", Box::new(DebugMiddleware));
         registry.register("join", Box::new(JoinMiddleware));
         registry.register("graphql", Box::new(GraphQLMiddleware::new(ctx.clone())));
+        registry.register("rateLimit", Box::new(RateLimitMiddleware { ctx: ctx.clone() }));
         registry
     }
 
@@ -102,6 +105,7 @@ mod tests {
             pg: None,
             http: Client::new(),
             cache: CacheStore::new(8, 1),
+            rate_limit: crate::runtime::context::RateLimitStore::new(1000),
             hb: std::sync::Arc::new(parking_lot::Mutex::new(Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: std::sync::Arc::new(std::collections::HashMap::new()),

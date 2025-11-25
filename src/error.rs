@@ -73,6 +73,9 @@ pub enum WebPipeError {
 
     #[error("Timeout error: {0}")]
     Timeout(String),
+
+    #[error("Rate limit exceeded: {0}")]
+    RateLimitExceeded(String),
 }
 
 impl WebPipeError {
@@ -100,6 +103,7 @@ impl WebPipeError {
             WebPipeError::NotFound(_) => StatusCode::NOT_FOUND,
             WebPipeError::MethodNotAllowed(_) => StatusCode::METHOD_NOT_ALLOWED,
             WebPipeError::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
+            WebPipeError::RateLimitExceeded(_) => StatusCode::TOO_MANY_REQUESTS,
         }
     }
 
@@ -127,6 +131,7 @@ impl WebPipeError {
             WebPipeError::NotFound(_) => "not_found",
             WebPipeError::MethodNotAllowed(_) => "method_not_allowed",
             WebPipeError::Timeout(_) => "timeout",
+            WebPipeError::RateLimitExceeded(_) => "rate_limit_exceeded",
         }
     }
 }
