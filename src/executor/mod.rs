@@ -425,17 +425,35 @@ pub fn execute_pipeline<'a>(
                                 return Ok((cached_val, sub_content_type, sub_status));
                             }
 
-                            // 2. CHECK FOR PENDING CACHE (Cache Miss - Start Tracking)
-                            // If cache middleware set cache_control metadata, track it for saving at end
-                            if let Some((key, ttl)) = extract_pending_cache_metadata(&result) {
-                                pending_cache_key = Some(key);
-                                pending_cache_ttl = Some(ttl);
+                            
+                            // // If cache middleware set cache_control metadata, track it for saving at end
+                            // if let Some((key, ttl)) = extract_pending_cache_metadata(&result) {
+                            //     pending_cache_key = Some(key);
+                            //     pending_cache_ttl = Some(ttl);
+                            // }
+                            // Only extract cache metadata from the actual "cache" middleware step
+                            // to prevent nested pipelines from inheriting and saving with the same key
+                            if name == "cache" {
+                                if let Some((key, ttl)) = extract_pending_cache_metadata(&result) {
+                                    pending_cache_key = Some(key);
+                                    pending_cache_ttl = Some(ttl);
+                                }
                             }
 
                             // Check if this is the effective last step (either last in array, or all remaining steps will be skipped)
                             let is_effective_last_step = is_last_step || all_remaining_steps_will_be_skipped(&pipeline.steps, idx, env, &input);
 
                             let mut next_input = if is_effective_last_step { result } else { merge_values_preserving_input(&effective_input, &result) };
+                            
+                            // Strip _metadata.cache_control after the cache step to prevent it from
+                            // leaking into nested pipelines (which would cause them to save with the same key)
+                            if name == "cache" {
+                                if let Some(obj) = next_input.as_object_mut() {
+                                    if let Some(meta) = obj.get_mut("_metadata").and_then(|m| m.as_object_mut()) {
+                                        meta.remove("cache_control");
+                                    }
+                                }
+                            }
                             if auto_named {
                                 if let Some(obj) = next_input.as_object_mut() { obj.remove("resultName"); }
                             }
