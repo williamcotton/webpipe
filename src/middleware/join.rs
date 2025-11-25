@@ -19,7 +19,10 @@ impl Middleware for JoinMiddleware {
         // This middleware is a marker - the executor will intercept it
         let mut result = input.clone();
         if let Some(obj) = result.as_object_mut() {
-            obj.insert("_join_tasks".to_string(), json!(task_names));
+            let meta_entry = obj.entry("_metadata").or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(meta_obj) = meta_entry.as_object_mut() {
+                meta_obj.insert("join_tasks".to_string(), json!(task_names));
+            }
         }
         Ok(result)
     }
