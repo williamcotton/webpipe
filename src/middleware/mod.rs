@@ -59,7 +59,7 @@ impl MiddlewareRegistry {
         registry.register("pg", Box::new(PgMiddleware { ctx: ctx.clone() }));
         registry.register("handlebars", Box::new(HandlebarsMiddleware::new_with_ctx(ctx.clone())));
         registry.register("fetch", Box::new(FetchMiddleware { ctx: ctx.clone() }));
-        registry.register("cache", Box::new(CacheMiddleware));
+        registry.register("cache", Box::new(CacheMiddleware { ctx: ctx.clone() }));
         registry.register("lua", Box::new(LuaMiddleware::new(ctx.clone())));
         registry.register("log", Box::new(LogMiddleware));
         registry.register("debug", Box::new(DebugMiddleware));

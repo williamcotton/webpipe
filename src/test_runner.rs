@@ -261,6 +261,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                 environment: None,
                                 async_registry: crate::executor::AsyncTaskRegistry::new(),
                                 flags: Arc::new(HashMap::new()),
+                                cache: None,
                             };
 
                             // Pipeline-level mock when route uses a named pipeline
@@ -302,6 +303,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             environment: None,
                             async_registry: crate::executor::AsyncTaskRegistry::new(),
                             flags: Arc::new(HashMap::new()),
+                            cache: None,
                         };
                         let (out, ct, status_opt) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input).await?;
                         (status_opt.unwrap_or(200u16), out, ct, true, String::new())
@@ -329,6 +331,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             environment: None,
                             async_registry: crate::executor::AsyncTaskRegistry::new(),
                             flags: Arc::new(HashMap::new()),
+                            cache: None,
                         };
                         let (out, ct, status_opt) = crate::executor::execute_pipeline(&env, &pipeline, input).await?;
                         (status_opt.unwrap_or(200u16), out, ct, true, String::new())

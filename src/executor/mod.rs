@@ -9,6 +9,7 @@ use crate::{
     ast::{Pipeline, PipelineStep, Variable},
     error::WebPipeError,
     middleware::MiddlewareRegistry,
+    runtime::context::CacheStore,
 };
 
 /// Public alias for the complex future type returned by pipeline execution functions.
@@ -53,6 +54,7 @@ pub struct ExecutionEnv {
     pub environment: Option<String>, // e.g. "production", "development", "staging"
     pub async_registry: AsyncTaskRegistry, // registry for @async tasks
     pub flags: Arc<HashMap<String, bool>>, // feature flags for @flag() tag checking
+    pub cache: Option<CacheStore>, // cache store for pipeline-level caching
 }
 
 #[derive(Clone)]
@@ -187,6 +189,31 @@ fn get_async_tag(tags: &[crate::ast::Tag]) -> Option<String> {
         .map(|tag| tag.args[0].clone())
 }
 
+/// Check for cache control signal from cache middleware.
+/// Returns Some(cached_value) if cache hit occurred and pipeline should stop.
+fn check_cache_control_signal(input: &Value) -> Option<Value> {
+    input.get("_control")
+        .and_then(|c| {
+            if c.get("stop").and_then(|b| b.as_bool()).unwrap_or(false) {
+                c.get("value").cloned()
+            } else {
+                None
+            }
+        })
+}
+
+/// Extract pending cache metadata from cache middleware on miss.
+/// Returns (cache_key, ttl) if cache control metadata is present.
+fn extract_pending_cache_metadata(result: &Value) -> Option<(String, u64)> {
+    result.get("_metadata")
+        .and_then(|m| m.get("cache_control"))
+        .and_then(|c| {
+            let key = c.get("key").and_then(|v| v.as_str())?;
+            let ttl = c.get("ttl").and_then(|v| v.as_u64())?;
+            Some((key.to_string(), ttl))
+        })
+}
+
 fn parse_join_task_names(config: &str) -> Result<Vec<String>, WebPipeError> {
     let trimmed = config.trim();
 
@@ -292,6 +319,10 @@ pub fn execute_pipeline<'a>(
     Box::pin(async move {
         let mut content_type = "application/json".to_string();
         let mut status_code_out: Option<u16> = None;
+        
+        // Track cache details for saving at the end of the pipeline
+        let mut pending_cache_key: Option<String> = None;
+        let mut pending_cache_ttl: Option<u64> = None;
 
         for (idx, step) in pipeline.steps.iter().enumerate() {
             let is_last_step = idx + 1 == pipeline.steps.len();
@@ -388,6 +419,19 @@ pub fn execute_pipeline<'a>(
 
                     match exec_result {
                         Ok((result, sub_status, sub_content_type)) => {
+                            // 1. CHECK FOR STOP SIGNAL (Cache Hit)
+                            // If cache middleware returned a hit, return the cached value immediately
+                            if let Some(cached_val) = check_cache_control_signal(&result) {
+                                return Ok((cached_val, sub_content_type, sub_status));
+                            }
+
+                            // 2. CHECK FOR PENDING CACHE (Cache Miss - Start Tracking)
+                            // If cache middleware set cache_control metadata, track it for saving at end
+                            if let Some((key, ttl)) = extract_pending_cache_metadata(&result) {
+                                pending_cache_key = Some(key);
+                                pending_cache_ttl = Some(ttl);
+                            }
+
                             // Check if this is the effective last step (either last in array, or all remaining steps will be skipped)
                             let is_effective_last_step = is_last_step || all_remaining_steps_will_be_skipped(&pipeline.steps, idx, env, &input);
 
@@ -410,8 +454,45 @@ pub fn execute_pipeline<'a>(
                     }
                 }
                 PipelineStep::Result { branches } => {
+                    // Before handling result, save to cache if pending
+                    // Use "write-once" semantics to prevent race conditions
+                    if let (Some(key), Some(ttl), Some(store)) = (&pending_cache_key, pending_cache_ttl, &env.cache) {
+                        // Check if cache already has valid data
+                        if store.get(key).is_none() {
+                            // Clean up _metadata.cache_control before caching
+                            let mut cache_value = input.clone();
+                            if let Some(obj) = cache_value.as_object_mut() {
+                                if let Some(meta) = obj.get_mut("_metadata").and_then(|m| m.as_object_mut()) {
+                                    meta.remove("cache_control");
+                                    // Also remove the regular cache metadata
+                                    meta.remove("cache");
+                                }
+                            }
+                            store.put(key.clone(), cache_value, Some(ttl));
+                        }
+                    }
                     return handle_result_step(env, branches, input, content_type).await;
                 }
+            }
+        }
+
+        // 3. SAVE TO CACHE IF PENDING
+        // At end of pipeline, save the final result to cache if we have a pending key
+        // Use "write-once" semantics: don't overwrite if valid data already exists
+        // This prevents race conditions where a slow request overwrites good cached data
+        if let (Some(key), Some(ttl), Some(store)) = (pending_cache_key, pending_cache_ttl, &env.cache) {
+            // Check if cache already has valid data (another request may have written it)
+            if store.get(&key).is_none() {
+                // Clean up _metadata.cache_control before caching
+                let mut cache_value = input.clone();
+                if let Some(obj) = cache_value.as_object_mut() {
+                    if let Some(meta) = obj.get_mut("_metadata").and_then(|m| m.as_object_mut()) {
+                        meta.remove("cache_control");
+                        // Also remove the regular cache metadata
+                        meta.remove("cache");
+                    }
+                }
+                store.put(key, cache_value, Some(ttl));
             }
         }
 
@@ -460,6 +541,7 @@ mod tests {
             environment: None,
             async_registry: AsyncTaskRegistry::new(),
             flags: Arc::new(HashMap::new()),
+            cache: None,
         }
     }
 
@@ -671,6 +753,7 @@ mod tests {
             environment: None,
             async_registry: AsyncTaskRegistry::new(),
             flags: Arc::new(flags),
+            cache: None,
         };
         let (out2, _ct2, _st2) = execute_pipeline(&env_with_flag, &pipeline, serde_json::json!({})).await.unwrap();
         assert_eq!(out2.get("echo").and_then(|v| v.as_str()), Some("tagged"));

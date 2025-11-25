@@ -19,10 +19,10 @@ fn find_pipeline_owned(program: &webpipe::ast::Program, name: &str) -> Pipeline 
 }
 
 async fn build_env(program: &webpipe::ast::Program) -> ExecutionEnv {
-    let ctx = Context::from_program_configs(program.configs.clone(), &program.variables)
+    let ctx = Arc::new(Context::from_program_configs(program.configs.clone(), &program.variables)
         .await
-        .expect("context");
-    let registry = Arc::new(MiddlewareRegistry::with_builtins(Arc::new(ctx)));
+        .expect("context"));
+    let registry = Arc::new(MiddlewareRegistry::with_builtins(ctx.clone()));
 
     let named: HashMap<String, Arc<Pipeline>> = program
         .pipelines
@@ -37,6 +37,7 @@ async fn build_env(program: &webpipe::ast::Program) -> ExecutionEnv {
         environment: None,
         async_registry: webpipe::executor::AsyncTaskRegistry::new(),
         flags: Arc::new(HashMap::new()),
+        cache: Some(ctx.cache.clone()),
     }
 }
 

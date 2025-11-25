@@ -125,6 +125,7 @@ impl ServerState {
             environment: self.env.environment.clone(),
             async_registry: crate::executor::AsyncTaskRegistry::new(),
             flags: Arc::new(flags),
+            cache: self.env.cache.clone(),
         }
     }
 
@@ -254,6 +255,7 @@ impl WebPipeServer {
             environment: std::env::var("WEBPIPE_ENV").ok(),
             async_registry: crate::executor::AsyncTaskRegistry::new(),
             flags: Arc::new(HashMap::new()),
+            cache: Some(self.ctx.cache.clone()),
         });
 
         // Set the execution environment in the Context so GraphQL middleware can access it
@@ -765,6 +767,7 @@ mod tests {
             environment: None,
             async_registry: crate::executor::AsyncTaskRegistry::new(),
             flags: Arc::new(HashMap::new()),
+            cache: None,
         };
         let state = ServerState {
             middleware_registry: registry.clone(),
