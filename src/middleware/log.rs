@@ -66,8 +66,10 @@ impl super::Middleware for LogMiddleware {
             return Ok(input.clone());
         }
 
-        // Capture start time
+        // Capture start time and request context upfront
         let start_mono_us: u64 = MONO_EPOCH.elapsed().as_micros() as u64;
+        let captured_original_request = input.get("originalRequest").cloned();
+        let captured_headers = input.get("headers").cloned();
 
         // Register deferred action to log at pipeline end
         _env.defer(move |final_response, _content_type| {
@@ -76,12 +78,12 @@ impl super::Middleware for LogMiddleware {
             let duration_ms_f64 = (delta_us as f64) / 1000.0;
 
             let mut req_obj = serde_json::Map::new();
-            if let Some(orig) = final_response.get("originalRequest").and_then(|v| v.as_object()) {
+            if let Some(orig) = captured_original_request.as_ref().and_then(|v| v.as_object()) {
                 if let Some(m) = orig.get("method").cloned() { req_obj.insert("method".to_string(), m); }
                 if let Some(p) = orig.get("params").cloned() { req_obj.insert("params".to_string(), p); }
                 if let Some(q) = orig.get("query").cloned() { req_obj.insert("query".to_string(), q); }
             }
-            if include_headers { if let Some(h) = final_response.get("headers").cloned() { req_obj.insert("headers".to_string(), h); } }
+            if include_headers { if let Some(h) = captured_headers.as_ref() { req_obj.insert("headers".to_string(), h.clone()); } }
 
             let mut resp_obj = serde_json::Map::new();
             if include_body {
