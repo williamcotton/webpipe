@@ -429,8 +429,8 @@ async fn respond_with_pipeline(
     // Execute the pipeline with the flags-aware environment
     match crate::executor::execute_pipeline(&env_with_flags, &payload.pipeline, request_json).await {
         Ok((result, content_type, status_code)) => {
-            // Run all deferred actions (e.g. caching) with the final result
-            env_with_flags.run_deferred(&result);
+            // Run all deferred actions (e.g. caching) with the final result and content_type
+            env_with_flags.run_deferred(&result, &content_type);
 
             // Determine the HTTP status code
             let http_status = if let Some(code) = status_code {

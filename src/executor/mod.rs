@@ -57,24 +57,24 @@ pub struct ExecutionEnv {
     pub cache: Option<CacheStore>, // cache store for pipeline-level caching
 
     // Store actions to run at the end of the request
-    // The closure takes the final pipeline result as an argument
-    pub deferred: Arc<Mutex<Vec<Box<dyn FnOnce(&Value) + Send>>>>,
+    // The closure takes the final pipeline result and content_type as arguments
+    pub deferred: Arc<Mutex<Vec<Box<dyn FnOnce(&Value, &str) + Send>>>>,
 }
 
 impl ExecutionEnv {
     pub fn defer<F>(&self, f: F)
     where
-        F: FnOnce(&Value) + Send + 'static,
+        F: FnOnce(&Value, &str) + Send + 'static,
     {
         self.deferred.lock().push(Box::new(f));
     }
 
     // Helper to execute all deferred actions
-    pub fn run_deferred(&self, final_result: &Value) {
+    pub fn run_deferred(&self, final_result: &Value, content_type: &str) {
         let mut actions = self.deferred.lock();
         // Drain allows us to take ownership of the closures
         for action in actions.drain(..) {
-            action(final_result);
+            action(final_result, content_type);
         }
     }
 }

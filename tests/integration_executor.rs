@@ -100,7 +100,7 @@ pipeline getEcho =
     assert!(out1["data"]["e"]["response"]["ok"].as_bool().unwrap());
 
     // CRITICAL: Run deferred actions to populate the cache
-    env.run_deferred(&out1);
+    env.run_deferred(&out1, "application/json");
 
     // Second call should return quickly and use cache (behavioral equivalence)
     let (out2, _ct, _st) = execute_pipeline(&env, &pipeline, input).await.unwrap();
@@ -145,7 +145,7 @@ pipeline processData =
     println!("First call result: {}", serde_json::to_string_pretty(&out1).unwrap());
 
     // Run deferred actions to save result to cache (simulates server.rs line 433)
-    env1.run_deferred(&out1);
+    env1.run_deferred(&out1, "application/json");
 
     // Verify the result has the processed articles field
     assert_eq!(out1["articles"][0], serde_json::json!("fetched content"));

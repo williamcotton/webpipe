@@ -131,21 +131,27 @@ impl super::Middleware for CacheMiddleware {
 
         // Check cache for a hit
         if let Some(cached_val) = self.ctx.cache.get(&key) {
-            // Detect if cached value is HTML string and set appropriate content_type
-            let is_html = cached_val.as_str()
-                .map(|s| s.trim_start().starts_with("<!DOCTYPE") || s.trim_start().starts_with("<html"))
-                .unwrap_or(false);
+            // Extract stored content_type if available
+            let (value, stored_content_type) = if let Some(obj) = cached_val.as_object() {
+                if let (Some(v), Some(ct)) = (obj.get("_cache_value"), obj.get("_cache_content_type")) {
+                    (v.clone(), ct.as_str().map(|s| s.to_string()))
+                } else {
+                    (cached_val.clone(), None)
+                }
+            } else {
+                (cached_val.clone(), None)
+            };
 
             // CACHE HIT: Return wrapper with stop signal
             let mut control = serde_json::json!({
                 "_control": {
                     "stop": true,
-                    "value": cached_val
+                    "value": value
                 }
             });
 
-            if is_html {
-                control["_control"]["content_type"] = serde_json::json!("text/html");
+            if let Some(ct) = stored_content_type {
+                control["_control"]["content_type"] = serde_json::json!(ct);
             }
 
             return Ok(control);
@@ -154,11 +160,17 @@ impl super::Middleware for CacheMiddleware {
         // CACHE MISS: Register deferred action to save result at pipeline end
         let store = self.ctx.cache.clone();
         let key_clone = key.clone();
-        env.defer(move |final_result| {
+        env.defer(move |final_result, content_type| {
             // This runs AFTER the pipeline finishes
+            // Store both the value and content_type
+            let cached_data = serde_json::json!({
+                "_cache_value": final_result,
+                "_cache_content_type": content_type
+            });
+
             // Use "write-once" semantics to prevent race conditions
             if store.get(&key_clone).is_none() {
-                store.put(key_clone, final_result.clone(), Some(ttl));
+                store.put(key_clone, cached_data, Some(ttl));
             }
         });
 
@@ -231,11 +243,12 @@ mod tests {
 
         // Run deferred actions with final result
         let final_result = serde_json::json!({"final": "data"});
-        env.run_deferred(&final_result);
+        env.run_deferred(&final_result, "application/json");
 
         // Verify cache was populated
         let cached = ctx.cache.get("test-key-123").unwrap();
-        assert_eq!(cached["final"], serde_json::json!("data"));
+        assert_eq!(cached["_cache_value"]["final"], serde_json::json!("data"));
+        assert_eq!(cached["_cache_content_type"], serde_json::json!("application/json"));
     }
 
     #[tokio::test]
@@ -243,17 +256,25 @@ mod tests {
         crate::config::init_global(vec![]);
 
         let ctx = test_ctx();
-        // Pre-populate cache
-        ctx.cache.put("test-key".to_string(), serde_json::json!({"cached": "data"}), Some(60));
+        // Pre-populate cache with wrapped value
+        ctx.cache.put(
+            "test-key".to_string(),
+            serde_json::json!({
+                "_cache_value": {"cached": "data"},
+                "_cache_content_type": "text/html"
+            }),
+            Some(60)
+        );
 
         let mw = CacheMiddleware { ctx };
         let input = serde_json::json!({});
         let env = dummy_env();
         let out = mw.execute("keyTemplate: test-key", &input, &env).await.unwrap();
 
-        // Should return stop signal with cached value
+        // Should return stop signal with cached value and content_type
         assert_eq!(out["_control"]["stop"], serde_json::json!(true));
         assert_eq!(out["_control"]["value"]["cached"], serde_json::json!("data"));
+        assert_eq!(out["_control"]["content_type"], serde_json::json!("text/html"));
     }
 
     #[tokio::test]

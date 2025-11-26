@@ -70,7 +70,7 @@ impl super::Middleware for LogMiddleware {
         let start_mono_us: u64 = MONO_EPOCH.elapsed().as_micros() as u64;
 
         // Register deferred action to log at pipeline end
-        _env.defer(move |final_response| {
+        _env.defer(move |final_response, _content_type| {
             let now_mono_us: u64 = MONO_EPOCH.elapsed().as_micros() as u64;
             let delta_us = now_mono_us.saturating_sub(start_mono_us);
             let duration_ms_f64 = (delta_us as f64) / 1000.0;
@@ -154,7 +154,7 @@ mod tests {
         assert_eq!(env.deferred.lock().len(), 1);
 
         // Run deferred to verify it doesn't panic
-        env.run_deferred(&out);
+        env.run_deferred(&out, "application/json");
     }
 }
 
