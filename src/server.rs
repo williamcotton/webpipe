@@ -427,9 +427,20 @@ async fn respond_with_pipeline(
     let env_with_flags = state.env_with_flags(&request_json);
 
     // Execute the pipeline with the flags-aware environment
-    match crate::executor::execute_pipeline(&env_with_flags, &payload.pipeline, request_json).await {
-        Ok((result, content_type, status_code)) => {
-            // Run all deferred actions (e.g. caching) with the final result and content_type
+    match crate::executor::execute_pipeline(&env_with_flags, &payload.pipeline, request_json.clone()).await {
+        Ok((mut result, content_type, status_code)) => {
+            // Preserve request context (originalRequest, headers) for deferred actions like logging
+            // This ensures logs have access to request details even when cache hits
+            if let Some(result_obj) = result.as_object_mut() {
+                if let Some(orig_req) = request_json.get("originalRequest") {
+                    result_obj.insert("originalRequest".to_string(), orig_req.clone());
+                }
+                if let Some(headers) = request_json.get("headers") {
+                    result_obj.insert("headers".to_string(), headers.clone());
+                }
+            }
+
+            // Run all deferred actions (e.g. caching, logging) with the final result and content_type
             env_with_flags.run_deferred(&result, &content_type);
 
             // Determine the HTTP status code
