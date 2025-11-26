@@ -212,12 +212,14 @@ fn get_async_tag(tags: &[crate::ast::Tag]) -> Option<String> {
 }
 
 /// Check for cache control signal from cache middleware.
-/// Returns Some(cached_value) if cache hit occurred and pipeline should stop.
-fn check_cache_control_signal(input: &Value) -> Option<Value> {
+/// Returns Some((cached_value, optional_content_type)) if cache hit occurred and pipeline should stop.
+fn check_cache_control_signal(input: &Value) -> Option<(Value, Option<String>)> {
     input.get("_control")
         .and_then(|c| {
             if c.get("stop").and_then(|b| b.as_bool()).unwrap_or(false) {
-                c.get("value").cloned()
+                let value = c.get("value").cloned()?;
+                let content_type = c.get("content_type").and_then(|ct| ct.as_str()).map(|s| s.to_string());
+                Some((value, content_type))
             } else {
                 None
             }
@@ -428,8 +430,10 @@ pub fn execute_pipeline<'a>(
                         Ok((result, sub_status, sub_content_type)) => {
                             // 1. CHECK FOR STOP SIGNAL (Cache Hit)
                             // If cache middleware returned a hit, return the cached value immediately
-                            if let Some(cached_val) = check_cache_control_signal(&result) {
-                                return Ok((cached_val, sub_content_type, sub_status));
+                            if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&result) {
+                                // Use cached content_type if provided, otherwise use sub_content_type
+                                let final_content_type = cached_content_type.unwrap_or(sub_content_type);
+                                return Ok((cached_val, final_content_type, sub_status));
                             }
 
                             // Check if this is the effective last step (either last in array, or all remaining steps will be skipped)
@@ -458,9 +462,6 @@ pub fn execute_pipeline<'a>(
                 }
             }
         }
-
-        // Run all deferred actions (e.g. caching) with the final result
-        env.run_deferred(&input);
 
         Ok((input, content_type, status_code_out))
     })

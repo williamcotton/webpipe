@@ -131,13 +131,24 @@ impl super::Middleware for CacheMiddleware {
 
         // Check cache for a hit
         if let Some(cached_val) = self.ctx.cache.get(&key) {
+            // Detect if cached value is HTML string and set appropriate content_type
+            let is_html = cached_val.as_str()
+                .map(|s| s.trim_start().starts_with("<!DOCTYPE") || s.trim_start().starts_with("<html"))
+                .unwrap_or(false);
+
             // CACHE HIT: Return wrapper with stop signal
-            return Ok(serde_json::json!({
+            let mut control = serde_json::json!({
                 "_control": {
                     "stop": true,
                     "value": cached_val
                 }
-            }));
+            });
+
+            if is_html {
+                control["_control"]["content_type"] = serde_json::json!("text/html");
+            }
+
+            return Ok(control);
         }
 
         // CACHE MISS: Register deferred action to save result at pipeline end
