@@ -83,9 +83,16 @@ impl HandlebarsMiddleware {
 
 #[async_trait]
 impl super::Middleware for HandlebarsMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-        let rendered = self.render_template(config, input)?;
-        Ok(Value::String(rendered))
+    async fn execute(
+        &self,
+        config: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        _env: &crate::executor::ExecutionEnv,
+        _ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
+        let rendered = self.render_template(config, &pipeline_ctx.state)?;
+        pipeline_ctx.state = Value::String(rendered);
+        Ok(())
     }
 }
 
@@ -105,8 +112,15 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-            Ok(Value::Null)
+        async fn call(
+            &self,
+            _name: &str,
+            _cfg: &str,
+            _pipeline_ctx: &mut crate::runtime::PipelineContext,
+            _env: &crate::executor::ExecutionEnv,
+            _ctx: &mut crate::executor::RequestContext,
+        ) -> Result<(), WebPipeError> {
+            Ok(())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
@@ -131,10 +145,12 @@ mod tests {
         let data = serde_json::json!({"name":"Ada"});
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
-        let v1 = hb.execute("Hello {{name}}", &data, &env, &mut ctx).await.unwrap();
-        assert_eq!(v1, serde_json::json!("Hello Ada"));
-        let v2 = hb.execute("Hello {{name}}", &data, &env, &mut ctx).await.unwrap();
-        assert_eq!(v2, serde_json::json!("Hello Ada"));
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(data.clone());
+        hb.execute("Hello {{name}}", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx.state, serde_json::json!("Hello Ada"));
+        let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(data.clone());
+        hb.execute("Hello {{name}}", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx2.state, serde_json::json!("Hello Ada"));
     }
 
     #[test]

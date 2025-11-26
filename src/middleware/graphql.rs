@@ -47,7 +47,13 @@ impl GraphQLMiddleware {
 
 #[async_trait]
 impl Middleware for GraphQLMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+    async fn execute(
+        &self,
+        config: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        _env: &crate::executor::ExecutionEnv,
+        _ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
         // Get the pre-compiled GraphQL runtime
         let runtime = self.ctx.graphql
             .as_ref()
@@ -64,15 +70,16 @@ impl Middleware for GraphQLMiddleware {
             ))?
             .clone();
 
-        // Extract GraphQL variables from input.graphqlParams
-        let variables = input
+        // Extract GraphQL variables and resultName before mutating state
+        let variables = pipeline_ctx.state
             .get("graphqlParams")
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
+        let result_name = pipeline_ctx.state.get("resultName").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         // Pass the pipeline state to GraphQL, but remove resultName
         // resultName is only for the GraphQL middleware, not for resolvers
-        let mut pipeline_state = input.clone();
+        let mut pipeline_state = pipeline_ctx.state.clone();
         if let Some(obj) = pipeline_state.as_object_mut() {
             obj.remove("resultName");
         }
@@ -87,10 +94,10 @@ impl Middleware for GraphQLMiddleware {
         ).await?;
 
         // Check for resultName pattern (auto-naming)
-        if let Some(result_name) = input.get("resultName").and_then(|v| v.as_str()) {
+        if let Some(result_name_str) = result_name.as_deref() {
             // Extract the data from GraphQL response and store under .data.<resultName>
-            let mut output = input.clone();
-            if let Some(obj) = output.as_object_mut() {
+            // Mutate state in place
+            if let Some(obj) = pipeline_ctx.state.as_object_mut() {
                 let data_obj = obj.entry("data")
                     .or_insert_with(|| Value::Object(serde_json::Map::new()))
                     .as_object_mut()
@@ -109,9 +116,9 @@ impl Middleware for GraphQLMiddleware {
                 if let Some(graphql_data) = response.get("data") {
                     let value_to_insert = if let Some(data_obj_inner) = graphql_data.as_object() {
                         // Check if there's a single field matching the result name
-                        if data_obj_inner.len() == 1 && data_obj_inner.contains_key(result_name) {
+                        if data_obj_inner.len() == 1 && data_obj_inner.contains_key(result_name_str) {
                             // Unwrap: use the field's value directly
-                            data_obj_inner.get(result_name).unwrap().clone()
+                            data_obj_inner.get(result_name_str).unwrap().clone()
                         } else {
                             // Multiple fields or no match: use the entire data object
                             graphql_data.clone()
@@ -119,9 +126,9 @@ impl Middleware for GraphQLMiddleware {
                     } else {
                         graphql_data.clone()
                     };
-                    data_obj.insert(result_name.to_string(), value_to_insert);
+                    data_obj.insert(result_name_str.to_string(), value_to_insert);
                 } else {
-                    data_obj.insert(result_name.to_string(), Value::Null);
+                    data_obj.insert(result_name_str.to_string(), Value::Null);
                 }
 
                 // If there were errors, add them to the output
@@ -131,10 +138,11 @@ impl Middleware for GraphQLMiddleware {
 
                 obj.remove("resultName");
             }
-            Ok(output)
+            Ok(())
         } else {
             // Default: replace state with GraphQL response
-            Ok(response)
+            pipeline_ctx.state = response;
+            Ok(())
         }
     }
 }
@@ -172,7 +180,8 @@ mod tests {
             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
         };
         let mut req_ctx = crate::executor::RequestContext::new();
-        let result = rt.block_on(middleware.execute("query { test }", &input, &env, &mut req_ctx));
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
+        let result = rt.block_on(middleware.execute("query { test }", &mut pipeline_ctx, &env, &mut req_ctx));
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No GraphQL schema"));

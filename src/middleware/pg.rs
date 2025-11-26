@@ -10,7 +10,13 @@ pub struct PgMiddleware { pub(crate) ctx: Arc<Context> }
 
 #[async_trait]
 impl super::Middleware for PgMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+    async fn execute(
+        &self,
+        config: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        _env: &crate::executor::ExecutionEnv,
+        _ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
         let sql = config.trim();
         if sql.is_empty() { return Err(WebPipeError::DatabaseError("Empty SQL config for pg middleware".to_string())); }
 
@@ -19,7 +25,9 @@ impl super::Middleware for PgMiddleware {
             WebPipeError::DatabaseError("Database not configured. Please add a 'config pg {}' block with connection settings.".to_string())
         )?;
 
-        let params: Vec<Value> = input.get("sqlParams").and_then(|v| v.as_array()).map(|arr| arr.to_vec()).unwrap_or_default();
+        // Clone the values we need from state before mutating
+        let params: Vec<Value> = pipeline_ctx.state.get("sqlParams").and_then(|v| v.as_array()).map(|arr| arr.to_vec()).unwrap_or_default();
+        let result_name = pipeline_ctx.state.get("resultName").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         let lowered = sql.to_lowercase();
         let is_select = lowered.trim_start().starts_with("select");
@@ -36,41 +44,45 @@ impl super::Middleware for PgMiddleware {
 
             let rows_json = match query.fetch_one(pool).await {
                 Ok(json) => json.0,
-                Err(e) => { return Ok(build_sql_error_value(&e, sql)); }
+                Err(e) => {
+                    pipeline_ctx.state = build_sql_error_value(&e, sql);
+                    return Ok(());
+                }
             };
 
             let row_count = rows_json.as_array().map(|a| a.len()).unwrap_or(0);
 
-            let mut output = input.clone();
-            let result_name = input.get("resultName").and_then(|v| v.as_str());
             let result_value = serde_json::json!({ "rows": rows_json, "rowCount": row_count });
 
-            match result_name {
-                Some(name) => {
-                    let data_obj = output.as_object_mut().expect("input must be a JSON object for pg middleware");
-                    let data_entry = data_obj.entry("data").or_insert_with(|| Value::Object(serde_json::Map::new()));
-                    if !data_entry.is_object() { *data_entry = Value::Object(serde_json::Map::new()); }
-                    if let Some(map) = data_entry.as_object_mut() { map.insert(name.to_string(), result_value); }
-                    Ok(output)
-                }
-                None => {
-                    if let Some(obj) = output.as_object_mut() { obj.insert("data".to_string(), result_value); }
-                    Ok(output)
+            // Mutate state in place
+            if let Some(obj) = pipeline_ctx.state.as_object_mut() {
+                match result_name.as_deref() {
+                    Some(name) => {
+                        let data_entry = obj.entry("data").or_insert_with(|| Value::Object(serde_json::Map::new()));
+                        if !data_entry.is_object() { *data_entry = Value::Object(serde_json::Map::new()); }
+                        if let Some(map) = data_entry.as_object_mut() { map.insert(name.to_string(), result_value); }
+                    }
+                    None => {
+                        obj.insert("data".to_string(), result_value);
+                    }
                 }
             }
+            Ok(())
         } else {
             let mut query = sqlx::query(sql);
             for p in &params { query = bind_json_param(query, p); }
 
             let result = match query.execute(pool).await {
                 Ok(res) => res,
-                Err(e) => { return Ok(build_sql_error_value(&e, sql)); }
+                Err(e) => {
+                    pipeline_ctx.state = build_sql_error_value(&e, sql);
+                    return Ok(());
+                }
             };
 
-            let mut output = input.clone();
             let result_value = serde_json::json!({ "rows": [], "rowCount": result.rows_affected() });
-            if let Some(obj) = output.as_object_mut() { obj.insert("data".to_string(), result_value); }
-            Ok(output)
+            if let Some(obj) = pipeline_ctx.state.as_object_mut() { obj.insert("data".to_string(), result_value); }
+            Ok(())
         }
     }
 }

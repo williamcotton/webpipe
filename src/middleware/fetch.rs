@@ -23,22 +23,30 @@ fn build_fetch_error_object(error_type: &str, mut details: Value) -> Value {
 
 #[async_trait]
 impl super::Middleware for FetchMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-        let url = input.get("fetchUrl").and_then(|v| v.as_str()).unwrap_or(config).trim().to_string();
+    async fn execute(
+        &self,
+        config: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        _env: &crate::executor::ExecutionEnv,
+        _ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
+        // Extract values we need from state before mutating
+        let url = pipeline_ctx.state.get("fetchUrl").and_then(|v| v.as_str()).unwrap_or(config).trim().to_string();
         if url.is_empty() {
-            return Ok(build_fetch_error_object("networkError", serde_json::json!({ "message": "Missing URL for fetch middleware" })));
+            pipeline_ctx.state = build_fetch_error_object("networkError", serde_json::json!({ "message": "Missing URL for fetch middleware" }));
+            return Ok(());
         }
 
-        let method_str = input.get("fetchMethod").and_then(|v| v.as_str()).unwrap_or("GET");
+        let method_str = pipeline_ctx.state.get("fetchMethod").and_then(|v| v.as_str()).unwrap_or("GET");
         let method = Method::from_bytes(method_str.as_bytes()).unwrap_or(Method::GET);
 
         let mut req_builder = self.ctx.http.request(method, &url);
-        if let Some(timeout_secs) = input.get("fetchTimeout").and_then(|v| v.as_u64()) {
+        if let Some(timeout_secs) = pipeline_ctx.state.get("fetchTimeout").and_then(|v| v.as_u64()) {
             req_builder = req_builder.timeout(Duration::from_secs(timeout_secs));
         }
 
         let mut headers = ReqwestHeaderMap::new();
-        if let Some(headers_obj) = input.get("fetchHeaders").and_then(|v| v.as_object()) {
+        if let Some(headers_obj) = pipeline_ctx.state.get("fetchHeaders").and_then(|v| v.as_object()) {
             for (k, v) in headers_obj {
                 if let Some(val_str) = v.as_str() {
                     if let (Ok(name), Ok(value)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(val_str)) {
@@ -50,16 +58,19 @@ impl super::Middleware for FetchMiddleware {
         if !headers.contains_key(USER_AGENT) { headers.insert(USER_AGENT, HeaderValue::from_static("WebPipe/1.0")); }
         req_builder = req_builder.headers(headers);
 
-        if let Some(body) = input.get("fetchBody") { req_builder = req_builder.json(body); }
+        if let Some(body) = pipeline_ctx.state.get("fetchBody") { req_builder = req_builder.json(body); }
+
+        let result_name = pipeline_ctx.state.get("resultName").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         let response = match req_builder.send().await {
             Ok(resp) => resp,
             Err(err) => {
                 if err.is_timeout() {
-                    return Ok(build_fetch_error_object("timeoutError", serde_json::json!({ "message": err.to_string() })));
+                    pipeline_ctx.state = build_fetch_error_object("timeoutError", serde_json::json!({ "message": err.to_string() }));
                 } else {
-                    return Ok(build_fetch_error_object("networkError", serde_json::json!({ "message": err.to_string(), "url": url })));
+                    pipeline_ctx.state = build_fetch_error_object("networkError", serde_json::json!({ "message": err.to_string(), "url": url }));
                 }
+                return Ok(());
             }
         };
 
@@ -70,32 +81,33 @@ impl super::Middleware for FetchMiddleware {
         let body_text = match response.text().await {
             Ok(t) => t,
             Err(err) => {
-                return Ok(build_fetch_error_object("networkError", serde_json::json!({ "message": format!("Failed to read response body: {}", err), "url": url })));
+                pipeline_ctx.state = build_fetch_error_object("networkError", serde_json::json!({ "message": format!("Failed to read response body: {}", err), "url": url }));
+                return Ok(());
             }
         };
 
         if !status.is_success() {
-            return Ok(build_fetch_error_object("httpError", serde_json::json!({ "status": status_code, "message": body_text, "url": url })));
+            pipeline_ctx.state = build_fetch_error_object("httpError", serde_json::json!({ "status": status_code, "message": body_text, "url": url }));
+            return Ok(());
         }
 
         let response_body: Value = serde_json::from_str(&body_text).unwrap_or(Value::String(body_text));
 
-        let mut output = input.clone();
-        let result_name_opt = input.get("resultName").and_then(|v| v.as_str());
         let result_payload = serde_json::json!({ "response": response_body, "status": status_code, "headers": headers_map });
 
-        match result_name_opt {
-            Some(name) => {
-                if let Some(obj) = output.as_object_mut() {
+        // Mutate state in place
+        if let Some(obj) = pipeline_ctx.state.as_object_mut() {
+            match result_name.as_deref() {
+                Some(name) => {
                     let data_entry = obj.entry("data").or_insert_with(|| Value::Object(serde_json::Map::new()));
                     if !data_entry.is_object() { *data_entry = Value::Object(serde_json::Map::new()); }
                     if let Some(data_obj) = data_entry.as_object_mut() { data_obj.insert(name.to_string(), result_payload); }
                 }
+                None => { obj.insert("data".to_string(), result_payload); }
             }
-            None => { if let Some(obj) = output.as_object_mut() { obj.insert("data".to_string(), result_payload); } }
         }
 
-        Ok(output)
+        Ok(())
     }
 }
 
@@ -126,8 +138,15 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-            Ok(Value::Null)
+        async fn call(
+            &self,
+            _name: &str,
+            _cfg: &str,
+            _pipeline_ctx: &mut crate::runtime::PipelineContext,
+            _env: &crate::executor::ExecutionEnv,
+            _ctx: &mut crate::executor::RequestContext,
+        ) -> Result<(), WebPipeError> {
+            Ok(())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
@@ -151,8 +170,9 @@ mod tests {
         let mw = FetchMiddleware { ctx: ctx_with_client() };
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
-        let out = mw.execute("", &serde_json::json!({}), &env, &mut ctx).await.unwrap();
-        assert_eq!(out["errors"][0]["type"], serde_json::json!("networkError"));
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
+        mw.execute("", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["type"], serde_json::json!("networkError"));
     }
 }
 

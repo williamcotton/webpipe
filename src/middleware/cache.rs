@@ -56,7 +56,14 @@ fn render_key_template(template: &str, input: &Value) -> String {
 
 #[async_trait]
 impl super::Middleware for CacheMiddleware {
-    async fn execute(&self, config: &str, input: &Value, env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+    async fn execute(
+        &self,
+        config: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        env: &crate::executor::ExecutionEnv,
+        ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
+        let input = &pipeline_ctx.state;
         #[derive(Default)]
         struct LocalCfg { enabled: Option<bool>, ttl: Option<u64>, key_tpl: Option<String> }
         fn parse_bool(s: &str) -> Option<bool> { match s.trim().to_ascii_lowercase().as_str() { "true" => Some(true), "false" => Some(false), _ => None } }
@@ -95,9 +102,9 @@ impl super::Middleware for CacheMiddleware {
             global_cache_config.get("defaultTtl").and_then(|v| v.as_u64()).unwrap_or(60)
         );
 
-        // If caching is disabled, just return input unchanged
+        // If caching is disabled, state unchanged
         if !enabled {
-            return Ok(input.clone());
+            return Ok(());
         }
 
         // Store cache policy in typed context
@@ -149,7 +156,7 @@ impl super::Middleware for CacheMiddleware {
                 (cached_val.clone(), None)
             };
 
-            // CACHE HIT: Return wrapper with stop signal
+            // CACHE HIT: Set state to wrapper with stop signal
             let mut control = serde_json::json!({
                 "_control": {
                     "stop": true,
@@ -161,7 +168,8 @@ impl super::Middleware for CacheMiddleware {
                 control["_control"]["content_type"] = serde_json::json!(ct);
             }
 
-            return Ok(control);
+            pipeline_ctx.state = control;
+            return Ok(());
         }
 
         // CACHE MISS: Register deferred action to save result at pipeline end
@@ -181,8 +189,8 @@ impl super::Middleware for CacheMiddleware {
             }
         });
 
-        // Return input unchanged
-        Ok(input.clone())
+        // Cache miss - state unchanged
+        Ok(())
     }
 }
 
@@ -211,8 +219,15 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-            Ok(Value::Null)
+        async fn call(
+            &self,
+            _name: &str,
+            _cfg: &str,
+            _pipeline_ctx: &mut crate::runtime::PipelineContext,
+            _env: &crate::executor::ExecutionEnv,
+            _ctx: &mut crate::executor::RequestContext,
+        ) -> Result<(), WebPipeError> {
+            Ok(())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
@@ -239,10 +254,11 @@ mod tests {
         let mut req_ctx = crate::executor::RequestContext::new();
 
         // Execute with cache miss
-        let out = mw.execute("ttl: 5, keyTemplate: test-key-123", &input, &env, &mut req_ctx).await.unwrap();
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
+        mw.execute("ttl: 5, keyTemplate: test-key-123", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
 
         // Should return input unchanged (no metadata)
-        assert_eq!(out, input);
+        assert_eq!(pipeline_ctx.state, input);
 
         // Verify cache is empty before deferred runs (env.cache is the one used by middleware)
         assert!(env.cache.get("test-key-123").is_none());
@@ -277,12 +293,13 @@ mod tests {
         );
 
         let mut req_ctx = crate::executor::RequestContext::new();
-        let out = mw.execute("keyTemplate: test-key", &input, &env, &mut req_ctx).await.unwrap();
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
+        mw.execute("keyTemplate: test-key", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
 
         // Should return stop signal with cached value and content_type
-        assert_eq!(out["_control"]["stop"], serde_json::json!(true));
-        assert_eq!(out["_control"]["value"]["cached"], serde_json::json!("data"));
-        assert_eq!(out["_control"]["content_type"], serde_json::json!("text/html"));
+        assert_eq!(pipeline_ctx.state["_control"]["stop"], serde_json::json!(true));
+        assert_eq!(pipeline_ctx.state["_control"]["value"]["cached"], serde_json::json!("data"));
+        assert_eq!(pipeline_ctx.state["_control"]["content_type"], serde_json::json!("text/html"));
     }
 
     #[tokio::test]
@@ -293,10 +310,11 @@ mod tests {
         let input = serde_json::json!({"original": "data"});
         let env = dummy_env();
         let mut req_ctx = crate::executor::RequestContext::new();
-        let out = mw.execute("enabled: false", &input, &env, &mut req_ctx).await.unwrap();
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
+        mw.execute("enabled: false", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
 
         // Should pass through original data unchanged
-        assert_eq!(out["original"], serde_json::json!("data"));
+        assert_eq!(pipeline_ctx.state["original"], serde_json::json!("data"));
     }
 }
 

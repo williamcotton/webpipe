@@ -84,11 +84,19 @@ struct MockingInvoker {
 
 #[async_trait::async_trait]
 impl MiddlewareInvoker for MockingInvoker {
-    async fn call(&self, name: &str, cfg: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-        if let Some(mock_val) = self.mocks.get_middleware_mock(name, input) {
-            return Ok(mock_val.clone());
+    async fn call(
+        &self,
+        name: &str,
+        cfg: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        _env: &crate::executor::ExecutionEnv,
+        _ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
+        if let Some(mock_val) = self.mocks.get_middleware_mock(name, &pipeline_ctx.state) {
+            pipeline_ctx.state = mock_val.clone();
+            return Ok(());
         }
-        self.registry.execute(name, cfg, input, _env, _ctx).await
+        self.registry.execute(name, cfg, pipeline_ctx, _env, _ctx).await
     }
 }
 

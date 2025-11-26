@@ -1,6 +1,5 @@
 use crate::error::WebPipeError;
 use async_trait::async_trait;
-use serde_json::Value;
 use std::cell::RefCell;
 use lru::LruCache;
 
@@ -49,12 +48,19 @@ impl Default for JqMiddleware {
 
 #[async_trait]
 impl super::Middleware for JqMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-        let input_json = serde_json::to_string(input)
+    async fn execute(
+        &self,
+        config: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        _env: &crate::executor::ExecutionEnv,
+        _ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
+        let input_json = serde_json::to_string(&pipeline_ctx.state)
             .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Input serialization error: {}", e)))?;
         let result_json = self.execute_jq(config, &input_json)?;
-        serde_json::from_str(&result_json)
-            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ result parse error: {}", e)))
+        pipeline_ctx.state = serde_json::from_str(&result_json)
+            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ result parse error: {}", e)))?;
+        Ok(())
     }
 }
 
@@ -67,8 +73,15 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-            Ok(Value::Null)
+        async fn call(
+            &self,
+            _name: &str,
+            _cfg: &str,
+            _pipeline_ctx: &mut crate::runtime::PipelineContext,
+            _env: &crate::executor::ExecutionEnv,
+            _ctx: &mut crate::executor::RequestContext,
+        ) -> Result<(), WebPipeError> {
+            Ok(())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
@@ -93,11 +106,13 @@ mod tests {
         let input = serde_json::json!({"a":1});
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
-        let out1 = jq.execute(".a", &input, &env, &mut ctx).await.unwrap();
-        assert_eq!(out1, serde_json::json!(1));
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
+        jq.execute(".a", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx.state, serde_json::json!(1));
         // second run should hit cache path implicitly; just ensure same result
-        let out2 = jq.execute(".a", &input, &env, &mut ctx).await.unwrap();
-        assert_eq!(out2, serde_json::json!(1));
+        let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(input.clone());
+        jq.execute(".a", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx2.state, serde_json::json!(1));
     }
 
     #[tokio::test]
@@ -106,7 +121,8 @@ mod tests {
         let input = serde_json::json!({});
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
-        let err = jq.execute(".[] | ", &input, &env, &mut ctx).await.err().unwrap();
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
+        let err = jq.execute(".[] | ", &mut pipeline_ctx, &env, &mut ctx).await.err().unwrap();
         // Ensure it's wrapped as MiddlewareExecutionError string
         assert!(format!("{}", err).contains("JQ"));
     }

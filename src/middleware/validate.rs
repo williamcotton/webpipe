@@ -7,7 +7,14 @@ pub struct ValidateMiddleware;
 
 #[async_trait]
 impl super::Middleware for ValidateMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+    async fn execute(
+        &self,
+        config: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        _env: &crate::executor::ExecutionEnv,
+        _ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
+        let input = &pipeline_ctx.state;
         #[derive(Debug)]
         struct Rule { field: String, kind: String, min: Option<usize>, max: Option<usize> }
 
@@ -58,10 +65,10 @@ impl super::Middleware for ValidateMiddleware {
         }
 
         let rules = parse_rules(config);
-        if rules.is_empty() { return Ok(input.clone()); }
+        if rules.is_empty() { return Ok(()); }
 
         let body = input.get("body");
-        let obj = match body.and_then(|b| b.as_object()) { Some(o) => o, None => { return Ok(input.clone()); } };
+        let obj = match body.and_then(|b| b.as_object()) { Some(o) => o, None => { return Ok(()); } };
 
         for rule in rules {
             let val = obj.get(&rule.field);
@@ -76,25 +83,47 @@ impl super::Middleware for ValidateMiddleware {
                     };
                     let s = match s_owned.as_deref() {
                         Some(v) if !v.is_empty() => v,
-                        _ => { let msg = format!("Field '{}' is required and must be a non-empty string", rule.field); return Ok(make_error(&rule.field, "required", msg)); }
+                        _ => {
+                            let msg = format!("Field '{}' is required and must be a non-empty string", rule.field);
+                            pipeline_ctx.state = make_error(&rule.field, "required", msg);
+                            return Ok(());
+                        }
                     };
                     let len = s.chars().count();
-                    if let Some(min) = rule.min { if len < min { return Ok(make_error(&rule.field, "minLength", format!("Field '{}' must be at least {} characters", rule.field, min))); } }
-                    if let Some(max) = rule.max { if len > max { return Ok(make_error(&rule.field, "maxLength", format!("Field '{}' must be at most {} characters", rule.field, max))); } }
+                    if let Some(min) = rule.min {
+                        if len < min {
+                            pipeline_ctx.state = make_error(&rule.field, "minLength", format!("Field '{}' must be at least {} characters", rule.field, min));
+                            return Ok(());
+                        }
+                    }
+                    if let Some(max) = rule.max {
+                        if len > max {
+                            pipeline_ctx.state = make_error(&rule.field, "maxLength", format!("Field '{}' must be at most {} characters", rule.field, max));
+                            return Ok(());
+                        }
+                    }
                 }
                 "email" => {
                     let s = match val.and_then(|v| v.as_str()) {
                         Some(v) if !v.is_empty() => v,
-                        _ => { let msg = format!("Field '{}' is required and must be a valid email", rule.field); return Ok(make_error(&rule.field, "required", msg)); }
+                        _ => {
+                            let msg = format!("Field '{}' is required and must be a valid email", rule.field);
+                            pipeline_ctx.state = make_error(&rule.field, "required", msg);
+                            return Ok(());
+                        }
                     };
                     let valid = s.contains('@') && s.contains('.') && !s.starts_with('@') && !s.ends_with('@');
-                    if !valid { return Ok(make_error(&rule.field, "email", format!("Field '{}' must be a valid email address", rule.field))); }
+                    if !valid {
+                        pipeline_ctx.state = make_error(&rule.field, "email", format!("Field '{}' must be a valid email address", rule.field));
+                        return Ok(());
+                    }
                 }
                 _ => {}
             }
         }
 
-        Ok(input.clone())
+        // Validation passed - state unchanged
+        Ok(())
     }
 }
 
@@ -104,8 +133,15 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-            Ok(Value::Null)
+        async fn call(
+            &self,
+            _name: &str,
+            _cfg: &str,
+            _pipeline_ctx: &mut crate::runtime::PipelineContext,
+            _env: &crate::executor::ExecutionEnv,
+            _ctx: &mut crate::executor::RequestContext,
+        ) -> Result<(), WebPipeError> {
+            Ok(())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
@@ -133,17 +169,21 @@ mod tests {
         let mut ctx = crate::executor::RequestContext::new();
         let cfg = "{ name: string(2..4) }";
         // missing
-        let out = mw.execute(cfg, &serde_json::json!({"body": {}}), &env, &mut ctx).await.unwrap();
-        assert_eq!(out["errors"][0]["type"], serde_json::json!("validationError"));
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {}}));
+        mw.execute(cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["type"], serde_json::json!("validationError"));
         // too short
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "a"}}), &env, &mut ctx).await.unwrap();
-        assert_eq!(out["errors"][0]["rule"], serde_json::json!("minLength"));
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"name": "a"}}));
+        mw.execute(cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("minLength"));
         // too long
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abcde"}}), &env, &mut ctx).await.unwrap();
-        assert_eq!(out["errors"][0]["rule"], serde_json::json!("maxLength"));
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"name": "abcde"}}));
+        mw.execute(cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("maxLength"));
         // ok
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abc"}}), &env, &mut ctx).await.unwrap();
-        assert!(out.get("errors").is_none());
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"name": "abc"}}));
+        mw.execute(cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert!(pipeline_ctx.state.get("errors").is_none());
     }
 
     #[tokio::test]
@@ -153,14 +193,17 @@ mod tests {
         let mut ctx = crate::executor::RequestContext::new();
         let cfg = "{ email: email }";
         // missing
-        let out = mw.execute(cfg, &serde_json::json!({"body": {}}), &env, &mut ctx).await.unwrap();
-        assert_eq!(out["errors"][0]["type"], serde_json::json!("validationError"));
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {}}));
+        mw.execute(cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["type"], serde_json::json!("validationError"));
         // invalid
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "foo"}}), &env, &mut ctx).await.unwrap();
-        assert_eq!(out["errors"][0]["rule"], serde_json::json!("email"));
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"email": "foo"}}));
+        mw.execute(cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("email"));
         // valid
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "a@b.com"}}), &env, &mut ctx).await.unwrap();
-        assert!(out.get("errors").is_none());
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"email": "a@b.com"}}));
+        mw.execute(cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert!(pipeline_ctx.state.get("errors").is_none());
     }
 }
 

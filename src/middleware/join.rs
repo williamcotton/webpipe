@@ -1,21 +1,26 @@
 use crate::error::WebPipeError;
 use crate::middleware::Middleware;
 use async_trait::async_trait;
-use serde_json::Value;
 
 #[derive(Debug)]
 pub struct JoinMiddleware;
 
 #[async_trait]
 impl Middleware for JoinMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+    async fn execute(
+        &self,
+        config: &str,
+        _pipeline_ctx: &mut crate::runtime::PipelineContext,
+        _env: &crate::executor::ExecutionEnv,
+        _ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
         // Validate config upfront to fail fast on bad syntax
         let _task_names = parse_join_config(config)?;
 
         // This middleware is a marker - the executor intercepts "join" steps
         // and handles them via handle_join() which reads the config directly.
-        // Just return input unchanged.
-        Ok(input.clone())
+        // State unchanged.
+        Ok(())
     }
 }
 

@@ -324,27 +324,35 @@ async fn lookup_session_user(pool: &PgPool, token: &str) -> Result<Option<(i32, 
 
 #[async_trait]
 impl super::Middleware for AuthMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+    async fn execute(
+        &self,
+        config: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        _env: &crate::executor::ExecutionEnv,
+        _ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
+        let input = &pipeline_ctx.state;
         let pool = self
             .ctx
             .pg
             .as_ref()
             .ok_or_else(|| WebPipeError::DatabaseError("database not configured".to_string()))?;
         let config = config.trim();
-        match config {
-            "login" => auth_login(pool, input).await,
-            "logout" => auth_logout(pool, input).await,
-            "register" => auth_register(pool, input).await,
-            "required" => auth_required(pool, input).await,
-            "optional" => auth_optional(pool, input).await,
+        pipeline_ctx.state = match config {
+            "login" => auth_login(pool, input).await?,
+            "logout" => auth_logout(pool, input).await?,
+            "register" => auth_register(pool, input).await?,
+            "required" => auth_required(pool, input).await?,
+            "optional" => auth_optional(pool, input).await?,
             _ => {
                 if let Some(rest) = config.strip_prefix("type:") {
-                    auth_type_check(pool, input, rest.trim()).await
+                    auth_type_check(pool, input, rest.trim()).await?
                 } else {
-                    Ok(build_auth_error_object("Invalid auth configuration", config))
+                    build_auth_error_object("Invalid auth configuration", config)
                 }
             }
-        }
+        };
+        Ok(())
     }
 }
 

@@ -12,7 +12,14 @@ pub struct LogMiddleware;
 
 #[async_trait]
 impl super::Middleware for LogMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+    async fn execute(
+        &self,
+        config: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        _env: &crate::executor::ExecutionEnv,
+        ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError> {
+        let input = &pipeline_ctx.state;
         #[derive(Default)]
         struct StepCfg { level: Option<String>, include_body: Option<bool>, include_headers: Option<bool>, enabled: Option<bool> }
         fn parse_bool(s: &str) -> Option<bool> { match s.trim().to_ascii_lowercase().as_str() { "true" => Some(true), "false" => Some(false), _ => None } }
@@ -63,7 +70,7 @@ impl super::Middleware for LogMiddleware {
         );
 
         if !enabled {
-            return Ok(input.clone());
+            return Ok(());
         }
 
         // Store log config in typed context
@@ -108,7 +115,8 @@ impl super::Middleware for LogMiddleware {
             if let Ok(line) = serde_json::to_string(&Value::Object(entry)) { println!("{}", line); }
         });
 
-        Ok(input.clone())
+        // Read-only middleware - state unchanged
+        Ok(())
     }
 
 }
@@ -122,8 +130,15 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-            Ok(Value::Null)
+        async fn call(
+            &self,
+            _name: &str,
+            _cfg: &str,
+            _pipeline_ctx: &mut crate::runtime::PipelineContext,
+            _env: &crate::executor::ExecutionEnv,
+            _ctx: &mut crate::executor::RequestContext,
+        ) -> Result<(), WebPipeError> {
+            Ok(())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
@@ -154,16 +169,17 @@ mod tests {
         });
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
-        let out = mw.execute("level: info, includeHeaders: true, includeBody: false, enabled: true", &input, &env, &mut ctx).await.unwrap();
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
+        mw.execute("level: info, includeHeaders: true, includeBody: false, enabled: true", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
 
-        // Should return input unchanged
-        assert_eq!(out, input);
+        // State should be unchanged (read-only middleware)
+        assert_eq!(pipeline_ctx.state, input);
 
         // Should have registered a deferred action
         assert_eq!(ctx.deferred.len(), 1);
 
         // Run deferred to verify it doesn't panic
-        ctx.run_deferred(&out, "application/json", &env);
+        ctx.run_deferred(&pipeline_ctx.state, "application/json", &env);
     }
 }
 

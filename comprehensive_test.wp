@@ -591,6 +591,7 @@ GET /api/search
     search_category: .query.category
   }`
   |> pg: `SELECT pg_sleep(0.3), $1 as term, $2 as category, 'Search results' as result_type, now() as searched_at`
+  |> debug: `level: debug, includeBody: true, includeHeaders: true`
   |> jq: `{
     search_term: .data.rows[0].term,
     category: .data.rows[0].category,

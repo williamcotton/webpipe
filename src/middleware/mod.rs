@@ -1,7 +1,6 @@
 use crate::error::WebPipeError;
 use crate::runtime::Context;
 use async_trait::async_trait;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -35,7 +34,15 @@ pub use rate_limit::RateLimitMiddleware;
 
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
-    async fn execute(&self, config: &str, input: &Value, env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError>;
+    /// Execute middleware, mutating pipeline_ctx.state in place
+    /// This eliminates the need to clone and return a new Value
+    async fn execute(
+        &self,
+        config: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        env: &crate::executor::ExecutionEnv,
+        ctx: &mut crate::executor::RequestContext,
+    ) -> Result<(), WebPipeError>;
 }
 
 #[derive(Debug)]
@@ -80,10 +87,10 @@ impl MiddlewareRegistry {
         self.middlewares.insert(name.to_string(), middleware);
     }
 
-    pub async fn execute(&self, name: &str, config: &str, input: &Value, env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+    pub async fn execute(&self, name: &str, config: &str, pipeline_ctx: &mut crate::runtime::PipelineContext, env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext) -> Result<(), WebPipeError> {
         let middleware = self.middlewares.get(name)
             .ok_or_else(|| WebPipeError::MiddlewareNotFound(name.to_string()))?;
-        middleware.execute(config, input, env, ctx).await
+        middleware.execute(config, pipeline_ctx, env, ctx).await
     }
 }
 
@@ -112,8 +119,15 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
-            Ok(Value::Null)
+        async fn call(
+            &self,
+            _name: &str,
+            _cfg: &str,
+            _pipeline_ctx: &mut crate::runtime::PipelineContext,
+            _env: &crate::executor::ExecutionEnv,
+            _ctx: &mut crate::executor::RequestContext,
+        ) -> Result<(), WebPipeError> {
+            Ok(())
         }
     }
 
@@ -138,8 +152,9 @@ mod tests {
         let registry = MiddlewareRegistry::with_builtins(ctx_no_db());
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
-        let out = registry.execute("jq", "{ ok: true }", &serde_json::json!({}), &env, &mut ctx).await.unwrap();
-        assert_eq!(out["ok"], serde_json::json!(true));
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
+        registry.execute("jq", "{ ok: true }", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        assert_eq!(pipeline_ctx.state["ok"], serde_json::json!(true));
     }
 
     #[tokio::test]
@@ -147,7 +162,8 @@ mod tests {
         let registry = MiddlewareRegistry::with_builtins(ctx_no_db());
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
-        let err = registry.execute("nope", "", &serde_json::json!({}), &env, &mut ctx).await.unwrap_err();
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
+        let err = registry.execute("nope", "", &mut pipeline_ctx, &env, &mut ctx).await.unwrap_err();
         match err { WebPipeError::MiddlewareNotFound(_) => {}, other => panic!("unexpected: {:?}", other) }
     }
 }

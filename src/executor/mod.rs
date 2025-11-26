@@ -42,7 +42,14 @@ pub type PipelineExecFuture<'a> = Pin<
 
 #[async_trait]
 pub trait MiddlewareInvoker: Send + Sync {
-    async fn call(&self, name: &str, cfg: &str, input: &Value, env: &ExecutionEnv, ctx: &mut RequestContext) -> Result<Value, WebPipeError>;
+    async fn call(
+        &self,
+        name: &str,
+        cfg: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        env: &ExecutionEnv,
+        ctx: &mut RequestContext,
+    ) -> Result<(), WebPipeError>;
 }
 
 /// Registry for async tasks spawned with @async tag
@@ -179,21 +186,15 @@ impl RealInvoker {
 
 #[async_trait]
 impl MiddlewareInvoker for RealInvoker {
-    async fn call(&self, name: &str, cfg: &str, input: &Value, env: &ExecutionEnv, ctx: &mut RequestContext) -> Result<Value, WebPipeError> {
-        self.registry.execute(name, cfg, input, env, ctx).await
-    }
-}
-
-fn merge_values_preserving_input(input: &Value, result: &Value) -> Value {
-    match (input, result) {
-        (Value::Object(base), Value::Object(patch)) => {
-            let mut merged = base.clone();
-            for (k, v) in patch {
-                merged.insert(k.clone(), v.clone());
-            }
-            Value::Object(merged)
-        }
-        _ => result.clone(),
+    async fn call(
+        &self,
+        name: &str,
+        cfg: &str,
+        pipeline_ctx: &mut crate::runtime::PipelineContext,
+        env: &ExecutionEnv,
+        ctx: &mut RequestContext,
+    ) -> Result<(), WebPipeError> {
+        self.registry.execute(name, cfg, pipeline_ctx, env, ctx).await
     }
 }
 
@@ -393,29 +394,6 @@ async fn handle_result_step<'a>(
     }
 }
 
-/// Check if all remaining steps in the pipeline will be skipped
-fn all_remaining_steps_will_be_skipped(
-    steps: &[PipelineStep],
-    current_idx: usize,
-    env: &ExecutionEnv,
-    ctx: &RequestContext,
-    input: &Value
-) -> bool {
-    for step in steps.iter().skip(current_idx + 1) {
-        match step {
-            PipelineStep::Regular { tags, .. } => {
-                if should_execute_step(tags, env, ctx, input) {
-                    return false; // Found a step that will execute
-                }
-            }
-            PipelineStep::Result { .. } => {
-                return false; // Result steps always execute
-            }
-        }
-    }
-    true // All remaining steps will be skipped
-}
-
 /// Determine the execution mode for a step
 fn detect_execution_mode(name: &str, tags: &[crate::ast::Tag]) -> ExecutionMode {
     // Check for async tag first
@@ -429,6 +407,34 @@ fn detect_execution_mode(name: &str, tags: &[crate::ast::Tag]) -> ExecutionMode 
         "pipeline" => ExecutionMode::Recursive,
         _ => ExecutionMode::Standard,
     }
+}
+
+/// Check if this is effectively the last step that will execute
+/// (accounts for remaining steps being skipped due to feature flags, etc.)
+fn is_effectively_last_step(
+    current_idx: usize,
+    steps: &[PipelineStep],
+    env: &ExecutionEnv,
+    ctx: &RequestContext,
+    state: &Value,
+) -> bool {
+    // Check if any remaining steps will execute
+    for remaining_step in steps.iter().skip(current_idx + 1) {
+        match remaining_step {
+            PipelineStep::Regular { tags, .. } => {
+                // If this remaining step would execute, current is not the last
+                if should_execute_step(tags, env, ctx, state) {
+                    return false;
+                }
+            }
+            PipelineStep::Result { .. } => {
+                // Result branches always execute, so current is not last
+                return false;
+            }
+        }
+    }
+    // No remaining steps will execute
+    true
 }
 
 /// Handle join operation - wait for async tasks and merge results
@@ -507,7 +513,10 @@ fn spawn_async_step(
                 Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
             }
         } else {
-            env_clone.invoker.call(&name_clone, &effective_config, &effective_input, &env_clone, &mut async_ctx).await
+            // Create a PipelineContext for the async task
+            let mut pipeline_ctx = crate::runtime::PipelineContext::new(effective_input);
+            env_clone.invoker.call(&name_clone, &effective_config, &mut pipeline_ctx, &env_clone, &mut async_ctx).await?;
+            Ok(pipeline_ctx.state)
         }
     });
 
@@ -543,9 +552,9 @@ async fn handle_standard_execution(
     ctx: &mut RequestContext,
     name: &str,
     config: &str,
-    input: &Value,
+    pipeline_ctx: &mut crate::runtime::PipelineContext,
 ) -> Result<StepResult, WebPipeError> {
-    let value = env.invoker.call(name, config, input, env, ctx).await?;
+    env.invoker.call(name, config, pipeline_ctx, env, ctx).await?;
 
     // Special case: handlebars sets HTML content type
     let content_type = if name == "handlebars" {
@@ -555,55 +564,10 @@ async fn handle_standard_execution(
     };
 
     Ok(StepResult {
-        value,
+        value: pipeline_ctx.state.clone(),
         content_type,
         status_code: None,
     })
-}
-
-/// Merge step result into pipeline state
-fn merge_step_result(
-    _current_input: Value,
-    effective_input: &Value,
-    step_result: StepResult,
-    is_effective_last_step: bool,
-    auto_named: bool,
-    middleware_name: &str,
-    current_content_type: String,
-) -> (Value, String, Option<u16>) {
-    let StepResult { value: result, content_type: step_content_type, status_code: step_status } = step_result;
-
-    // Determine new input: if last step, use result directly; otherwise merge
-    let mut next_input = if is_effective_last_step {
-        result
-    } else {
-        merge_values_preserving_input(effective_input, &result)
-    };
-
-    // Clean up auto-named resultName
-    if auto_named {
-        if let Some(obj) = next_input.as_object_mut() {
-            obj.remove("resultName");
-        }
-    }
-
-    // Determine content type
-    let next_content_type = if middleware_name == "handlebars" {
-        "text/html".to_string()
-    } else if middleware_name == "pipeline" && is_effective_last_step {
-        step_content_type
-    } else {
-        current_content_type
-    };
-
-    // Propagate status code if last step
-    let next_status = if is_effective_last_step {
-        step_status
-    } else {
-        None
-    };
-
-    (next_input, next_content_type, next_status)
 }
 
 /// Internal pipeline execution that accepts a mutable RequestContext
@@ -611,82 +575,120 @@ fn merge_step_result(
 async fn execute_pipeline_internal<'a>(
     env: &'a ExecutionEnv,
     pipeline: &'a Pipeline,
-    mut input: Value,
+    input: Value,
     ctx: &'a mut RequestContext,
 ) -> Result<(Value, String, Option<u16>), WebPipeError> {
     let mut content_type = "application/json".to_string();
     let mut status_code_out: Option<u16> = None;
 
-    for (idx, step) in pipeline.steps.iter().enumerate() {
-        let is_last_step = idx + 1 == pipeline.steps.len();
+    // Create PipelineContext with the initial state
+    let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
 
+    for (idx, step) in pipeline.steps.iter().enumerate() {
         match step {
             PipelineStep::Regular { name, config, config_type: _, tags } => {
                 // 1. Check Guards (tags/flags)
-                if !should_execute_step(tags, env, ctx, &input) {
+                if !should_execute_step(tags, env, ctx, &pipeline_ctx.state) {
                     continue;
                 }
+
+                // Check if this is effectively the last step (no remaining steps will execute)
+                let is_last_step = is_effectively_last_step(idx, &pipeline.steps, env, ctx, &pipeline_ctx.state);
 
                 // 2. Determine Execution Mode
                 let mode = detect_execution_mode(name, tags);
 
                 // Handle async execution separately (no state merge needed)
                 if let ExecutionMode::Async(async_name) = mode {
-                    spawn_async_step(env, ctx, name, config, input.clone(), async_name);
+                    spawn_async_step(env, ctx, name, config, pipeline_ctx.state.clone(), async_name);
                     continue;
                 }
 
                 // Resolve configuration and handle auto-naming
                 let (effective_config, effective_input, auto_named) =
-                    resolve_config_and_autoname(&env.variables, name, config, &input);
+                    resolve_config_and_autoname(&env.variables, name, config, &pipeline_ctx.state);
+
+                // If auto-named, update the pipeline context state with resultName
+                if auto_named {
+                    pipeline_ctx.state = effective_input.clone();
+                }
 
                 // 3. Execute Strategy
-                let step_result = match mode {
+                match mode {
                     ExecutionMode::Join => {
-                        handle_join(ctx, &effective_config, effective_input.clone()).await?
+                        // Join needs special handling - create temporary context
+                        let temp_ctx = crate::runtime::PipelineContext::new(effective_input.clone());
+                        let step_result = handle_join(ctx, &effective_config, temp_ctx.state.clone()).await?;
+                        pipeline_ctx.state = step_result.value;
+                        if name == "handlebars" || step_result.content_type != "application/json" {
+                            content_type = step_result.content_type;
+                        }
+                        if let Some(status) = step_result.status_code {
+                            status_code_out = Some(status);
+                        }
                     }
                     ExecutionMode::Recursive => {
-                        handle_recursive_pipeline(env, ctx, &effective_config, effective_input.clone()).await?
+                        // Recursive pipeline needs special handling
+                        let step_result = handle_recursive_pipeline(env, ctx, &effective_config, effective_input.clone()).await?;
+                        pipeline_ctx.state = step_result.value;
+                        if is_last_step || name == "pipeline" {
+                            content_type = step_result.content_type;
+                        }
+                        if let Some(status) = step_result.status_code {
+                            status_code_out = Some(status);
+                        }
                     }
                     ExecutionMode::Standard => {
-                        handle_standard_execution(env, ctx, name, &effective_config, &effective_input).await?
+                        // Standard execution - pass mutable context
+                        let mut temp_ctx = crate::runtime::PipelineContext::new(pipeline_ctx.state.clone());
+                        handle_standard_execution(env, ctx, name, &effective_config, &mut temp_ctx).await?;
+
+                        // Update state and content type
+                        // For non-final steps, merge JSON objects; final step replaces entirely
+                        // Handlebars always replaces (produces HTML string)
+                        if !is_last_step && name != "handlebars" {
+                            // Merge: previous state + new result (new takes precedence)
+                            if let (Some(prev_obj), Some(new_obj)) = (
+                                pipeline_ctx.state.as_object_mut(),
+                                temp_ctx.state.as_object()
+                            ) {
+                                for (k, v) in new_obj {
+                                    prev_obj.insert(k.clone(), v.clone());
+                                }
+                            } else {
+                                // Non-object result, just replace
+                                pipeline_ctx.state = temp_ctx.state;
+                            }
+                        } else {
+                            pipeline_ctx.state = temp_ctx.state;
+                        }
+                        if name == "handlebars" {
+                            content_type = "text/html".to_string();
+                        }
                     }
                     ExecutionMode::Async(_) => unreachable!("Async handled above"),
                 };
 
                 // 4. Handle Signals (Cache hits, etc)
-                if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&step_result.value) {
-                    let final_content_type = cached_content_type.unwrap_or(step_result.content_type);
-                    return Ok((cached_val, final_content_type, step_result.status_code));
+                if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&pipeline_ctx.state) {
+                    let final_content_type = cached_content_type.unwrap_or(content_type);
+                    return Ok((cached_val, final_content_type, status_code_out));
                 }
 
-                // 5. Merge State
-                let is_effective_last_step = is_last_step
-                    || all_remaining_steps_will_be_skipped(&pipeline.steps, idx, env, ctx, &input);
-
-                let (next_input, next_content_type, next_status) = merge_step_result(
-                    input,
-                    &effective_input,
-                    step_result,
-                    is_effective_last_step,
-                    auto_named,
-                    name,
-                    content_type,
-                );
-
-                input = next_input;
-                content_type = next_content_type;
-                if let Some(status) = next_status {
-                    status_code_out = Some(status);
+                // 5. Clean up auto-naming
+                if auto_named {
+                    if let Some(obj) = pipeline_ctx.state.as_object_mut() {
+                        obj.remove("resultName");
+                    }
                 }
             }
             PipelineStep::Result { branches } => {
-                return handle_result_step(env, ctx, branches, input, content_type).await;
+                return handle_result_step(env, ctx, branches, pipeline_ctx.state, content_type).await;
             }
         }
     }
 
-    Ok((input, content_type, status_code_out))
+    Ok((pipeline_ctx.state, content_type, status_code_out))
 }
 
 /// Public entry point for pipeline execution
@@ -711,9 +713,19 @@ mod tests {
     struct StubInvoker;
     #[async_trait]
     impl MiddlewareInvoker for StubInvoker {
-        async fn call(&self, name: &str, cfg: &str, input: &Value, _env: &ExecutionEnv, _ctx: &mut RequestContext) -> Result<Value, WebPipeError> {
+        async fn call(
+            &self,
+            name: &str,
+            cfg: &str,
+            pipeline_ctx: &mut crate::runtime::PipelineContext,
+            _env: &ExecutionEnv,
+            _ctx: &mut RequestContext,
+        ) -> Result<(), WebPipeError> {
+            let input = &pipeline_ctx.state;
             match name {
-                "handlebars" => Ok(Value::String(format!("<p>{}</p>", cfg))),
+                "handlebars" => {
+                    pipeline_ctx.state = Value::String(format!("<p>{}</p>", cfg));
+                }
                 "echo" => {
                     // Try to parse config as JSON and merge with input
                     if let Ok(json_cfg) = serde_json::from_str::<Value>(cfg) {
@@ -724,13 +736,16 @@ mod tests {
                                 input_obj.insert(k.clone(), v.clone());
                             }
                         }
-                        Ok(result)
+                        pipeline_ctx.state = result;
                     } else {
-                        Ok(serde_json::json!({"echo": cfg, "inputCopy": input }))
+                        pipeline_ctx.state = serde_json::json!({"echo": cfg, "inputCopy": input });
                     }
                 },
-                _ => Ok(serde_json::json!({"ok": true}))
+                _ => {
+                    pipeline_ctx.state = serde_json::json!({"ok": true});
+                }
             }
+            Ok(())
         }
     }
 
@@ -746,13 +761,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn merge_values_preserving_input_for_objects() {
-        let input = serde_json::json!({"a":1});
-        let result = serde_json::json!({"b":2});
-        let merged = super::merge_values_preserving_input(&input, &result);
-        assert_eq!(merged, serde_json::json!({"a":1,"b":2}));
-    }
 
     #[tokio::test]
     async fn result_branch_selection_and_status() {
