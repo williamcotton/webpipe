@@ -3,6 +3,8 @@
 - **Route**: HTTP method + path + pipeline.
 - **Pipeline**: ordered middleware steps. Use `pipeline:` to reuse a named pipeline.
 - **Named results**: set `resultName` before steps that return `.data` to capture multiple results.
+- **Concurrency**: Use `@async` to run steps in background and `join` middleware to sync. See [Concurrency](./concurrency.md).
+- **Flow Control**: Use `@env` and `@flag` tags to conditionally execute steps. See [Flow Control](./flow-control.md).
 
 Example:
 ```wp

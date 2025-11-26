@@ -13,6 +13,9 @@ A concise index for everything Web Pipe—from first steps to advanced usage.
 3. **DSL Syntax** — The Web Pipe language: grammar, literals, blocks, and patterns.  
    [dsl-syntax.md](./dsl-syntax.md)
 
+4. **GraphQL** — Native support for schemas, resolvers, and queries.  
+   [graphql.md](./graphql.md)
+
 ## Reference
 
 - **Configuration** — Defining `config` blocks, environment variables, and secrets.  
@@ -20,6 +23,12 @@ A concise index for everything Web Pipe—from first steps to advanced usage.
 
 - **Routes & Pipelines** — Declaring routes, composing steps, and controlling flow.  
   [routes-and-pipelines.md](./routes-and-pipelines.md)
+
+- **Concurrency** — Async tasks and joining results.  
+  [concurrency.md](./concurrency.md)
+
+- **Flow Control** — Conditional execution with tags (`@env`, `@flag`).  
+  [flow-control.md](./flow-control.md)
 
 - **Variables & Partials** — Reusable SQL, templates, and pipeline fragments.  
   [variables-and-partials.md](./variables-and-partials.md)
@@ -60,6 +69,12 @@ A concise index for everything Web Pipe—from first steps to advanced usage.
 
 - **cache** — Response and query caching strategies.  
   [middleware/cache.md](./middleware/cache.md)
+
+- **rateLimit** — Token bucket rate limiting.  
+  [middleware/rate_limit.md](./middleware/rate_limit.md)
+
+- **join** — Synchronize async tasks.  
+  [middleware/join.md](./middleware/join.md)
 
 - **log** — Structured request/response logging.  
   [middleware/log.md](./middleware/log.md)

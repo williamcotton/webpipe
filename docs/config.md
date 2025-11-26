@@ -21,6 +21,14 @@ config log {
   level: "debug"
   includeHeaders: true
 }
+
+config rateLimit {
+  # Default policies can be defined here
+  limit: 100
+  window: "60s"
+  burst: 10
+  enabled: true
+}
 ```
 
 
