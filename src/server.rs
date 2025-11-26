@@ -14,7 +14,7 @@ use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::signal;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use tokio::fs as tokio_fs;
 use std::path::{Path, PathBuf};
 use crate::runtime::Context;
@@ -497,7 +497,15 @@ async fn respond_with_pipeline(
             response
         }
         Err(e) => {
-            warn!("Pipeline execution failed: {}", e);
+            // Use debug logging for rate limits (expected during testing), warn for actual errors
+            match &e {
+                crate::error::WebPipeError::RateLimitExceeded(_) => {
+                    debug!("Rate limit exceeded: {}", e);
+                }
+                _ => {
+                    warn!("Pipeline execution failed: {}", e);
+                }
+            }
             let error_response = serde_json::json!({
                 "error": "Pipeline execution failed",
                 "details": e.to_string()
