@@ -223,9 +223,26 @@ impl LuaMiddleware {
         LUA_STATE.with(|state| {
             let state = state.borrow();
             let lua = state.as_ref().unwrap();
+
+            // 1. Create the Sandbox Table
+            let sandbox = lua.create_table().map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create sandbox table: {}", e)))?;
+
+            // 2. Configure Metatable for Read-Through access to Globals
+            let meta = lua.create_table().map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create metatable: {}", e)))?;
+            let globals = lua.globals();
+            meta.set("__index", globals).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to set __index: {}", e)))?;
+            sandbox.set_metatable(Some(meta));
+
+            // 3. Inject 'request' directly into the sandbox (shadowing any global 'request')
             let lua_input = Self::json_to_lua(lua, input).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JSON to Lua conversion error: {}", e)))?;
-            lua.globals().set("request", lua_input).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Setting request variable error: {}", e)))?;
-            let result: LuaValue = lua.load(script).eval().map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Lua execution error: {}", e)))?;
+            sandbox.set("request", lua_input).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Setting request variable error: {}", e)))?;
+
+            // 4. Load and Execute the Script INSIDE the Sandbox
+            let chunk = lua.load(script)
+                .set_environment(sandbox)
+                .set_name("user_script");
+
+            let result: LuaValue = chunk.eval().map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Lua execution error: {}", e)))?;
             Self::lua_to_json_with_depth(result, 0)
         })
     }
@@ -308,6 +325,25 @@ mod tests {
         assert!(out.as_bool().unwrap() || out.is_string());
         let out2 = mw.execute("return getEnv('PATH') ~= nil", &serde_json::json!({})).await.unwrap();
         assert!(out2.as_bool().unwrap());
+    }
+
+    #[tokio::test]
+    async fn sandbox_prevents_global_pollution() {
+        let mw = LuaMiddleware::new(ctx_no_db());
+
+        // First request: accidentally write to global (missing 'local')
+        let script1 = "counter = (counter or 0) + 1; return { count = counter }";
+        let out1 = mw.execute(script1, &serde_json::json!({})).await.unwrap();
+        assert_eq!(out1["count"], serde_json::json!(1));
+
+        // Second request: same script should return 1 again (not 2)
+        let out2 = mw.execute(script1, &serde_json::json!({})).await.unwrap();
+        assert_eq!(out2["count"], serde_json::json!(1), "Sandbox should prevent global pollution - counter should not persist");
+
+        // Third request: verify the global doesn't exist
+        let script2 = "return { exists = counter ~= nil }";
+        let out3 = mw.execute(script2, &serde_json::json!({})).await.unwrap();
+        assert_eq!(out3["exists"], serde_json::json!(false), "Global 'counter' should not exist in fresh sandbox");
     }
 }
 
