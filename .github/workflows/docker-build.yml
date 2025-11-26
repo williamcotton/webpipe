@@ -4,9 +4,9 @@ on:
   workflow_run:
     workflows: ["Test Suite"]
     types: [completed]
-    branches: [ "main" ]
+    branches: [ "main", "webpipe-2.0" ]
   push:
-    branches: [main]
+    branches: [main, webpipe-2.0]
   workflow_dispatch:
 
 jobs:
@@ -34,14 +34,15 @@ jobs:
       with:
         images: ghcr.io/williamcotton/webpipe
         tags: |
-          type=raw,value=latest
+          type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+          type=raw,value=2.0,enable=${{ github.ref == 'refs/heads/webpipe-2.0' }}
           type=sha,prefix={{branch}}-
         labels: |
           org.opencontainers.image.title=webpipe
           org.opencontainers.image.description=Web Pipe DSL HTTP server runtime with pipeline-based middleware
           org.opencontainers.image.url=https://github.com/williamcotton/webpipe
           org.opencontainers.image.source=https://github.com/williamcotton/webpipe
-          org.opencontainers.image.version=latest
+          org.opencontainers.image.version={{branch}}
           org.opencontainers.image.created={{date 'RFC3339'}}
           org.opencontainers.image.revision={{sha}}
           org.opencontainers.image.licenses=MIT
