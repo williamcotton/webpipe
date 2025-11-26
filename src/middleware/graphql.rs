@@ -47,7 +47,7 @@ impl GraphQLMiddleware {
 
 #[async_trait]
 impl Middleware for GraphQLMiddleware {
-    async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
         // Get the pre-compiled GraphQL runtime
         let runtime = self.ctx.graphql
             .as_ref()
@@ -163,7 +163,17 @@ mod tests {
         let input = json!({});
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(middleware.execute("query { test }", &input));
+        let env = crate::executor::ExecutionEnv {
+            variables: Arc::new(vec![]),
+            named_pipelines: Arc::new(std::collections::HashMap::new()),
+            invoker: Arc::new(crate::executor::RealInvoker::new(Arc::new(crate::middleware::MiddlewareRegistry::default()))),
+            environment: None,
+            async_registry: crate::executor::AsyncTaskRegistry::new(),
+            flags: Arc::new(std::collections::HashMap::new()),
+            cache: None,
+            deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
+        };
+        let result = rt.block_on(middleware.execute("query { test }", &input, &env));
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No GraphQL schema"));

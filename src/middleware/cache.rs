@@ -56,7 +56,7 @@ fn render_key_template(template: &str, input: &Value) -> String {
 
 #[async_trait]
 impl super::Middleware for CacheMiddleware {
-    async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
         #[derive(Default)]
         struct LocalCfg { enabled: Option<bool>, ttl: Option<u64>, key_tpl: Option<String> }
         fn parse_bool(s: &str) -> Option<bool> { match s.trim().to_ascii_lowercase().as_str() { "true" => Some(true), "false" => Some(false), _ => None } }
@@ -86,29 +86,18 @@ impl super::Middleware for CacheMiddleware {
         }));
 
         let parsed = parse_cfg(config);
-        
+
         // Determine effective settings
-        let enabled = parsed.enabled.unwrap_or_else(|| 
+        let enabled = parsed.enabled.unwrap_or_else(||
             global_cache_config.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true)
         );
-        let ttl = parsed.ttl.unwrap_or_else(|| 
+        let ttl = parsed.ttl.unwrap_or_else(||
             global_cache_config.get("defaultTtl").and_then(|v| v.as_u64()).unwrap_or(60)
         );
 
-        // If caching is disabled, pass through with metadata for backward compatibility
+        // If caching is disabled, just return input unchanged
         if !enabled {
-            let mut out = input.clone();
-            if let Some(obj) = out.as_object_mut() {
-                let meta_entry = obj.entry("_metadata").or_insert_with(|| Value::Object(serde_json::Map::new()));
-                if !meta_entry.is_object() { *meta_entry = Value::Object(serde_json::Map::new()); }
-                if let Some(meta) = meta_entry.as_object_mut() {
-                    let cache_entry = meta.entry("cache").or_insert_with(|| Value::Object(serde_json::Map::new()));
-                    if let Some(cache_map) = cache_entry.as_object_mut() {
-                        cache_map.insert("enabled".to_string(), Value::Bool(false));
-                    }
-                }
-            }
-            return Ok(out);
+            return Ok(input.clone());
         }
 
         // Generate cache key
@@ -151,31 +140,19 @@ impl super::Middleware for CacheMiddleware {
             }));
         }
 
-        // CACHE MISS: Return input with cache_control metadata for executor
-        let mut out = input.clone();
-        if let Some(obj) = out.as_object_mut() {
-            let meta_entry = obj.entry("_metadata").or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if !meta_entry.is_object() { *meta_entry = Value::Object(serde_json::Map::new()); }
-            if let Some(meta) = meta_entry.as_object_mut() {
-                // Add cache_control for the Executor to use at pipeline end
-                meta.insert("cache_control".to_string(), serde_json::json!({
-                    "key": key,
-                    "ttl": ttl
-                }));
-                
-                // Keep "cache" metadata for backward compatibility (e.g. fetch middleware)
-                let cache_entry = meta.entry("cache").or_insert_with(|| Value::Object(serde_json::Map::new()));
-                if !cache_entry.is_object() { *cache_entry = Value::Object(serde_json::Map::new()); }
-                if let Some(cache_map) = cache_entry.as_object_mut() {
-                    cache_map.insert("enabled".to_string(), Value::Bool(enabled));
-                    cache_map.insert("ttl".to_string(), Value::Number(serde_json::Number::from(ttl)));
-                    if let Some(tpl) = &parsed.key_tpl { 
-                        cache_map.insert("keyTemplate".to_string(), Value::String(tpl.clone())); 
-                    }
-                }
+        // CACHE MISS: Register deferred action to save result at pipeline end
+        let store = self.ctx.cache.clone();
+        let key_clone = key.clone();
+        env.defer(move |final_result| {
+            // This runs AFTER the pipeline finishes
+            // Use "write-once" semantics to prevent race conditions
+            if store.get(&key_clone).is_none() {
+                store.put(key_clone, final_result.clone(), Some(ttl));
             }
-        }
-        Ok(out)
+        });
+
+        // Return input unchanged
+        Ok(input.clone())
     }
 }
 
@@ -201,34 +178,68 @@ mod tests {
         })
     }
 
+    struct StubInvoker;
+    #[async_trait::async_trait]
+    impl crate::executor::MiddlewareInvoker for StubInvoker {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+            Ok(Value::Null)
+        }
+    }
+    fn dummy_env() -> crate::executor::ExecutionEnv {
+        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
+        use parking_lot::Mutex;
+        ExecutionEnv {
+            variables: Arc::new(vec![]),
+            named_pipelines: Arc::new(std::collections::HashMap::new()),
+            invoker: Arc::new(StubInvoker),
+            environment: None,
+            async_registry: AsyncTaskRegistry::new(),
+            flags: Arc::new(std::collections::HashMap::new()),
+            cache: None,
+            deferred: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
     #[tokio::test]
-    async fn merges_cache_flags_into_metadata() {
-        // Initialize global config for test
+    async fn cache_miss_registers_deferred_action() {
         crate::config::init_global(vec![]);
-        
-        let mw = CacheMiddleware { ctx: test_ctx() };
+
+        let ctx = test_ctx();
+        let mw = CacheMiddleware { ctx: ctx.clone() };
         let input = serde_json::json!({});
-        let out = mw.execute("enabled: true, ttl: 5, keyTemplate: id-{params.id}", &input).await.unwrap();
-        assert_eq!(out["_metadata"]["cache"]["enabled"], serde_json::json!(true));
-        assert_eq!(out["_metadata"]["cache"]["ttl"], serde_json::json!(5));
-        assert_eq!(out["_metadata"]["cache"]["keyTemplate"], serde_json::json!("id-{params.id}"));
-        // Should also have cache_control for executor
-        assert!(out["_metadata"]["cache_control"]["key"].is_string());
-        assert_eq!(out["_metadata"]["cache_control"]["ttl"], serde_json::json!(5));
+        let env = dummy_env();
+
+        // Execute with cache miss
+        let out = mw.execute("ttl: 5, keyTemplate: test-key-123", &input, &env).await.unwrap();
+
+        // Should return input unchanged (no metadata)
+        assert_eq!(out, input);
+
+        // Verify cache is empty before deferred runs
+        assert!(ctx.cache.get("test-key-123").is_none());
+
+        // Run deferred actions with final result
+        let final_result = serde_json::json!({"final": "data"});
+        env.run_deferred(&final_result);
+
+        // Verify cache was populated
+        let cached = ctx.cache.get("test-key-123").unwrap();
+        assert_eq!(cached["final"], serde_json::json!("data"));
     }
 
     #[tokio::test]
     async fn returns_stop_signal_on_cache_hit() {
         crate::config::init_global(vec![]);
-        
+
         let ctx = test_ctx();
         // Pre-populate cache
         ctx.cache.put("test-key".to_string(), serde_json::json!({"cached": "data"}), Some(60));
-        
+
         let mw = CacheMiddleware { ctx };
         let input = serde_json::json!({});
-        let out = mw.execute("keyTemplate: test-key", &input).await.unwrap();
-        
+        let env = dummy_env();
+        let out = mw.execute("keyTemplate: test-key", &input, &env).await.unwrap();
+
         // Should return stop signal with cached value
         assert_eq!(out["_control"]["stop"], serde_json::json!(true));
         assert_eq!(out["_control"]["value"]["cached"], serde_json::json!("data"));
@@ -237,17 +248,14 @@ mod tests {
     #[tokio::test]
     async fn cache_disabled_passes_through() {
         crate::config::init_global(vec![]);
-        
+
         let mw = CacheMiddleware { ctx: test_ctx() };
         let input = serde_json::json!({"original": "data"});
-        let out = mw.execute("enabled: false", &input).await.unwrap();
-        
-        // Should pass through original data
+        let env = dummy_env();
+        let out = mw.execute("enabled: false", &input, &env).await.unwrap();
+
+        // Should pass through original data unchanged
         assert_eq!(out["original"], serde_json::json!("data"));
-        // Should mark cache as disabled
-        assert_eq!(out["_metadata"]["cache"]["enabled"], serde_json::json!(false));
-        // Should NOT have cache_control (not tracking for caching)
-        assert!(out["_metadata"].get("cache_control").is_none());
     }
 }
 

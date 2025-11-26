@@ -38,6 +38,7 @@ async fn build_env(program: &webpipe::ast::Program) -> ExecutionEnv {
         async_registry: webpipe::executor::AsyncTaskRegistry::new(),
         flags: Arc::new(HashMap::new()),
         cache: Some(ctx.cache.clone()),
+        deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
     }
 }
 

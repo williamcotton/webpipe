@@ -10,7 +10,7 @@ pub struct PgMiddleware { pub(crate) ctx: Arc<Context> }
 
 #[async_trait]
 impl super::Middleware for PgMiddleware {
-    async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
         let sql = config.trim();
         if sql.is_empty() { return Err(WebPipeError::DatabaseError("Empty SQL config for pg middleware".to_string())); }
 

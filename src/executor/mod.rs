@@ -21,7 +21,7 @@ pub type PipelineExecFuture<'a> = Pin<
 
 #[async_trait]
 pub trait MiddlewareInvoker: Send + Sync {
-    async fn call(&self, name: &str, cfg: &str, input: &Value) -> Result<Value, WebPipeError>;
+    async fn call(&self, name: &str, cfg: &str, input: &Value, env: &ExecutionEnv) -> Result<Value, WebPipeError>;
 }
 
 /// Registry for async tasks spawned with @async tag
@@ -55,6 +55,28 @@ pub struct ExecutionEnv {
     pub async_registry: AsyncTaskRegistry, // registry for @async tasks
     pub flags: Arc<HashMap<String, bool>>, // feature flags for @flag() tag checking
     pub cache: Option<CacheStore>, // cache store for pipeline-level caching
+
+    // Store actions to run at the end of the request
+    // The closure takes the final pipeline result as an argument
+    pub deferred: Arc<Mutex<Vec<Box<dyn FnOnce(&Value) + Send>>>>,
+}
+
+impl ExecutionEnv {
+    pub fn defer<F>(&self, f: F)
+    where
+        F: FnOnce(&Value) + Send + 'static,
+    {
+        self.deferred.lock().push(Box::new(f));
+    }
+
+    // Helper to execute all deferred actions
+    pub fn run_deferred(&self, final_result: &Value) {
+        let mut actions = self.deferred.lock();
+        // Drain allows us to take ownership of the closures
+        for action in actions.drain(..) {
+            action(final_result);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -68,8 +90,8 @@ impl RealInvoker {
 
 #[async_trait]
 impl MiddlewareInvoker for RealInvoker {
-    async fn call(&self, name: &str, cfg: &str, input: &Value) -> Result<Value, WebPipeError> {
-        self.registry.execute(name, cfg, input).await
+    async fn call(&self, name: &str, cfg: &str, input: &Value, env: &ExecutionEnv) -> Result<Value, WebPipeError> {
+        self.registry.execute(name, cfg, input, env).await
     }
 }
 
@@ -202,17 +224,6 @@ fn check_cache_control_signal(input: &Value) -> Option<Value> {
         })
 }
 
-/// Extract pending cache metadata from cache middleware on miss.
-/// Returns (cache_key, ttl) if cache control metadata is present.
-fn extract_pending_cache_metadata(result: &Value) -> Option<(String, u64)> {
-    result.get("_metadata")
-        .and_then(|m| m.get("cache_control"))
-        .and_then(|c| {
-            let key = c.get("key").and_then(|v| v.as_str())?;
-            let ttl = c.get("ttl").and_then(|v| v.as_u64())?;
-            Some((key.to_string(), ttl))
-        })
-}
 
 fn parse_join_task_names(config: &str) -> Result<Vec<String>, WebPipeError> {
     let trimmed = config.trim();
@@ -319,10 +330,6 @@ pub fn execute_pipeline<'a>(
     Box::pin(async move {
         let mut content_type = "application/json".to_string();
         let mut status_code_out: Option<u16> = None;
-        
-        // Track cache details for saving at the end of the pipeline
-        let mut pending_cache_key: Option<String> = None;
-        let mut pending_cache_ttl: Option<u64> = None;
 
         for (idx, step) in pipeline.steps.iter().enumerate() {
             let is_last_step = idx + 1 == pipeline.steps.len();
@@ -354,7 +361,7 @@ pub fn execute_pipeline<'a>(
                                     Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
                                 }
                             } else {
-                                env_clone.invoker.call(&name_clone, &effective_config, &effective_input).await
+                                env_clone.invoker.call(&name_clone, &effective_config, &effective_input, &env_clone).await
                             }
                         });
 
@@ -413,7 +420,7 @@ pub fn execute_pipeline<'a>(
                             Err(WebPipeError::PipelineNotFound(name.to_string()))
                         }
                     } else {
-                        let val = env.invoker.call(name, &effective_config, &effective_input).await?;
+                        let val = env.invoker.call(name, &effective_config, &effective_input, env).await?;
                         Ok((val, None, content_type.clone()))
                     };
 
@@ -425,35 +432,10 @@ pub fn execute_pipeline<'a>(
                                 return Ok((cached_val, sub_content_type, sub_status));
                             }
 
-                            
-                            // // If cache middleware set cache_control metadata, track it for saving at end
-                            // if let Some((key, ttl)) = extract_pending_cache_metadata(&result) {
-                            //     pending_cache_key = Some(key);
-                            //     pending_cache_ttl = Some(ttl);
-                            // }
-                            // Only extract cache metadata from the actual "cache" middleware step
-                            // to prevent nested pipelines from inheriting and saving with the same key
-                            if name == "cache" {
-                                if let Some((key, ttl)) = extract_pending_cache_metadata(&result) {
-                                    pending_cache_key = Some(key);
-                                    pending_cache_ttl = Some(ttl);
-                                }
-                            }
-
                             // Check if this is the effective last step (either last in array, or all remaining steps will be skipped)
                             let is_effective_last_step = is_last_step || all_remaining_steps_will_be_skipped(&pipeline.steps, idx, env, &input);
 
                             let mut next_input = if is_effective_last_step { result } else { merge_values_preserving_input(&effective_input, &result) };
-                            
-                            // Strip _metadata.cache_control after the cache step to prevent it from
-                            // leaking into nested pipelines (which would cause them to save with the same key)
-                            if name == "cache" {
-                                if let Some(obj) = next_input.as_object_mut() {
-                                    if let Some(meta) = obj.get_mut("_metadata").and_then(|m| m.as_object_mut()) {
-                                        meta.remove("cache_control");
-                                    }
-                                }
-                            }
                             if auto_named {
                                 if let Some(obj) = next_input.as_object_mut() { obj.remove("resultName"); }
                             }
@@ -472,47 +454,13 @@ pub fn execute_pipeline<'a>(
                     }
                 }
                 PipelineStep::Result { branches } => {
-                    // Before handling result, save to cache if pending
-                    // Use "write-once" semantics to prevent race conditions
-                    if let (Some(key), Some(ttl), Some(store)) = (&pending_cache_key, pending_cache_ttl, &env.cache) {
-                        // Check if cache already has valid data
-                        if store.get(key).is_none() {
-                            // Clean up _metadata.cache_control before caching
-                            let mut cache_value = input.clone();
-                            if let Some(obj) = cache_value.as_object_mut() {
-                                if let Some(meta) = obj.get_mut("_metadata").and_then(|m| m.as_object_mut()) {
-                                    meta.remove("cache_control");
-                                    // Also remove the regular cache metadata
-                                    meta.remove("cache");
-                                }
-                            }
-                            store.put(key.clone(), cache_value, Some(ttl));
-                        }
-                    }
                     return handle_result_step(env, branches, input, content_type).await;
                 }
             }
         }
 
-        // 3. SAVE TO CACHE IF PENDING
-        // At end of pipeline, save the final result to cache if we have a pending key
-        // Use "write-once" semantics: don't overwrite if valid data already exists
-        // This prevents race conditions where a slow request overwrites good cached data
-        if let (Some(key), Some(ttl), Some(store)) = (pending_cache_key, pending_cache_ttl, &env.cache) {
-            // Check if cache already has valid data (another request may have written it)
-            if store.get(&key).is_none() {
-                // Clean up _metadata.cache_control before caching
-                let mut cache_value = input.clone();
-                if let Some(obj) = cache_value.as_object_mut() {
-                    if let Some(meta) = obj.get_mut("_metadata").and_then(|m| m.as_object_mut()) {
-                        meta.remove("cache_control");
-                        // Also remove the regular cache metadata
-                        meta.remove("cache");
-                    }
-                }
-                store.put(key, cache_value, Some(ttl));
-            }
-        }
+        // Run all deferred actions (e.g. caching) with the final result
+        env.run_deferred(&input);
 
         Ok((input, content_type, status_code_out))
     })
@@ -528,7 +476,7 @@ mod tests {
     struct StubInvoker;
     #[async_trait]
     impl MiddlewareInvoker for StubInvoker {
-        async fn call(&self, name: &str, cfg: &str, input: &Value) -> Result<Value, WebPipeError> {
+        async fn call(&self, name: &str, cfg: &str, input: &Value, _env: &ExecutionEnv) -> Result<Value, WebPipeError> {
             match name {
                 "handlebars" => Ok(Value::String(format!("<p>{}</p>", cfg))),
                 "echo" => {
@@ -560,6 +508,7 @@ mod tests {
             async_registry: AsyncTaskRegistry::new(),
             flags: Arc::new(HashMap::new()),
             cache: None,
+            deferred: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -772,6 +721,7 @@ mod tests {
             async_registry: AsyncTaskRegistry::new(),
             flags: Arc::new(flags),
             cache: None,
+            deferred: Arc::new(Mutex::new(Vec::new())),
         };
         let (out2, _ct2, _st2) = execute_pipeline(&env_with_flag, &pipeline, serde_json::json!({})).await.unwrap();
         assert_eq!(out2.get("echo").and_then(|v| v.as_str()), Some("tagged"));

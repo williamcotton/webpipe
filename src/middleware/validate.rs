@@ -7,7 +7,7 @@ pub struct ValidateMiddleware;
 
 #[async_trait]
 impl super::Middleware for ValidateMiddleware {
-    async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
         #[derive(Debug)]
         struct Rule { field: String, kind: String, min: Option<usize>, max: Option<usize> }
 
@@ -101,24 +101,49 @@ impl super::Middleware for ValidateMiddleware {
 
 #[cfg(test)]
 mod tests {
+    struct StubInvoker;
+    #[async_trait::async_trait]
+    impl crate::executor::MiddlewareInvoker for StubInvoker {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+            Ok(Value::Null)
+        }
+    }
+    fn dummy_env() -> crate::executor::ExecutionEnv {
+        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+        use std::collections::HashMap;
+
+        ExecutionEnv {
+            variables: Arc::new(vec![]),
+            named_pipelines: Arc::new(HashMap::new()),
+            invoker: Arc::new(StubInvoker),
+            environment: None,
+            async_registry: AsyncTaskRegistry::new(),
+            flags: Arc::new(HashMap::new()),
+            cache: None,
+            deferred: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
     use super::*;
     use crate::middleware::Middleware;
 
     #[tokio::test]
     async fn string_min_max_and_missing() {
         let mw = ValidateMiddleware;
+        let env = dummy_env();
         let cfg = "{ name: string(2..4) }";
         // missing
-        let out = mw.execute(cfg, &serde_json::json!({"body": {}})).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {}}), &env).await.unwrap();
         assert_eq!(out["errors"][0]["type"], serde_json::json!("validationError"));
         // too short
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "a"}})).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "a"}}), &env).await.unwrap();
         assert_eq!(out["errors"][0]["rule"], serde_json::json!("minLength"));
         // too long
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abcde"}})).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abcde"}}), &env).await.unwrap();
         assert_eq!(out["errors"][0]["rule"], serde_json::json!("maxLength"));
         // ok
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abc"}})).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abc"}}), &env).await.unwrap();
         assert!(out.get("errors").is_none());
     }
 
@@ -127,13 +152,13 @@ mod tests {
         let mw = ValidateMiddleware;
         let cfg = "{ email: email }";
         // missing
-        let out = mw.execute(cfg, &serde_json::json!({"body": {}})).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {}}), &dummy_env()).await.unwrap();
         assert_eq!(out["errors"][0]["type"], serde_json::json!("validationError"));
         // invalid
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "foo"}})).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "foo"}}), &dummy_env()).await.unwrap();
         assert_eq!(out["errors"][0]["rule"], serde_json::json!("email"));
         // valid
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "a@b.com"}})).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "a@b.com"}}), &dummy_env()).await.unwrap();
         assert!(out.get("errors").is_none());
     }
 }

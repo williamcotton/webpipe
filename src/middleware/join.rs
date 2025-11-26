@@ -8,7 +8,7 @@ pub struct JoinMiddleware;
 
 #[async_trait]
 impl Middleware for JoinMiddleware {
-    async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
         // Parse config to get list of async task names
         let task_names = parse_join_config(config)?;
 

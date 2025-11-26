@@ -23,7 +23,7 @@ fn build_fetch_error_object(error_type: &str, mut details: Value) -> Value {
 
 #[async_trait]
 impl super::Middleware for FetchMiddleware {
-    async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
         let url = input.get("fetchUrl").and_then(|v| v.as_str()).unwrap_or(config).trim().to_string();
         if url.is_empty() {
             return Ok(build_fetch_error_object("networkError", serde_json::json!({ "message": "Missing URL for fetch middleware" })));
@@ -123,10 +123,36 @@ mod tests {
         })
     }
 
+    struct StubInvoker;
+    #[async_trait::async_trait]
+    impl crate::executor::MiddlewareInvoker for StubInvoker {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+            Ok(Value::Null)
+        }
+    }
+    fn dummy_env() -> crate::executor::ExecutionEnv {
+        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+        use std::collections::HashMap;
+
+        ExecutionEnv {
+            variables: Arc::new(vec![]),
+            named_pipelines: Arc::new(HashMap::new()),
+            invoker: Arc::new(StubInvoker),
+            environment: None,
+            async_registry: AsyncTaskRegistry::new(),
+            flags: Arc::new(HashMap::new()),
+            cache: None,
+            deferred: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
     #[tokio::test]
     async fn missing_url_yields_network_error_object() {
         let mw = FetchMiddleware { ctx: ctx_with_client() };
-        let out = mw.execute("", &serde_json::json!({})).await.unwrap();
+        let env = dummy_env();
+        let out = mw.execute("", &serde_json::json!({}), &env).await.unwrap();
         assert_eq!(out["errors"][0]["type"], serde_json::json!("networkError"));
     }
 }

@@ -156,7 +156,7 @@ fn resolve_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
 
 #[async_trait]
 impl super::Middleware for RateLimitMiddleware {
-    async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
         let cfg = parse_config(config);
 
         // Check if rate limiting is enabled
@@ -238,6 +238,30 @@ impl super::Middleware for RateLimitMiddleware {
 
 #[cfg(test)]
 mod tests {
+    struct StubInvoker;
+    #[async_trait::async_trait]
+    impl crate::executor::MiddlewareInvoker for StubInvoker {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+            Ok(Value::Null)
+        }
+    }
+    fn dummy_env() -> crate::executor::ExecutionEnv {
+        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+        use std::collections::HashMap;
+
+        ExecutionEnv {
+            variables: Arc::new(vec![]),
+            named_pipelines: Arc::new(HashMap::new()),
+            invoker: Arc::new(StubInvoker),
+            environment: None,
+            async_registry: AsyncTaskRegistry::new(),
+            flags: Arc::new(HashMap::new()),
+            cache: None,
+            deferred: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
     use super::*;
     use crate::middleware::Middleware;
     use crate::runtime::context::{CacheStore, ConfigSnapshot, RateLimitStore};
@@ -349,7 +373,7 @@ mod tests {
 
         // First request should be allowed
         let result = mw
-            .execute("keyTemplate: test-{ip}, limit: 5, window: 60s", &input)
+            .execute("keyTemplate: test-{ip}, limit: 5, window: 60s", &input, &dummy_env())
             .await;
         assert!(result.is_ok());
 
@@ -372,14 +396,14 @@ mod tests {
         // Make requests up to the limit
         for _ in 0..3 {
             let result = mw
-                .execute("keyTemplate: block-test-{ip}, limit: 3, window: 60s", &input)
+                .execute("keyTemplate: block-test-{ip}, limit: 3, window: 60s", &input, &dummy_env())
                 .await;
             assert!(result.is_ok());
         }
 
         // Next request should be blocked
         let result = mw
-            .execute("keyTemplate: block-test-{ip}, limit: 3, window: 60s", &input)
+            .execute("keyTemplate: block-test-{ip}, limit: 3, window: 60s", &input, &dummy_env())
             .await;
         assert!(result.is_err());
 
@@ -406,6 +430,7 @@ mod tests {
                 .execute(
                     "keyTemplate: burst-test-{ip}, limit: 2, window: 60s, burst: 2",
                     &input,
+                    &dummy_env(),
                 )
                 .await;
             assert!(result.is_ok(), "Request {} should be allowed", i + 1);
@@ -416,6 +441,7 @@ mod tests {
             .execute(
                 "keyTemplate: burst-test-{ip}, limit: 2, window: 60s, burst: 2",
                 &input,
+                &dummy_env(),
             )
             .await;
         assert!(result.is_err());
@@ -431,7 +457,7 @@ mod tests {
         let input = json!({ "ip": "10.0.0.4" });
 
         // Even without valid config, disabled should pass through
-        let result = mw.execute("enabled: false", &input).await;
+        let result = mw.execute("enabled: false", &input, &dummy_env()).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), input);
     }
@@ -446,7 +472,7 @@ mod tests {
         let input = json!({});
 
         // Missing keyTemplate
-        let result = mw.execute("limit: 10, window: 60s", &input).await;
+        let result = mw.execute("limit: 10, window: 60s", &input, &dummy_env()).await;
         assert!(result.is_err());
         match result {
             Err(WebPipeError::ConfigError(msg)) => {
@@ -456,11 +482,11 @@ mod tests {
         }
 
         // Missing limit
-        let result = mw.execute("keyTemplate: test, window: 60s", &input).await;
+        let result = mw.execute("keyTemplate: test, window: 60s", &input, &dummy_env()).await;
         assert!(result.is_err());
 
         // Missing window
-        let result = mw.execute("keyTemplate: test, limit: 10", &input).await;
+        let result = mw.execute("keyTemplate: test, limit: 10", &input, &dummy_env()).await;
         assert!(result.is_err());
     }
 
@@ -477,6 +503,7 @@ mod tests {
             .execute(
                 "keyTemplate: scope-test-{ip}, limit: 10, window: 60s, scope: route",
                 &input,
+                &dummy_env(),
             )
             .await;
         assert!(result.is_ok());

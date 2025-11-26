@@ -250,7 +250,7 @@ impl LuaMiddleware {
 
 #[async_trait]
 impl super::Middleware for LuaMiddleware {
-    async fn execute(&self, config: &str, input: &Value) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
         self.execute_lua_script(config, input)
     }
 }
@@ -307,11 +307,34 @@ mod tests {
         })
     }
 
+    struct StubInvoker;
+    #[async_trait::async_trait]
+    impl crate::executor::MiddlewareInvoker for StubInvoker {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+            Ok(Value::Null)
+        }
+    }
+    fn dummy_env() -> crate::executor::ExecutionEnv {
+        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
+        use parking_lot::Mutex;
+        ExecutionEnv {
+            variables: Arc::new(vec![]),
+            named_pipelines: Arc::new(std::collections::HashMap::new()),
+            invoker: Arc::new(StubInvoker),
+            environment: None,
+            async_registry: AsyncTaskRegistry::new(),
+            flags: Arc::new(std::collections::HashMap::new()),
+            cache: None,
+            deferred: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
     #[tokio::test]
     async fn json_lua_roundtrip_primitives_and_tables() {
         let mw = LuaMiddleware::new(ctx_no_db());
         let input = serde_json::json!({"x": 1, "arr": [1,2], "obj": {"a": true}});
-        let out = mw.execute("return { x = request.x, arr = request.arr, obj = request.obj }", &input).await.unwrap();
+        let env = dummy_env();
+        let out = mw.execute("return { x = request.x, arr = request.arr, obj = request.obj }", &input, &env).await.unwrap();
         assert_eq!(out["x"], serde_json::json!(1));
         assert_eq!(out["arr"].as_array().unwrap().len(), 2);
         assert_eq!(out["obj"]["a"], serde_json::json!(true));
@@ -321,28 +344,30 @@ mod tests {
     async fn require_script_and_get_env_registered() {
         std::env::set_var("WEBPIPE_SCRIPTS_DIR", "scripts");
         let mw = LuaMiddleware::new(ctx_with_scripts());
-        let out = mw.execute("local c = requireScript('dateFormatter'); return type(c) ~= 'nil'", &serde_json::json!({})).await.unwrap();
+        let env = dummy_env();
+        let out = mw.execute("local c = requireScript('dateFormatter'); return type(c) ~= 'nil'", &serde_json::json!({}), &env).await.unwrap();
         assert!(out.as_bool().unwrap() || out.is_string());
-        let out2 = mw.execute("return getEnv('PATH') ~= nil", &serde_json::json!({})).await.unwrap();
+        let out2 = mw.execute("return getEnv('PATH') ~= nil", &serde_json::json!({}), &env).await.unwrap();
         assert!(out2.as_bool().unwrap());
     }
 
     #[tokio::test]
     async fn sandbox_prevents_global_pollution() {
         let mw = LuaMiddleware::new(ctx_no_db());
+        let env = dummy_env();
 
         // First request: accidentally write to global (missing 'local')
         let script1 = "counter = (counter or 0) + 1; return { count = counter }";
-        let out1 = mw.execute(script1, &serde_json::json!({})).await.unwrap();
+        let out1 = mw.execute(script1, &serde_json::json!({}), &env).await.unwrap();
         assert_eq!(out1["count"], serde_json::json!(1));
 
         // Second request: same script should return 1 again (not 2)
-        let out2 = mw.execute(script1, &serde_json::json!({})).await.unwrap();
+        let out2 = mw.execute(script1, &serde_json::json!({}), &env).await.unwrap();
         assert_eq!(out2["count"], serde_json::json!(1), "Sandbox should prevent global pollution - counter should not persist");
 
         // Third request: verify the global doesn't exist
         let script2 = "return { exists = counter ~= nil }";
-        let out3 = mw.execute(script2, &serde_json::json!({})).await.unwrap();
+        let out3 = mw.execute(script2, &serde_json::json!({}), &env).await.unwrap();
         assert_eq!(out3["exists"], serde_json::json!(false), "Global 'counter' should not exist in fresh sandbox");
     }
 }

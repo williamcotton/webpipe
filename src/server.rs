@@ -126,6 +126,7 @@ impl ServerState {
             async_registry: crate::executor::AsyncTaskRegistry::new(),
             flags: Arc::new(flags),
             cache: self.env.cache.clone(),
+            deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
@@ -256,6 +257,7 @@ impl WebPipeServer {
             async_registry: crate::executor::AsyncTaskRegistry::new(),
             flags: Arc::new(HashMap::new()),
             cache: Some(self.ctx.cache.clone()),
+            deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
         });
 
         // Set the execution environment in the Context so GraphQL middleware can access it
@@ -466,7 +468,7 @@ async fn respond_with_pipeline(
 
             // After building response, invoke post_execute for all middleware using an envelope that includes
             // originalRequest, headers, and _metadata from the initial request snapshot.
-            let registry = state.middleware_registry.clone();
+            let _registry = state.middleware_registry.clone();
             let mut post_payload = if content_type.starts_with("text/html") {
                 Value::Object(serde_json::Map::new())
             } else {
@@ -489,8 +491,6 @@ async fn respond_with_pipeline(
                     obj.insert("headers".to_string(), h);
                 }
             }
-            tokio::spawn(async move { registry.post_execute_all(&post_payload).await; });
-
             response
         }
         Err(e) => {
@@ -768,6 +768,7 @@ mod tests {
             async_registry: crate::executor::AsyncTaskRegistry::new(),
             flags: Arc::new(HashMap::new()),
             cache: None,
+            deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
         };
         let state = ServerState {
             middleware_registry: registry.clone(),

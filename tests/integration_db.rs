@@ -77,6 +77,7 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
         async_registry: webpipe::executor::AsyncTaskRegistry::new(),
         flags: Arc::new(HashMap::new()),
         cache: Some(ctx.cache.clone()),
+        deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
     };
     (env, ctx)
 }
