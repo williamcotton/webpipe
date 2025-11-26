@@ -12,6 +12,26 @@ use crate::{
     runtime::context::CacheStore,
 };
 
+/// Represents different execution modes for pipeline steps
+#[derive(Debug)]
+enum ExecutionMode {
+    /// Standard synchronous middleware execution
+    Standard,
+    /// Asynchronous execution - spawn task with given name
+    Async(String),
+    /// Join operation - wait for async tasks
+    Join,
+    /// Recursive pipeline execution
+    Recursive,
+}
+
+/// Result from executing a single step
+struct StepResult {
+    value: Value,
+    content_type: String,
+    status_code: Option<u16>,
+}
+
 /// Public alias for the complex future type returned by pipeline execution functions.
 pub type PipelineExecFuture<'a> = Pin<
     Box<
@@ -324,6 +344,187 @@ fn all_remaining_steps_will_be_skipped(
     true // All remaining steps will be skipped
 }
 
+/// Determine the execution mode for a step
+fn detect_execution_mode(name: &str, tags: &[crate::ast::Tag]) -> ExecutionMode {
+    // Check for async tag first
+    if let Some(async_name) = get_async_tag(tags) {
+        return ExecutionMode::Async(async_name);
+    }
+
+    // Check for special middleware types
+    match name {
+        "join" => ExecutionMode::Join,
+        "pipeline" => ExecutionMode::Recursive,
+        _ => ExecutionMode::Standard,
+    }
+}
+
+/// Handle join operation - wait for async tasks and merge results
+async fn handle_join(
+    env: &ExecutionEnv,
+    config: &str,
+    input: Value,
+) -> Result<StepResult, WebPipeError> {
+    // Parse task names from config
+    let task_names = parse_join_task_names(config)?;
+
+    // Wait for all async tasks
+    let mut async_results = serde_json::Map::new();
+    for task_name in task_names {
+        if let Some(handle) = env.async_registry.take(&task_name) {
+            match handle.await {
+                Ok(Ok(result)) => {
+                    async_results.insert(task_name, result);
+                }
+                Ok(Err(e)) => {
+                    // Task failed - store error representation
+                    async_results.insert(task_name, serde_json::json!({
+                        "error": e.to_string()
+                    }));
+                }
+                Err(e) => {
+                    // Join error (task panicked)
+                    async_results.insert(task_name, serde_json::json!({
+                        "error": format!("Task panicked: {}", e)
+                    }));
+                }
+            }
+        }
+    }
+
+    // Merge results into input under .async key
+    let mut result = input.clone();
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("async".to_string(), Value::Object(async_results));
+    }
+
+    Ok(StepResult {
+        value: result,
+        content_type: "application/json".to_string(),
+        status_code: None,
+    })
+}
+
+/// Spawn an async task without waiting for it
+fn spawn_async_step(
+    env: &ExecutionEnv,
+    name: &str,
+    config: &str,
+    input: Value,
+    async_name: String,
+) {
+    let env_clone = env.clone();
+    let name_clone = name.to_string();
+    let config_clone = config.to_string();
+    let input_snapshot = input;
+
+    let handle = tokio::spawn(async move {
+        let (effective_config, effective_input, _auto_named) =
+            resolve_config_and_autoname(&env_clone.variables, &name_clone, &config_clone, &input_snapshot);
+
+        if name_clone == "pipeline" {
+            let pipeline_name = effective_config.trim();
+            if let Some(p) = env_clone.named_pipelines.get(pipeline_name) {
+                let (val, _ct, _st) = execute_pipeline(&env_clone, p, effective_input.clone()).await?;
+                Ok(val)
+            } else {
+                Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
+            }
+        } else {
+            env_clone.invoker.call(&name_clone, &effective_config, &effective_input, &env_clone).await
+        }
+    });
+
+    env.async_registry.register(async_name, handle);
+}
+
+/// Execute a named pipeline recursively
+async fn handle_recursive_pipeline(
+    env: &ExecutionEnv,
+    config: &str,
+    input: Value,
+) -> Result<StepResult, WebPipeError> {
+    let pipeline_name = config.trim();
+    if let Some(pipeline) = env.named_pipelines.get(pipeline_name) {
+        let (value, content_type, status_code) = execute_pipeline(env, pipeline, input).await?;
+        Ok(StepResult {
+            value,
+            content_type,
+            status_code,
+        })
+    } else {
+        Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
+    }
+}
+
+/// Execute standard middleware
+async fn handle_standard_execution(
+    env: &ExecutionEnv,
+    name: &str,
+    config: &str,
+    input: &Value,
+) -> Result<StepResult, WebPipeError> {
+    let value = env.invoker.call(name, config, input, env).await?;
+
+    // Special case: handlebars sets HTML content type
+    let content_type = if name == "handlebars" {
+        "text/html".to_string()
+    } else {
+        "application/json".to_string()
+    };
+
+    Ok(StepResult {
+        value,
+        content_type,
+        status_code: None,
+    })
+}
+
+/// Merge step result into pipeline state
+fn merge_step_result(
+    _current_input: Value,
+    effective_input: &Value,
+    step_result: StepResult,
+    is_effective_last_step: bool,
+    auto_named: bool,
+    middleware_name: &str,
+    current_content_type: String,
+) -> (Value, String, Option<u16>) {
+    let StepResult { value: result, content_type: step_content_type, status_code: step_status } = step_result;
+
+    // Determine new input: if last step, use result directly; otherwise merge
+    let mut next_input = if is_effective_last_step {
+        result
+    } else {
+        merge_values_preserving_input(effective_input, &result)
+    };
+
+    // Clean up auto-named resultName
+    if auto_named {
+        if let Some(obj) = next_input.as_object_mut() {
+            obj.remove("resultName");
+        }
+    }
+
+    // Determine content type
+    let next_content_type = if middleware_name == "handlebars" {
+        "text/html".to_string()
+    } else if middleware_name == "pipeline" && is_effective_last_step {
+        step_content_type
+    } else {
+        current_content_type
+    };
+
+    // Propagate status code if last step
+    let next_status = if is_effective_last_step {
+        step_status
+    } else {
+        None
+    };
+
+    (next_input, next_content_type, next_status)
+}
+
 pub fn execute_pipeline<'a>(
     env: &'a ExecutionEnv,
     pipeline: &'a Pipeline,
@@ -335,126 +536,65 @@ pub fn execute_pipeline<'a>(
 
         for (idx, step) in pipeline.steps.iter().enumerate() {
             let is_last_step = idx + 1 == pipeline.steps.len();
+
             match step {
                 PipelineStep::Regular { name, config, config_type: _, tags } => {
-                    // Check if this step should execute based on tags
+                    // 1. Check Guards (tags/flags)
                     if !should_execute_step(tags, env, &input) {
-                        continue; // Skip this step
-                    }
-
-                    // Check if this step should run asynchronously
-                    if let Some(async_name) = get_async_tag(tags) {
-                        // Spawn async task with current state snapshot
-                        let env_clone = env.clone();
-                        let name_clone = name.clone();
-                        let config_clone = config.clone();
-                        let input_snapshot = input.clone();
-
-                        let handle = tokio::spawn(async move {
-                            let (effective_config, effective_input, _auto_named) =
-                                resolve_config_and_autoname(&env_clone.variables, &name_clone, &config_clone, &input_snapshot);
-
-                            if name_clone == "pipeline" {
-                                let pipeline_name = effective_config.trim();
-                                if let Some(p) = env_clone.named_pipelines.get(pipeline_name) {
-                                    let (val, _ct, _st) = execute_pipeline(&env_clone, p, effective_input.clone()).await?;
-                                    Ok(val)
-                                } else {
-                                    Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
-                                }
-                            } else {
-                                env_clone.invoker.call(&name_clone, &effective_config, &effective_input, &env_clone).await
-                            }
-                        });
-
-                        env.async_registry.register(async_name, handle);
-                        // Continue to next step without modifying input
                         continue;
                     }
 
+                    // 2. Determine Execution Mode
+                    let mode = detect_execution_mode(name, tags);
+
+                    // Handle async execution separately (no state merge needed)
+                    if let ExecutionMode::Async(async_name) = mode {
+                        spawn_async_step(env, name, config, input.clone(), async_name);
+                        continue;
+                    }
+
+                    // Resolve configuration and handle auto-naming
                     let (effective_config, effective_input, auto_named) =
                         resolve_config_and_autoname(&env.variables, name, config, &input);
 
-                    // Special handling for join middleware
-                    let exec_result: Result<(Value, Option<u16>, String), WebPipeError> = if name == "join" {
-                        // Parse task names from config
-                        let task_names = parse_join_task_names(&effective_config)?;
-
-                        // Wait for all async tasks
-                        let mut async_results = serde_json::Map::new();
-                        for task_name in task_names {
-                            if let Some(handle) = env.async_registry.take(&task_name) {
-                                match handle.await {
-                                    Ok(Ok(result)) => {
-                                        async_results.insert(task_name, result);
-                                    }
-                                    Ok(Err(e)) => {
-                                        // Task failed - store error representation
-                                        async_results.insert(task_name, serde_json::json!({
-                                            "error": e.to_string()
-                                        }));
-                                    }
-                                    Err(e) => {
-                                        // Join error (task panicked)
-                                        async_results.insert(task_name, serde_json::json!({
-                                            "error": format!("Task panicked: {}", e)
-                                        }));
-                                    }
-                                }
-                            } else {
-                                // Task not found - could be a warning but we'll skip it
-                                // In dev mode, this could log a warning
-                            }
+                    // 3. Execute Strategy
+                    let step_result = match mode {
+                        ExecutionMode::Join => {
+                            handle_join(env, &effective_config, effective_input.clone()).await?
                         }
-
-                        // Merge results into input under .async key
-                        let mut result = effective_input.clone();
-                        if let Some(obj) = result.as_object_mut() {
-                            obj.insert("async".to_string(), Value::Object(async_results));
+                        ExecutionMode::Recursive => {
+                            handle_recursive_pipeline(env, &effective_config, effective_input.clone()).await?
                         }
-                        Ok((result, None, content_type.clone()))
-                    } else if name == "pipeline" {
-                        let name = effective_config.trim();
-                        if let Some(p) = env.named_pipelines.get(name) {
-                            let (val, ct, st) = execute_pipeline(env, p, effective_input.clone()).await?;
-                            Ok((val, st, ct))
-                        } else {
-                            Err(WebPipeError::PipelineNotFound(name.to_string()))
+                        ExecutionMode::Standard => {
+                            handle_standard_execution(env, name, &effective_config, &effective_input).await?
                         }
-                    } else {
-                        let val = env.invoker.call(name, &effective_config, &effective_input, env).await?;
-                        Ok((val, None, content_type.clone()))
+                        ExecutionMode::Async(_) => unreachable!("Async handled above"),
                     };
 
-                    match exec_result {
-                        Ok((result, sub_status, sub_content_type)) => {
-                            // 1. CHECK FOR STOP SIGNAL (Cache Hit)
-                            // If cache middleware returned a hit, return the cached value immediately
-                            if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&result) {
-                                // Use cached content_type if provided, otherwise use sub_content_type
-                                let final_content_type = cached_content_type.unwrap_or(sub_content_type);
-                                return Ok((cached_val, final_content_type, sub_status));
-                            }
+                    // 4. Handle Signals (Cache hits, etc)
+                    if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&step_result.value) {
+                        let final_content_type = cached_content_type.unwrap_or(step_result.content_type);
+                        return Ok((cached_val, final_content_type, step_result.status_code));
+                    }
 
-                            // Check if this is the effective last step (either last in array, or all remaining steps will be skipped)
-                            let is_effective_last_step = is_last_step || all_remaining_steps_will_be_skipped(&pipeline.steps, idx, env, &input);
+                    // 5. Merge State
+                    let is_effective_last_step = is_last_step
+                        || all_remaining_steps_will_be_skipped(&pipeline.steps, idx, env, &input);
 
-                            let mut next_input = if is_effective_last_step { result } else { merge_values_preserving_input(&effective_input, &result) };
-                            if auto_named {
-                                if let Some(obj) = next_input.as_object_mut() { obj.remove("resultName"); }
-                            }
-                            input = next_input;
+                    let (next_input, next_content_type, next_status) = merge_step_result(
+                        input,
+                        &effective_input,
+                        step_result,
+                        is_effective_last_step,
+                        auto_named,
+                        name,
+                        content_type,
+                    );
 
-                            if name == "handlebars" {
-                                content_type = "text/html".to_string();
-                            } else if name == "pipeline" && is_effective_last_step {
-                                content_type = sub_content_type;
-                            }
-                            if is_effective_last_step { if let Some(s) = sub_status { status_code_out = Some(s); } }
-                        }
-                        Err(e) => {
-                            return Err(WebPipeError::MiddlewareExecutionError(e.to_string()));
-                        }
+                    input = next_input;
+                    content_type = next_content_type;
+                    if let Some(status) = next_status {
+                        status_code_out = Some(status);
                     }
                 }
                 PipelineStep::Result { branches } => {
