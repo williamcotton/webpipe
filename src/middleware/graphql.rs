@@ -47,7 +47,7 @@ impl GraphQLMiddleware {
 
 #[async_trait]
 impl Middleware for GraphQLMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
         // Get the pre-compiled GraphQL runtime
         let runtime = self.ctx.graphql
             .as_ref()
@@ -168,12 +168,11 @@ mod tests {
             named_pipelines: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(crate::executor::RealInvoker::new(Arc::new(crate::middleware::MiddlewareRegistry::default()))),
             environment: None,
-            async_registry: crate::executor::AsyncTaskRegistry::new(),
-            flags: Arc::new(std::collections::HashMap::new()),
-            cache: None,
-            deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            cache: crate::runtime::context::CacheStore::new(8, 60),
+            rate_limit: crate::runtime::context::RateLimitStore::new(1000),
         };
-        let result = rt.block_on(middleware.execute("query { test }", &input, &env));
+        let mut req_ctx = crate::executor::RequestContext::new();
+        let result = rt.block_on(middleware.execute("query { test }", &input, &env, &mut req_ctx));
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No GraphQL schema"));

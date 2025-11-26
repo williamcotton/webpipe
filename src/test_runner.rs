@@ -84,11 +84,11 @@ struct MockingInvoker {
 
 #[async_trait::async_trait]
 impl MiddlewareInvoker for MockingInvoker {
-    async fn call(&self, name: &str, cfg: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+    async fn call(&self, name: &str, cfg: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
         if let Some(mock_val) = self.mocks.get_middleware_mock(name, input) {
             return Ok(mock_val.clone());
         }
-        self.registry.execute(name, cfg, input, _env).await
+        self.registry.execute(name, cfg, input, _env, _ctx).await
     }
 }
 
@@ -259,10 +259,11 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                 named_pipelines: Arc::new(named),
                                 invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                                 environment: None,
-                                async_registry: crate::executor::AsyncTaskRegistry::new(),
-                                flags: Arc::new(HashMap::new()),
-                                cache: None,
-                                deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
+                                
+                                
+                                cache: crate::runtime::context::CacheStore::new(8, 60),
+                    rate_limit: crate::runtime::context::RateLimitStore::new(1000),
+                                
                             };
 
                             // Pipeline-level mock when route uses a named pipeline
@@ -270,11 +271,13 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                 if let Some(mock) = mocks.get_pipeline_mock(name) {
                                     (200u16, mock.clone(), "application/json".to_string(), true, String::new())
                                 } else {
-                                    let (out, ct, s) = crate::executor::execute_pipeline(&env, selected_pipeline, input).await?;
+                                    let ctx = crate::executor::RequestContext::new();
+                    let (out, ct, s, _ctx) = crate::executor::execute_pipeline(&env, selected_pipeline, input, ctx).await?;
                                     (s.unwrap_or(200u16), out, ct, true, String::new())
                                 }
                             } else {
-                                let (out, ct, s) = crate::executor::execute_pipeline(&env, selected_pipeline, input).await?;
+                                let ctx = crate::executor::RequestContext::new();
+                    let (out, ct, s, _ctx) = crate::executor::execute_pipeline(&env, selected_pipeline, input, ctx).await?;
                                 (s.unwrap_or(200u16), out, ct, true, String::new())
                             }
                         }
@@ -302,12 +305,14 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             named_pipelines: Arc::new(named),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             environment: None,
-                            async_registry: crate::executor::AsyncTaskRegistry::new(),
-                            flags: Arc::new(HashMap::new()),
-                            cache: None,
-                                deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
+                            
+                            
+                            cache: crate::runtime::context::CacheStore::new(8, 60),
+                    rate_limit: crate::runtime::context::RateLimitStore::new(1000),
+                                
                         };
-                        let (out, ct, status_opt) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input).await?;
+                        let ctx = crate::executor::RequestContext::new();
+                        let (out, ct, status_opt, _ctx) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input, ctx).await?;
                         (status_opt.unwrap_or(200u16), out, ct, true, String::new())
                     }
                 }
@@ -331,12 +336,14 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             named_pipelines: Arc::new(named),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             environment: None,
-                            async_registry: crate::executor::AsyncTaskRegistry::new(),
-                            flags: Arc::new(HashMap::new()),
-                            cache: None,
-                                deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
+                            
+                            
+                            cache: crate::runtime::context::CacheStore::new(8, 60),
+                    rate_limit: crate::runtime::context::RateLimitStore::new(1000),
+                                
                         };
-                        let (out, ct, status_opt) = crate::executor::execute_pipeline(&env, &pipeline, input).await?;
+                        let ctx = crate::executor::RequestContext::new();
+                        let (out, ct, status_opt, _ctx) = crate::executor::execute_pipeline(&env, &pipeline, input, ctx).await?;
                         (status_opt.unwrap_or(200u16), out, ct, true, String::new())
                     }
                 }

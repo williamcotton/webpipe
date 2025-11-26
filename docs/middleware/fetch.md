@@ -11,7 +11,7 @@ Inputs:
 - `resultName` (to place under `.data.<name>`)
 
 Caching:
-- Respects `_metadata.cache` set by `cache` middleware.
+- Use the `cache` middleware before `fetch` to enable response caching.
 - Cache key from `keyTemplate` or an automatic hash of method/url/headers/body.
 
 Errors: `networkError`, `timeoutError`, `httpError`.

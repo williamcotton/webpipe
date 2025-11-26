@@ -74,10 +74,8 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
         named_pipelines: Arc::new(named),
         invoker: Arc::new(RealInvoker::new(registry)),
         environment: None,
-        async_registry: webpipe::executor::AsyncTaskRegistry::new(),
-        flags: Arc::new(HashMap::new()),
-        cache: Some(ctx.cache.clone()),
-        deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
+        cache: ctx.cache.clone(),
+        rate_limit: ctx.rate_limit.clone(),
     };
     (env, ctx)
 }
@@ -152,7 +150,7 @@ async fn pg_middleware_select_update_insert() {
         .unwrap()
         .pipeline
         .clone();
-    let (out, _ct, _st) = execute_pipeline(&env, &p_select, serde_json::json!({"resultName":"s"}))
+    let (out, _ct, _st, _ctx) = execute_pipeline(&env, &p_select, serde_json::json!({"resultName":"s"}), webpipe::executor::RequestContext::new())
         .await
         .unwrap();
     assert_eq!(out["data"]["s"]["rowCount"], serde_json::json!(1));
@@ -166,7 +164,7 @@ async fn pg_middleware_select_update_insert() {
         .unwrap()
         .pipeline
         .clone();
-    let (out, _ct, _st) = execute_pipeline(&env, &p_insert, serde_json::json!({"resultName":"ins"}))
+    let (out, _ct, _st, _ctx) = execute_pipeline(&env, &p_insert, serde_json::json!({"resultName":"ins"}), webpipe::executor::RequestContext::new())
         .await
         .unwrap();
     assert_eq!(out["data"]["ins"]["rowCount"], serde_json::json!(1));
@@ -179,7 +177,7 @@ async fn pg_middleware_select_update_insert() {
         .unwrap()
         .pipeline
         .clone();
-    let (out, _ct, _st) = execute_pipeline(&env, &p_update, serde_json::json!({}))
+    let (out, _ct, _st, _ctx) = execute_pipeline(&env, &p_update, serde_json::json!({}), webpipe::executor::RequestContext::new())
         .await
         .unwrap();
     assert!(out["data"]["rowCount"].as_u64().unwrap() >= 1);
@@ -216,7 +214,7 @@ async fn auth_register_login_required_logout_flow() {
         .pipeline
         .clone();
     let body = serde_json::json!({"body": {"login": "alice", "email": "alice@example.com", "password": "pw"}});
-    let (reg_out, _ct, _st) = execute_pipeline(&env, &p_reg, body).await.unwrap();
+    let (reg_out, _ct, _st, _ctx) = execute_pipeline(&env, &p_reg, body, webpipe::executor::RequestContext::new()).await.unwrap();
     assert_eq!(reg_out["user"]["login"], serde_json::json!("alice"));
 
     // Login
@@ -228,7 +226,7 @@ async fn auth_register_login_required_logout_flow() {
         .pipeline
         .clone();
     let body = serde_json::json!({"body": {"login": "alice", "password": "pw"}});
-    let (login_out, _ct, _st) = execute_pipeline(&env, &p_login, body).await.unwrap();
+    let (login_out, _ct, _st, _ctx) = execute_pipeline(&env, &p_login, body, webpipe::executor::RequestContext::new()).await.unwrap();
     let set_cookies = login_out["setCookies"].as_array().unwrap();
     let token = extract_token_from_set_cookie(set_cookies[0].as_str().unwrap()).expect("token");
 
@@ -241,7 +239,7 @@ async fn auth_register_login_required_logout_flow() {
         .pipeline
         .clone();
     let req_input = serde_json::json!({"cookies": {"wp_session": token}});
-    let (required_out, _ct, _st) = execute_pipeline(&env, &p_req, req_input).await.unwrap();
+    let (required_out, _ct, _st, _ctx) = execute_pipeline(&env, &p_req, req_input, webpipe::executor::RequestContext::new()).await.unwrap();
     assert_eq!(required_out["user"]["login"], serde_json::json!("alice"));
 
     // Logout
@@ -252,7 +250,7 @@ async fn auth_register_login_required_logout_flow() {
         .unwrap()
         .pipeline
         .clone();
-    let (logout_out, _ct, _st) = execute_pipeline(&env, &p_logout, serde_json::json!({"cookies": {"wp_session": token}})).await.unwrap();
+    let (logout_out, _ct, _st, _ctx) = execute_pipeline(&env, &p_logout, serde_json::json!({"cookies": {"wp_session": token}}), webpipe::executor::RequestContext::new()).await.unwrap();
     let clear = logout_out["setCookies"][0].as_str().unwrap();
     assert!(clear.contains("Max-Age=0"));
 }

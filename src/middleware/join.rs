@@ -1,30 +1,21 @@
 use crate::error::WebPipeError;
 use crate::middleware::Middleware;
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 #[derive(Debug)]
 pub struct JoinMiddleware;
 
 #[async_trait]
 impl Middleware for JoinMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
-        // Parse config to get list of async task names
-        let task_names = parse_join_config(config)?;
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+        // Validate config upfront to fail fast on bad syntax
+        let _task_names = parse_join_config(config)?;
 
-        // Get async registry from input (passed by executor)
-        // For now, return input unchanged - the actual join logic will be
-        // handled in the executor since it has access to the async_registry
-
-        // This middleware is a marker - the executor will intercept it
-        let mut result = input.clone();
-        if let Some(obj) = result.as_object_mut() {
-            let meta_entry = obj.entry("_metadata").or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if let Some(meta_obj) = meta_entry.as_object_mut() {
-                meta_obj.insert("join_tasks".to_string(), json!(task_names));
-            }
-        }
-        Ok(result)
+        // This middleware is a marker - the executor intercepts "join" steps
+        // and handles them via handle_join() which reads the config directly.
+        // Just return input unchanged.
+        Ok(input.clone())
     }
 }
 

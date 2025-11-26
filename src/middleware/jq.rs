@@ -49,7 +49,7 @@ impl Default for JqMiddleware {
 
 #[async_trait]
 impl super::Middleware for JqMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
         let input_json = serde_json::to_string(input)
             .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Input serialization error: {}", e)))?;
         let result_json = self.execute_jq(config, &input_json)?;
@@ -67,13 +67,13 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
             Ok(Value::Null)
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
-        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
-        use parking_lot::Mutex;
+        use crate::executor::ExecutionEnv;
+        use crate::runtime::context::{CacheStore, RateLimitStore};
         use std::sync::Arc;
         use std::collections::HashMap;
 
@@ -82,10 +82,8 @@ mod tests {
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
             environment: None,
-            async_registry: AsyncTaskRegistry::new(),
-            flags: Arc::new(HashMap::new()),
-            cache: None,
-            deferred: Arc::new(Mutex::new(Vec::new())),
+            cache: CacheStore::new(8, 60),
+            rate_limit: RateLimitStore::new(1000),
         }
     }
 
@@ -94,10 +92,11 @@ mod tests {
         let jq = JqMiddleware::new();
         let input = serde_json::json!({"a":1});
         let env = dummy_env();
-        let out1 = jq.execute(".a", &input, &env).await.unwrap();
+        let mut ctx = crate::executor::RequestContext::new();
+        let out1 = jq.execute(".a", &input, &env, &mut ctx).await.unwrap();
         assert_eq!(out1, serde_json::json!(1));
         // second run should hit cache path implicitly; just ensure same result
-        let out2 = jq.execute(".a", &input, &env).await.unwrap();
+        let out2 = jq.execute(".a", &input, &env, &mut ctx).await.unwrap();
         assert_eq!(out2, serde_json::json!(1));
     }
 
@@ -106,7 +105,8 @@ mod tests {
         let jq = JqMiddleware::new();
         let input = serde_json::json!({});
         let env = dummy_env();
-        let err = jq.execute(".[] | ", &input, &env).await.err().unwrap();
+        let mut ctx = crate::executor::RequestContext::new();
+        let err = jq.execute(".[] | ", &input, &env, &mut ctx).await.err().unwrap();
         // Ensure it's wrapped as MiddlewareExecutionError string
         assert!(format!("{}", err).contains("JQ"));
     }

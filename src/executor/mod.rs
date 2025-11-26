@@ -4,12 +4,13 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::task::JoinHandle;
 use parking_lot::Mutex;
+use async_recursion::async_recursion;
 
 use crate::{
     ast::{Pipeline, PipelineStep, Variable},
     error::WebPipeError,
     middleware::MiddlewareRegistry,
-    runtime::context::CacheStore,
+    runtime::context::{CacheStore, RateLimitStore},
 };
 
 /// Represents different execution modes for pipeline steps
@@ -41,7 +42,7 @@ pub type PipelineExecFuture<'a> = Pin<
 
 #[async_trait]
 pub trait MiddlewareInvoker: Send + Sync {
-    async fn call(&self, name: &str, cfg: &str, input: &Value, env: &ExecutionEnv) -> Result<Value, WebPipeError>;
+    async fn call(&self, name: &str, cfg: &str, input: &Value, env: &ExecutionEnv, ctx: &mut RequestContext) -> Result<Value, WebPipeError>;
 }
 
 /// Registry for async tasks spawned with @async tag
@@ -66,37 +67,105 @@ impl AsyncTaskRegistry {
     }
 }
 
-#[derive(Clone)]
-pub struct ExecutionEnv {
-    pub variables: Arc<Vec<Variable>>, // for variable resolution and auto-naming
-    pub named_pipelines: Arc<HashMap<String, Arc<Pipeline>>>,
-    pub invoker: Arc<dyn MiddlewareInvoker>,
-    pub environment: Option<String>, // e.g. "production", "development", "staging"
-    pub async_registry: AsyncTaskRegistry, // registry for @async tasks
-    pub flags: Arc<HashMap<String, bool>>, // feature flags for @flag() tag checking
-    pub cache: Option<CacheStore>, // cache store for pipeline-level caching
-
-    // Store actions to run at the end of the request
-    // The closure takes the final pipeline result and content_type as arguments
-    pub deferred: Arc<Mutex<Vec<Box<dyn FnOnce(&Value, &str) + Send>>>>,
+/// Cache policy configuration for middleware communication
+#[derive(Clone, Debug)]
+pub struct CachePolicy {
+    pub enabled: bool,
+    pub ttl: u64,
+    pub key_template: Option<String>,
 }
 
-impl ExecutionEnv {
-    pub fn defer<F>(&self, f: F)
-    where
-        F: FnOnce(&Value, &str) + Send + 'static,
-    {
-        self.deferred.lock().push(Box::new(f));
-    }
+/// Log configuration for logging middleware
+#[derive(Clone, Debug)]
+pub struct LogConfig {
+    pub level: String,
+    pub include_body: bool,
+    pub include_headers: bool,
+}
 
-    // Helper to execute all deferred actions
-    pub fn run_deferred(&self, final_result: &Value, content_type: &str) {
-        let mut actions = self.deferred.lock();
-        // Drain allows us to take ownership of the closures
-        for action in actions.drain(..) {
-            action(final_result, content_type);
+/// Rate limit status for headers/logging
+#[derive(Clone, Debug)]
+pub struct RateLimitStatus {
+    pub allowed: bool,
+    pub current_count: u64,
+    pub limit: u64,
+    pub retry_after_secs: u64,
+    /// The computed key used for rate limiting
+    pub key: String,
+    /// Optional semantic scope (e.g., "route", "global", "custom")
+    pub scope: Option<String>,
+}
+
+#[derive(Default)]
+pub struct RequestMetadata {
+    pub start_time: Option<std::time::Instant>,
+    pub cache_policy: Option<CachePolicy>,
+    pub log_config: Option<LogConfig>,
+    pub rate_limit_status: Option<RateLimitStatus>,
+}
+
+/// Per-request mutable context (The Backpack)
+pub struct RequestContext {
+    /// Feature flags for this request (extracted from headers or auth, NOT from user JSON)
+    pub feature_flags: HashMap<String, bool>,
+
+    /// Async task registry for @async steps
+    pub async_registry: AsyncTaskRegistry,
+
+    /// Deferred actions to run at pipeline completion
+    pub deferred: Vec<Box<dyn FnOnce(&Value, &str, &ExecutionEnv) + Send>>,
+
+    /// Typed metadata for middleware communication
+    pub metadata: RequestMetadata,
+}
+
+impl RequestContext {
+    pub fn new() -> Self {
+        Self {
+            feature_flags: HashMap::new(),
+            async_registry: AsyncTaskRegistry::new(),
+            deferred: Vec::new(),
+            metadata: RequestMetadata::default(),
         }
     }
+
+    /// Register a deferred action to run at pipeline completion
+    pub fn defer<F>(&mut self, f: F)
+    where
+        F: FnOnce(&Value, &str, &ExecutionEnv) + Send + 'static,
+    {
+        self.deferred.push(Box::new(f));
+    }
+
+    /// Execute all deferred actions (called by server after pipeline completes)
+    pub fn run_deferred(mut self, final_result: &Value, content_type: &str, env: &ExecutionEnv) {
+        for action in self.deferred.drain(..) {
+            action(final_result, content_type, env);
+        }
+    }
+}
+
+/// Global execution environment (The Toolbelt)
+/// Immutable, shared across all requests
+#[derive(Clone)]
+pub struct ExecutionEnv {
+    /// Variables for resolution and auto-naming
+    pub variables: Arc<Vec<Variable>>,
+
+    /// Named pipelines registry
+    pub named_pipelines: Arc<HashMap<String, Arc<Pipeline>>>,
+
+    /// Middleware invoker
+    pub invoker: Arc<dyn MiddlewareInvoker>,
+
+    /// Environment name (e.g. "production", "development", "staging")
+    pub environment: Option<String>,
+
+    /// Global cache store (shared across requests)
+    pub cache: CacheStore,
+
+    /// Global rate limit store (shared across requests)
+    pub rate_limit: RateLimitStore,
 }
 
 #[derive(Clone)]
@@ -110,8 +179,8 @@ impl RealInvoker {
 
 #[async_trait]
 impl MiddlewareInvoker for RealInvoker {
-    async fn call(&self, name: &str, cfg: &str, input: &Value, env: &ExecutionEnv) -> Result<Value, WebPipeError> {
-        self.registry.execute(name, cfg, input, env).await
+    async fn call(&self, name: &str, cfg: &str, input: &Value, env: &ExecutionEnv, ctx: &mut RequestContext) -> Result<Value, WebPipeError> {
+        self.registry.execute(name, cfg, input, env, ctx).await
     }
 }
 
@@ -162,28 +231,28 @@ fn extract_error_type(input: &Value) -> Option<String> {
     None
 }
 
-fn should_execute_step(tags: &[crate::ast::Tag], env: &ExecutionEnv, input: &Value) -> bool {
-    tags.iter().all(|tag| check_tag(tag, env, input))
+fn should_execute_step(tags: &[crate::ast::Tag], env: &ExecutionEnv, ctx: &RequestContext, input: &Value) -> bool {
+    tags.iter().all(|tag| check_tag(tag, env, ctx, input))
 }
 
-fn check_tag(tag: &crate::ast::Tag, env: &ExecutionEnv, _input: &Value) -> bool {
+fn check_tag(tag: &crate::ast::Tag, env: &ExecutionEnv, ctx: &RequestContext, _input: &Value) -> bool {
     match tag.name.as_str() {
         "env" => check_env_tag(tag, env),
         "async" => true, // async doesn't affect execution, just how it runs
-        "flag" => check_flag_tag(tag, env),
+        "flag" => check_flag_tag(tag, ctx),
         "needs" => true, // @needs is only for static analysis, doesn't affect runtime
         _ => true,       // unknown tags don't prevent execution
     }
 }
 
-fn check_flag_tag(tag: &crate::ast::Tag, env: &ExecutionEnv) -> bool {
+fn check_flag_tag(tag: &crate::ast::Tag, ctx: &RequestContext) -> bool {
     if tag.args.is_empty() {
         return true; // Invalid @flag() tag without args, don't prevent execution
     }
 
     // Check all flag arguments - all must be enabled for step to execute
     for flag_name in &tag.args {
-        let is_enabled = env.flags.get(flag_name.as_str())
+        let is_enabled = ctx.feature_flags.get(flag_name.as_str())
             .copied()
             .unwrap_or(false); // Default: False (Fail Closed)
 
@@ -297,8 +366,10 @@ fn select_branch<'a>(
         .find(|b| matches!(b.branch_type, ResultBranchType::Default))
 }
 
+#[async_recursion]
 async fn handle_result_step<'a>(
     env: &'a ExecutionEnv,
+    ctx: &'a mut RequestContext,
     branches: &'a [crate::ast::ResultBranch],
     input: Value,
     mut content_type: String,
@@ -307,7 +378,7 @@ async fn handle_result_step<'a>(
     let selected = select_branch(branches, &error_type);
     if let Some(branch) = selected {
         let inherited_cookies = input.get("setCookies").cloned();
-        let (mut result, branch_content_type, _status) = execute_pipeline(env, &branch.pipeline, input).await?;
+        let (mut result, branch_content_type, _status) = execute_pipeline_internal(env, &branch.pipeline, input, ctx).await?;
         if inherited_cookies.is_some() {
             if let Some(obj) = result.as_object_mut() {
                 if !obj.contains_key("setCookies") {
@@ -327,12 +398,13 @@ fn all_remaining_steps_will_be_skipped(
     steps: &[PipelineStep],
     current_idx: usize,
     env: &ExecutionEnv,
+    ctx: &RequestContext,
     input: &Value
 ) -> bool {
     for step in steps.iter().skip(current_idx + 1) {
         match step {
             PipelineStep::Regular { tags, .. } => {
-                if should_execute_step(tags, env, input) {
+                if should_execute_step(tags, env, ctx, input) {
                     return false; // Found a step that will execute
                 }
             }
@@ -361,7 +433,7 @@ fn detect_execution_mode(name: &str, tags: &[crate::ast::Tag]) -> ExecutionMode 
 
 /// Handle join operation - wait for async tasks and merge results
 async fn handle_join(
-    env: &ExecutionEnv,
+    ctx: &mut RequestContext,
     config: &str,
     input: Value,
 ) -> Result<StepResult, WebPipeError> {
@@ -371,7 +443,7 @@ async fn handle_join(
     // Wait for all async tasks
     let mut async_results = serde_json::Map::new();
     for task_name in task_names {
-        if let Some(handle) = env.async_registry.take(&task_name) {
+        if let Some(handle) = ctx.async_registry.take(&task_name) {
             match handle.await {
                 Ok(Ok(result)) => {
                     async_results.insert(task_name, result);
@@ -408,6 +480,7 @@ async fn handle_join(
 /// Spawn an async task without waiting for it
 fn spawn_async_step(
     env: &ExecutionEnv,
+    ctx: &mut RequestContext,
     name: &str,
     config: &str,
     input: Value,
@@ -422,49 +495,57 @@ fn spawn_async_step(
         let (effective_config, effective_input, _auto_named) =
             resolve_config_and_autoname(&env_clone.variables, &name_clone, &config_clone, &input_snapshot);
 
+        // Create a new RequestContext for the async task
+        let mut async_ctx = RequestContext::new();
+
         if name_clone == "pipeline" {
             let pipeline_name = effective_config.trim();
             if let Some(p) = env_clone.named_pipelines.get(pipeline_name) {
-                let (val, _ct, _st) = execute_pipeline(&env_clone, p, effective_input.clone()).await?;
+                let (val, _ct, _st, _) = execute_pipeline(&env_clone, p, effective_input.clone(), async_ctx).await?;
                 Ok(val)
             } else {
                 Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
             }
         } else {
-            env_clone.invoker.call(&name_clone, &effective_config, &effective_input, &env_clone).await
+            env_clone.invoker.call(&name_clone, &effective_config, &effective_input, &env_clone, &mut async_ctx).await
         }
     });
 
-    env.async_registry.register(async_name, handle);
+    ctx.async_registry.register(async_name, handle);
 }
 
 /// Execute a named pipeline recursively
-async fn handle_recursive_pipeline(
-    env: &ExecutionEnv,
-    config: &str,
+fn handle_recursive_pipeline<'a>(
+    env: &'a ExecutionEnv,
+    ctx: &'a mut RequestContext,
+    config: &'a str,
     input: Value,
-) -> Result<StepResult, WebPipeError> {
-    let pipeline_name = config.trim();
-    if let Some(pipeline) = env.named_pipelines.get(pipeline_name) {
-        let (value, content_type, status_code) = execute_pipeline(env, pipeline, input).await?;
-        Ok(StepResult {
-            value,
-            content_type,
-            status_code,
-        })
-    } else {
-        Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
-    }
+) -> Pin<Box<dyn Future<Output = Result<StepResult, WebPipeError>> + Send + 'a>> {
+    Box::pin(async move {
+        let pipeline_name = config.trim();
+        if let Some(pipeline) = env.named_pipelines.get(pipeline_name) {
+            // Reuse the same context for recursive pipeline execution
+            let (value, content_type, status_code) = execute_pipeline_internal(env, pipeline, input, ctx).await?;
+            Ok(StepResult {
+                value,
+                content_type,
+                status_code,
+            })
+        } else {
+            Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
+        }
+    })
 }
 
 /// Execute standard middleware
 async fn handle_standard_execution(
     env: &ExecutionEnv,
+    ctx: &mut RequestContext,
     name: &str,
     config: &str,
     input: &Value,
 ) -> Result<StepResult, WebPipeError> {
-    let value = env.invoker.call(name, config, input, env).await?;
+    let value = env.invoker.call(name, config, input, env, ctx).await?;
 
     // Special case: handlebars sets HTML content type
     let content_type = if name == "handlebars" {
@@ -525,86 +606,99 @@ fn merge_step_result(
     (next_input, next_content_type, next_status)
 }
 
-pub fn execute_pipeline<'a>(
+/// Internal pipeline execution that accepts a mutable RequestContext
+#[async_recursion]
+async fn execute_pipeline_internal<'a>(
     env: &'a ExecutionEnv,
     pipeline: &'a Pipeline,
     mut input: Value,
-) -> PipelineExecFuture<'a> {
-    Box::pin(async move {
-        let mut content_type = "application/json".to_string();
-        let mut status_code_out: Option<u16> = None;
+    ctx: &'a mut RequestContext,
+) -> Result<(Value, String, Option<u16>), WebPipeError> {
+    let mut content_type = "application/json".to_string();
+    let mut status_code_out: Option<u16> = None;
 
-        for (idx, step) in pipeline.steps.iter().enumerate() {
-            let is_last_step = idx + 1 == pipeline.steps.len();
+    for (idx, step) in pipeline.steps.iter().enumerate() {
+        let is_last_step = idx + 1 == pipeline.steps.len();
 
-            match step {
-                PipelineStep::Regular { name, config, config_type: _, tags } => {
-                    // 1. Check Guards (tags/flags)
-                    if !should_execute_step(tags, env, &input) {
-                        continue;
-                    }
-
-                    // 2. Determine Execution Mode
-                    let mode = detect_execution_mode(name, tags);
-
-                    // Handle async execution separately (no state merge needed)
-                    if let ExecutionMode::Async(async_name) = mode {
-                        spawn_async_step(env, name, config, input.clone(), async_name);
-                        continue;
-                    }
-
-                    // Resolve configuration and handle auto-naming
-                    let (effective_config, effective_input, auto_named) =
-                        resolve_config_and_autoname(&env.variables, name, config, &input);
-
-                    // 3. Execute Strategy
-                    let step_result = match mode {
-                        ExecutionMode::Join => {
-                            handle_join(env, &effective_config, effective_input.clone()).await?
-                        }
-                        ExecutionMode::Recursive => {
-                            handle_recursive_pipeline(env, &effective_config, effective_input.clone()).await?
-                        }
-                        ExecutionMode::Standard => {
-                            handle_standard_execution(env, name, &effective_config, &effective_input).await?
-                        }
-                        ExecutionMode::Async(_) => unreachable!("Async handled above"),
-                    };
-
-                    // 4. Handle Signals (Cache hits, etc)
-                    if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&step_result.value) {
-                        let final_content_type = cached_content_type.unwrap_or(step_result.content_type);
-                        return Ok((cached_val, final_content_type, step_result.status_code));
-                    }
-
-                    // 5. Merge State
-                    let is_effective_last_step = is_last_step
-                        || all_remaining_steps_will_be_skipped(&pipeline.steps, idx, env, &input);
-
-                    let (next_input, next_content_type, next_status) = merge_step_result(
-                        input,
-                        &effective_input,
-                        step_result,
-                        is_effective_last_step,
-                        auto_named,
-                        name,
-                        content_type,
-                    );
-
-                    input = next_input;
-                    content_type = next_content_type;
-                    if let Some(status) = next_status {
-                        status_code_out = Some(status);
-                    }
+        match step {
+            PipelineStep::Regular { name, config, config_type: _, tags } => {
+                // 1. Check Guards (tags/flags)
+                if !should_execute_step(tags, env, ctx, &input) {
+                    continue;
                 }
-                PipelineStep::Result { branches } => {
-                    return handle_result_step(env, branches, input, content_type).await;
+
+                // 2. Determine Execution Mode
+                let mode = detect_execution_mode(name, tags);
+
+                // Handle async execution separately (no state merge needed)
+                if let ExecutionMode::Async(async_name) = mode {
+                    spawn_async_step(env, ctx, name, config, input.clone(), async_name);
+                    continue;
+                }
+
+                // Resolve configuration and handle auto-naming
+                let (effective_config, effective_input, auto_named) =
+                    resolve_config_and_autoname(&env.variables, name, config, &input);
+
+                // 3. Execute Strategy
+                let step_result = match mode {
+                    ExecutionMode::Join => {
+                        handle_join(ctx, &effective_config, effective_input.clone()).await?
+                    }
+                    ExecutionMode::Recursive => {
+                        handle_recursive_pipeline(env, ctx, &effective_config, effective_input.clone()).await?
+                    }
+                    ExecutionMode::Standard => {
+                        handle_standard_execution(env, ctx, name, &effective_config, &effective_input).await?
+                    }
+                    ExecutionMode::Async(_) => unreachable!("Async handled above"),
+                };
+
+                // 4. Handle Signals (Cache hits, etc)
+                if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&step_result.value) {
+                    let final_content_type = cached_content_type.unwrap_or(step_result.content_type);
+                    return Ok((cached_val, final_content_type, step_result.status_code));
+                }
+
+                // 5. Merge State
+                let is_effective_last_step = is_last_step
+                    || all_remaining_steps_will_be_skipped(&pipeline.steps, idx, env, ctx, &input);
+
+                let (next_input, next_content_type, next_status) = merge_step_result(
+                    input,
+                    &effective_input,
+                    step_result,
+                    is_effective_last_step,
+                    auto_named,
+                    name,
+                    content_type,
+                );
+
+                input = next_input;
+                content_type = next_content_type;
+                if let Some(status) = next_status {
+                    status_code_out = Some(status);
                 }
             }
+            PipelineStep::Result { branches } => {
+                return handle_result_step(env, ctx, branches, input, content_type).await;
+            }
         }
+    }
 
-        Ok((input, content_type, status_code_out))
-    })
+    Ok((input, content_type, status_code_out))
+}
+
+/// Public entry point for pipeline execution
+/// Executes pipeline and returns the context so deferred actions can be run
+pub async fn execute_pipeline<'a>(
+    env: &'a ExecutionEnv,
+    pipeline: &'a Pipeline,
+    input: Value,
+    mut ctx: RequestContext,
+) -> Result<(Value, String, Option<u16>, RequestContext), WebPipeError> {
+    let result = execute_pipeline_internal(env, pipeline, input, &mut ctx).await?;
+    Ok((result.0, result.1, result.2, ctx))
 }
 
 
@@ -617,7 +711,7 @@ mod tests {
     struct StubInvoker;
     #[async_trait]
     impl MiddlewareInvoker for StubInvoker {
-        async fn call(&self, name: &str, cfg: &str, input: &Value, _env: &ExecutionEnv) -> Result<Value, WebPipeError> {
+        async fn call(&self, name: &str, cfg: &str, input: &Value, _env: &ExecutionEnv, _ctx: &mut RequestContext) -> Result<Value, WebPipeError> {
             match name {
                 "handlebars" => Ok(Value::String(format!("<p>{}</p>", cfg))),
                 "echo" => {
@@ -646,10 +740,9 @@ mod tests {
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
             environment: None,
-            async_registry: AsyncTaskRegistry::new(),
-            flags: Arc::new(HashMap::new()),
-            cache: None,
-            deferred: Arc::new(Mutex::new(Vec::new())),
+            
+            cache: CacheStore::new(8, 60),
+            rate_limit: crate::runtime::context::RateLimitStore::new(1000),
         }
     }
 
@@ -671,7 +764,7 @@ mod tests {
                 crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 200, pipeline: Pipeline { steps: vec![] } },
             ]}
         ]};
-        let (out, _ct, status) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert!(out.is_object());
         assert_eq!(status, Some(201));
     }
@@ -686,7 +779,7 @@ mod tests {
                 crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 500, pipeline: Pipeline { steps: vec![] } },
             ]}
         ]};
-        let (_out, _ct, status) = execute_pipeline(&env, &pipeline, input).await.unwrap();
+        let (_out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, input, RequestContext::new()).await.unwrap();
         assert_eq!(status, Some(422));
     }
 
@@ -696,7 +789,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular { name: "handlebars".to_string(), config: "Hello".to_string(), config_type: crate::ast::ConfigType::Quoted, tags: vec![] }
         ]};
-        let (_out, ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (_out, ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert_eq!(ct, "text/html");
     }
 
@@ -707,7 +800,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular { name: "echo".to_string(), config: "myVar".to_string(), config_type: crate::ast::ConfigType::Identifier, tags: vec![] }
         ]};
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert!(out.get("resultName").is_none());
         // Ensure output is an object and not empty
         assert!(out.is_object());
@@ -727,7 +820,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert!(out.is_object());
         assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("test"));
     }
@@ -746,7 +839,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({"initial": "data"})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({"initial": "data"}), RequestContext::new()).await.unwrap();
         // Should return initial input unchanged since step was skipped
         assert_eq!(out.get("initial").and_then(|v| v.as_str()), Some("data"));
         assert!(out.get("message").is_none());
@@ -766,7 +859,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({"initial": "data"})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({"initial": "data"}), RequestContext::new()).await.unwrap();
         // Should skip the debug step in production
         assert!(out.get("debug").is_none());
         assert_eq!(out.get("initial").and_then(|v| v.as_str()), Some("data"));
@@ -786,7 +879,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         // Should execute in development (not production)
         assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("dev"));
     }
@@ -808,7 +901,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         // Should execute: env is production (✓) and env is not staging (✓)
         assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("executed"));
     }
@@ -827,7 +920,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         // When no environment is set, non-negated tags execute
         assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("noenv"));
     }
@@ -848,23 +941,13 @@ mod tests {
         ]};
 
         // No flags in env - should fail closed (skip the step)
-        let (out, _ct, _st) = execute_pipeline(&env_no_flags, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env_no_flags, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert!(out.get("echo").is_none());
 
-        // With flag enabled in env - should execute
-        let mut flags = HashMap::new();
-        flags.insert("beta".to_string(), true);
-        let env_with_flag = ExecutionEnv {
-            variables: Arc::new(vec![]),
-            named_pipelines: Arc::new(HashMap::new()),
-            invoker: Arc::new(StubInvoker),
-            environment: None,
-            async_registry: AsyncTaskRegistry::new(),
-            flags: Arc::new(flags),
-            cache: None,
-            deferred: Arc::new(Mutex::new(Vec::new())),
-        };
-        let (out2, _ct2, _st2) = execute_pipeline(&env_with_flag, &pipeline, serde_json::json!({})).await.unwrap();
+        // With flag enabled in RequestContext - should execute
+        let mut ctx_with_flag = RequestContext::new();
+        ctx_with_flag.feature_flags.insert("beta".to_string(), true);
+        let (out2, _ct2, _st2, _ctx2) = execute_pipeline(&env_no_flags, &pipeline, serde_json::json!({}), ctx_with_flag).await.unwrap();
         assert_eq!(out2.get("echo").and_then(|v| v.as_str()), Some("tagged"));
     }
 
@@ -883,7 +966,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         // @needs tags are for static analysis only, don't prevent execution
         assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("tagged"));
     }
@@ -908,7 +991,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
 
         // The async step should not modify the state
         assert!(out.get("async").is_none());
@@ -936,7 +1019,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
 
         // Check that async results are available under .async.task1
         assert!(out.get("async").is_some());
@@ -972,7 +1055,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
 
         // Check both tasks completed
         let async_obj = out.get("async").unwrap().as_object().unwrap();
@@ -1000,7 +1083,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
 
         let async_obj = out.get("async").unwrap().as_object().unwrap();
         assert_eq!(async_obj.get("a").unwrap().get("data").and_then(|v| v.as_str()), Some("a"));
@@ -1040,7 +1123,7 @@ mod tests {
             }
         ]};
 
-        let (out, _ct, _st) = execute_pipeline(&env, &pipeline, serde_json::json!({})).await.unwrap();
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
 
         // Main state should have counter: 2
         assert_eq!(out.get("counter").and_then(|v| v.as_u64()), Some(2));

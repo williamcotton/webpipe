@@ -7,7 +7,7 @@ pub struct ValidateMiddleware;
 
 #[async_trait]
 impl super::Middleware for ValidateMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
         #[derive(Debug)]
         struct Rule { field: String, kind: String, min: Option<usize>, max: Option<usize> }
 
@@ -104,13 +104,13 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
             Ok(Value::Null)
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
-        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
-        use parking_lot::Mutex;
+        use crate::executor::ExecutionEnv;
+        use crate::runtime::context::{CacheStore, RateLimitStore};
         use std::sync::Arc;
         use std::collections::HashMap;
 
@@ -119,10 +119,8 @@ mod tests {
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
             environment: None,
-            async_registry: AsyncTaskRegistry::new(),
-            flags: Arc::new(HashMap::new()),
-            cache: None,
-            deferred: Arc::new(Mutex::new(Vec::new())),
+            cache: CacheStore::new(8, 60),
+            rate_limit: RateLimitStore::new(1000),
         }
     }
     use super::*;
@@ -132,33 +130,36 @@ mod tests {
     async fn string_min_max_and_missing() {
         let mw = ValidateMiddleware;
         let env = dummy_env();
+        let mut ctx = crate::executor::RequestContext::new();
         let cfg = "{ name: string(2..4) }";
         // missing
-        let out = mw.execute(cfg, &serde_json::json!({"body": {}}), &env).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {}}), &env, &mut ctx).await.unwrap();
         assert_eq!(out["errors"][0]["type"], serde_json::json!("validationError"));
         // too short
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "a"}}), &env).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "a"}}), &env, &mut ctx).await.unwrap();
         assert_eq!(out["errors"][0]["rule"], serde_json::json!("minLength"));
         // too long
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abcde"}}), &env).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abcde"}}), &env, &mut ctx).await.unwrap();
         assert_eq!(out["errors"][0]["rule"], serde_json::json!("maxLength"));
         // ok
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abc"}}), &env).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"name": "abc"}}), &env, &mut ctx).await.unwrap();
         assert!(out.get("errors").is_none());
     }
 
     #[tokio::test]
     async fn email_rule_accepts_and_rejects() {
         let mw = ValidateMiddleware;
+        let env = dummy_env();
+        let mut ctx = crate::executor::RequestContext::new();
         let cfg = "{ email: email }";
         // missing
-        let out = mw.execute(cfg, &serde_json::json!({"body": {}}), &dummy_env()).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {}}), &env, &mut ctx).await.unwrap();
         assert_eq!(out["errors"][0]["type"], serde_json::json!("validationError"));
         // invalid
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "foo"}}), &dummy_env()).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "foo"}}), &env, &mut ctx).await.unwrap();
         assert_eq!(out["errors"][0]["rule"], serde_json::json!("email"));
         // valid
-        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "a@b.com"}}), &dummy_env()).await.unwrap();
+        let out = mw.execute(cfg, &serde_json::json!({"body": {"email": "a@b.com"}}), &env, &mut ctx).await.unwrap();
         assert!(out.get("errors").is_none());
     }
 }

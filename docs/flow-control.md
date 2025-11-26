@@ -37,19 +37,29 @@ GET /checkout
 
 You can define a special `featureFlags` pipeline in your `.wp` files to dynamically calculate flag states for every request. This pipeline runs before the main route handler.
 
-The pipeline must return a JSON object with a `_metadata` field containing a `flags` map.
+The pipeline should return a JSON object with a `flags` map at the root level.
 
 ```wp
 pipeline featureFlags =
   |> jq: `{ 
-      _metadata: {
-        flags: {
-          "use-stripe": (.headers["x-beta-tester"] == "true"),
-          "new-ui": true 
-        }
+      flags: {
+        "use-stripe": (.headers["x-beta-tester"] == "true"),
+        "new-ui": true 
       }
     }`
 
 # Flags are now available for @flag checks
+```
+
+Alternatively, you can use Lua to set flags dynamically via `setFlag()`:
+
+```wp
+pipeline featureFlags =
+  |> lua: ```
+    local isBeta = input.headers and input.headers["x-beta-tester"] == "true"
+    setFlag("use-stripe", isBeta)
+    setFlag("new-ui", true)
+    return input
+  ```
 ```
 

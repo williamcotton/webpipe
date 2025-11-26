@@ -12,7 +12,7 @@ pub struct LogMiddleware;
 
 #[async_trait]
 impl super::Middleware for LogMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
         #[derive(Default)]
         struct StepCfg { level: Option<String>, include_body: Option<bool>, include_headers: Option<bool>, enabled: Option<bool> }
         fn parse_bool(s: &str) -> Option<bool> { match s.trim().to_ascii_lowercase().as_str() { "true" => Some(true), "false" => Some(false), _ => None } }
@@ -66,13 +66,20 @@ impl super::Middleware for LogMiddleware {
             return Ok(input.clone());
         }
 
+        // Store log config in typed context
+        ctx.metadata.log_config = Some(crate::executor::LogConfig {
+            level: level.clone(),
+            include_body,
+            include_headers,
+        });
+
         // Capture start time and request context upfront
         let start_mono_us: u64 = MONO_EPOCH.elapsed().as_micros() as u64;
         let captured_original_request = input.get("originalRequest").cloned();
         let captured_headers = input.get("headers").cloned();
 
         // Register deferred action to log at pipeline end
-        _env.defer(move |final_response, _content_type| {
+        ctx.defer(move |final_response, _content_type, _env_ref| {
             let now_mono_us: u64 = MONO_EPOCH.elapsed().as_micros() as u64;
             let delta_us = now_mono_us.saturating_sub(start_mono_us);
             let duration_ms_f64 = (delta_us as f64) / 1000.0;
@@ -88,7 +95,8 @@ impl super::Middleware for LogMiddleware {
             let mut resp_obj = serde_json::Map::new();
             if include_body {
                 let mut clean = final_response.clone();
-                if let Some(obj) = clean.as_object_mut() { obj.remove("_metadata"); obj.remove("originalRequest"); obj.remove("setCookies"); }
+                // Remove internal fields from logged response body
+                if let Some(obj) = clean.as_object_mut() { obj.remove("originalRequest"); obj.remove("setCookies"); }
                 resp_obj.insert("body".to_string(), clean);
             }
 
@@ -114,13 +122,13 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
             Ok(Value::Null)
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
-        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
-        use parking_lot::Mutex;
+        use crate::executor::ExecutionEnv;
+        use crate::runtime::context::{CacheStore, RateLimitStore};
         use std::sync::Arc;
         use std::collections::HashMap;
 
@@ -129,10 +137,8 @@ mod tests {
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
             environment: None,
-            async_registry: AsyncTaskRegistry::new(),
-            flags: Arc::new(HashMap::new()),
-            cache: None,
-            deferred: Arc::new(Mutex::new(Vec::new())),
+            cache: CacheStore::new(8, 60),
+            rate_limit: RateLimitStore::new(1000),
         }
     }
 
@@ -147,16 +153,17 @@ mod tests {
             "originalRequest": {"method": "GET", "params": {}, "query": {}},
         });
         let env = dummy_env();
-        let out = mw.execute("level: info, includeHeaders: true, includeBody: false, enabled: true", &input, &env).await.unwrap();
+        let mut ctx = crate::executor::RequestContext::new();
+        let out = mw.execute("level: info, includeHeaders: true, includeBody: false, enabled: true", &input, &env, &mut ctx).await.unwrap();
 
         // Should return input unchanged
         assert_eq!(out, input);
 
         // Should have registered a deferred action
-        assert_eq!(env.deferred.lock().len(), 1);
+        assert_eq!(ctx.deferred.len(), 1);
 
         // Run deferred to verify it doesn't panic
-        env.run_deferred(&out, "application/json");
+        ctx.run_deferred(&out, "application/json", &env);
     }
 }
 

@@ -324,7 +324,7 @@ async fn lookup_session_user(pool: &PgPool, token: &str) -> Result<Option<(i32, 
 
 #[async_trait]
 impl super::Middleware for AuthMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
         let pool = self
             .ctx
             .pg

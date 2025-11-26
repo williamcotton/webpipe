@@ -35,10 +35,8 @@ async fn build_env(program: &webpipe::ast::Program) -> ExecutionEnv {
         named_pipelines: Arc::new(named),
         invoker: Arc::new(RealInvoker::new(registry)),
         environment: None,
-        async_registry: webpipe::executor::AsyncTaskRegistry::new(),
-        flags: Arc::new(HashMap::new()),
-        cache: Some(ctx.cache.clone()),
-        deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
+        cache: ctx.cache.clone(),
+        rate_limit: ctx.rate_limit.clone(),
     }
 }
 
@@ -59,12 +57,12 @@ pipeline p =
 
     // Error path
     let input = serde_json::json!({"body": {}});
-    let (_out, _ct, status) = execute_pipeline(&env, &pipeline, input).await.unwrap();
+    let (_out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
     assert_eq!(status, Some(400));
 
     // Ok path
     let input = serde_json::json!({"body": {"name": "Al"}});
-    let (_out, _ct, status) = execute_pipeline(&env, &pipeline, input).await.unwrap();
+    let (_out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
     assert_eq!(status, Some(200));
 }
 
@@ -96,14 +94,14 @@ pipeline getEcho =
 
     // First call hits network
     let input = serde_json::json!({"resultName": "e"});
-    let (out1, _ct, _st) = execute_pipeline(&env, &pipeline, input.clone()).await.unwrap();
+    let (out1, _ct, _st, ctx1) = execute_pipeline(&env, &pipeline, input.clone(), webpipe::executor::RequestContext::new()).await.unwrap();
     assert!(out1["data"]["e"]["response"]["ok"].as_bool().unwrap());
 
     // CRITICAL: Run deferred actions to populate the cache
-    env.run_deferred(&out1, "application/json");
+    ctx1.run_deferred(&out1, "application/json", &env);
 
     // Second call should return quickly and use cache (behavioral equivalence)
-    let (out2, _ct, _st) = execute_pipeline(&env, &pipeline, input).await.unwrap();
+    let (out2, _ct, _st, _ctx2) = execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
     assert_eq!(out1["data"]["e"], out2["data"]["e"]);
 
     // Stop server
@@ -127,42 +125,19 @@ pipeline processData =
     // Build base env once (simulates ServerState.env in production)
     let base_env = build_env(&program).await;
 
-    // First request: Create request-specific env (like server.rs env_with_flags())
-    // but share the cache store
-    let env1 = ExecutionEnv {
-        variables: base_env.variables.clone(),
-        named_pipelines: base_env.named_pipelines.clone(),
-        invoker: base_env.invoker.clone(),
-        environment: base_env.environment.clone(),
-        async_registry: webpipe::executor::AsyncTaskRegistry::new(),
-        flags: Arc::new(HashMap::new()),
-        cache: base_env.cache.clone(), // SHARED cache
-        deferred: Arc::new(parking_lot::Mutex::new(Vec::new())), // NEW deferred list
-    };
-
+    // First request uses shared env but separate RequestContext
     let input = serde_json::json!({});
-    let (out1, _ct, _st) = execute_pipeline(&env1, &pipeline, input.clone()).await.unwrap();
+    let (out1, _ct, _st, ctx1) = execute_pipeline(&base_env, &pipeline, input.clone(), webpipe::executor::RequestContext::new()).await.unwrap();
     println!("First call result: {}", serde_json::to_string_pretty(&out1).unwrap());
 
     // Run deferred actions to save result to cache (simulates server.rs line 433)
-    env1.run_deferred(&out1, "application/json");
+    ctx1.run_deferred(&out1, "application/json", &base_env);
 
     // Verify the result has the processed articles field
     assert_eq!(out1["articles"][0], serde_json::json!("fetched content"));
 
-    // Second request: NEW env with NEW deferred list but SHARED cache (like production)
-    let env2 = ExecutionEnv {
-        variables: base_env.variables.clone(),
-        named_pipelines: base_env.named_pipelines.clone(),
-        invoker: base_env.invoker.clone(),
-        environment: base_env.environment.clone(),
-        async_registry: webpipe::executor::AsyncTaskRegistry::new(),
-        flags: Arc::new(HashMap::new()),
-        cache: base_env.cache.clone(), // SHARED cache
-        deferred: Arc::new(parking_lot::Mutex::new(Vec::new())), // NEW deferred list
-    };
-
-    let (out2, _ct, _st) = execute_pipeline(&env2, &pipeline, input).await.unwrap();
+    // Second request with SHARED env/cache but NEW RequestContext
+    let (out2, _ct, _st, _ctx2) = execute_pipeline(&base_env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
     println!("Second call result: {}", serde_json::to_string_pretty(&out2).unwrap());
 
     // The cached result should match the first result exactly

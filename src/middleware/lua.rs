@@ -213,7 +213,7 @@ impl LuaMiddleware {
         }
     }
 
-    fn execute_lua_script(&self, script: &str, input: &Value) -> Result<Value, WebPipeError> {
+    fn execute_lua_script(&self, script: &str, input: &Value, ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
         // Fast path: check if already initialized without function call overhead
         let initialized = LUA_INITIALIZED.with(|initialized| initialized.get());
         if !initialized {
@@ -224,34 +224,50 @@ impl LuaMiddleware {
             let state = state.borrow();
             let lua = state.as_ref().unwrap();
 
-            // 1. Create the Sandbox Table
-            let sandbox = lua.create_table().map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create sandbox table: {}", e)))?;
+            lua.scope(|scope| {
+                // 1. Create the Sandbox Table
+                let sandbox = lua.create_table()?;
 
-            // 2. Configure Metatable for Read-Through access to Globals
-            let meta = lua.create_table().map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to create metatable: {}", e)))?;
-            let globals = lua.globals();
-            meta.set("__index", globals).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Failed to set __index: {}", e)))?;
-            sandbox.set_metatable(Some(meta));
+                // 2. Configure Metatable for Read-Through access to Globals
+                let meta = lua.create_table()?;
+                let globals = lua.globals();
+                meta.set("__index", globals)?;
+                sandbox.set_metatable(Some(meta));
 
-            // 3. Inject 'request' directly into the sandbox (shadowing any global 'request')
-            let lua_input = Self::json_to_lua(lua, input).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JSON to Lua conversion error: {}", e)))?;
-            sandbox.set("request", lua_input).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Setting request variable error: {}", e)))?;
+                // 3. Inject 'request' directly into the sandbox (shadowing any global 'request')
+                let lua_input = Self::json_to_lua(lua, input)?;
+                sandbox.set("request", lua_input)?;
 
-            // 4. Load and Execute the Script INSIDE the Sandbox
-            let chunk = lua.load(script)
-                .set_environment(sandbox)
-                .set_name("user_script");
+                // 4. Inject 'getFlag' and 'setFlag' functions for feature flag access
+                // Clone flags for getFlag (snapshot at script start)
+                let flags_snapshot = ctx.feature_flags.clone();
+                let get_flag = scope.create_function(move |_, key: String| {
+                    Ok(flags_snapshot.get(&key).copied().unwrap_or(false))
+                })?;
+                sandbox.set("getFlag", get_flag)?;
 
-            let result: LuaValue = chunk.eval().map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Lua execution error: {}", e)))?;
-            Self::lua_to_json_with_depth(result, 0)
-        })
+                let set_flag = scope.create_function_mut(|_, (key, val): (String, bool)| {
+                    ctx.feature_flags.insert(key, val);
+                    Ok(())
+                })?;
+                sandbox.set("setFlag", set_flag)?;
+
+                // 5. Load and Execute the Script INSIDE the Sandbox
+                let chunk = lua.load(script)
+                    .set_environment(sandbox)
+                    .set_name("user_script");
+
+                let result: LuaValue = chunk.eval()?;
+                Self::lua_to_json_with_depth(result, 0).map_err(|e| mlua::Error::external(e))
+            })
+        }).map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Lua execution error: {}", e)))
     }
 }
 
 #[async_trait]
 impl super::Middleware for LuaMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
-        self.execute_lua_script(config, input)
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+        self.execute_lua_script(config, input, ctx)
     }
 }
 
@@ -310,22 +326,20 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
             Ok(Value::Null)
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
-        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
-        use parking_lot::Mutex;
+        use crate::executor::ExecutionEnv;
+        use crate::runtime::context::{CacheStore, RateLimitStore};
         ExecutionEnv {
             variables: Arc::new(vec![]),
             named_pipelines: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(StubInvoker),
             environment: None,
-            async_registry: AsyncTaskRegistry::new(),
-            flags: Arc::new(std::collections::HashMap::new()),
-            cache: None,
-            deferred: Arc::new(Mutex::new(Vec::new())),
+            cache: CacheStore::new(8, 60),
+            rate_limit: RateLimitStore::new(1000),
         }
     }
 
@@ -334,7 +348,8 @@ mod tests {
         let mw = LuaMiddleware::new(ctx_no_db());
         let input = serde_json::json!({"x": 1, "arr": [1,2], "obj": {"a": true}});
         let env = dummy_env();
-        let out = mw.execute("return { x = request.x, arr = request.arr, obj = request.obj }", &input, &env).await.unwrap();
+        let mut ctx = crate::executor::RequestContext::new();
+        let out = mw.execute("return { x = request.x, arr = request.arr, obj = request.obj }", &input, &env, &mut ctx).await.unwrap();
         assert_eq!(out["x"], serde_json::json!(1));
         assert_eq!(out["arr"].as_array().unwrap().len(), 2);
         assert_eq!(out["obj"]["a"], serde_json::json!(true));
@@ -345,9 +360,10 @@ mod tests {
         std::env::set_var("WEBPIPE_SCRIPTS_DIR", "scripts");
         let mw = LuaMiddleware::new(ctx_with_scripts());
         let env = dummy_env();
-        let out = mw.execute("local c = requireScript('dateFormatter'); return type(c) ~= 'nil'", &serde_json::json!({}), &env).await.unwrap();
+        let mut ctx = crate::executor::RequestContext::new();
+        let out = mw.execute("local c = requireScript('dateFormatter'); return type(c) ~= 'nil'", &serde_json::json!({}), &env, &mut ctx).await.unwrap();
         assert!(out.as_bool().unwrap() || out.is_string());
-        let out2 = mw.execute("return getEnv('PATH') ~= nil", &serde_json::json!({}), &env).await.unwrap();
+        let out2 = mw.execute("return getEnv('PATH') ~= nil", &serde_json::json!({}), &env, &mut ctx).await.unwrap();
         assert!(out2.as_bool().unwrap());
     }
 
@@ -355,20 +371,45 @@ mod tests {
     async fn sandbox_prevents_global_pollution() {
         let mw = LuaMiddleware::new(ctx_no_db());
         let env = dummy_env();
+        let mut ctx = crate::executor::RequestContext::new();
 
         // First request: accidentally write to global (missing 'local')
         let script1 = "counter = (counter or 0) + 1; return { count = counter }";
-        let out1 = mw.execute(script1, &serde_json::json!({}), &env).await.unwrap();
+        let out1 = mw.execute(script1, &serde_json::json!({}), &env, &mut ctx).await.unwrap();
         assert_eq!(out1["count"], serde_json::json!(1));
 
         // Second request: same script should return 1 again (not 2)
-        let out2 = mw.execute(script1, &serde_json::json!({}), &env).await.unwrap();
+        let out2 = mw.execute(script1, &serde_json::json!({}), &env, &mut ctx).await.unwrap();
         assert_eq!(out2["count"], serde_json::json!(1), "Sandbox should prevent global pollution - counter should not persist");
 
         // Third request: verify the global doesn't exist
         let script2 = "return { exists = counter ~= nil }";
-        let out3 = mw.execute(script2, &serde_json::json!({}), &env).await.unwrap();
+        let out3 = mw.execute(script2, &serde_json::json!({}), &env, &mut ctx).await.unwrap();
         assert_eq!(out3["exists"], serde_json::json!(false), "Global 'counter' should not exist in fresh sandbox");
+    }
+
+    #[tokio::test]
+    async fn get_flag_reads_from_context() {
+        let mw = LuaMiddleware::new(ctx_no_db());
+        let env = dummy_env();
+        let mut ctx = crate::executor::RequestContext::new();
+
+        // Pre-set a flag in the context
+        ctx.feature_flags.insert("beta".to_string(), true);
+        ctx.feature_flags.insert("legacy".to_string(), false);
+
+        // getFlag should read the pre-set flags
+        let script = r#"
+            return {
+                beta = getFlag("beta"),
+                legacy = getFlag("legacy"),
+                unknown = getFlag("nonexistent")
+            }
+        "#;
+        let out = mw.execute(script, &serde_json::json!({}), &env, &mut ctx).await.unwrap();
+        assert_eq!(out["beta"], serde_json::json!(true));
+        assert_eq!(out["legacy"], serde_json::json!(false));
+        assert_eq!(out["unknown"], serde_json::json!(false)); // defaults to false
     }
 }
 

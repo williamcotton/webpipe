@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 use tokio::fs as tokio_fs;
 use std::path::{Path, PathBuf};
 use crate::runtime::Context;
-use crate::executor::{ExecutionEnv, RealInvoker, PipelineExecFuture};
+use crate::executor::{ExecutionEnv, RealInvoker};
 use crate::http::request::build_request_from_axum_with_ip;
 
 // number coercion helpers moved to http::request
@@ -80,7 +80,6 @@ pub struct RoutePayload {
 
 #[derive(Clone)]
 pub struct ServerState {
-    middleware_registry: Arc<MiddlewareRegistry>,
     get_router: Arc<matchit::Router<RoutePayload>>,
     post_router: Arc<matchit::Router<RoutePayload>>,
     put_router: Arc<matchit::Router<RoutePayload>>,
@@ -92,41 +91,24 @@ pub struct ServerState {
 impl ServerState {
     // variable resolution now handled by shared executor
 
-    pub fn execute_pipeline<'a>(
+    pub async fn execute_pipeline<'a>(
         &'a self,
         pipeline: &'a Pipeline,
         input: Value,
-    ) -> PipelineExecFuture<'a> {
-        crate::executor::execute_pipeline(&self.env, pipeline, input)
+        ctx: crate::executor::RequestContext,
+    ) -> Result<(Value, String, Option<u16>, crate::executor::RequestContext), crate::error::WebPipeError> {
+        crate::executor::execute_pipeline(&self.env, pipeline, input, ctx).await
     }
 
-    /// Extract feature flags from request JSON and create a new ExecutionEnv with those flags
-    fn env_with_flags(&self, request_json: &Value) -> ExecutionEnv {
-        let mut flags = HashMap::new();
-
-        // Extract flags from _metadata.flags
-        if let Some(metadata) = request_json.get("_metadata") {
-            if let Some(flags_obj) = metadata.get("flags") {
-                if let Some(flags_map) = flags_obj.as_object() {
-                    for (key, value) in flags_map {
-                        if let Some(bool_val) = value.as_bool() {
-                            flags.insert(key.clone(), bool_val);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Create a new env with the extracted flags
-        ExecutionEnv {
-            variables: self.env.variables.clone(),
-            named_pipelines: self.env.named_pipelines.clone(),
-            invoker: self.env.invoker.clone(),
-            environment: self.env.environment.clone(),
+    /// Create a new RequestContext for this request
+    /// SECURITY: Feature flags are extracted from the feature_flags pipeline result,
+    /// NOT from user-provided JSON input (which would be a security vulnerability)
+    fn create_request_context(&self, flags: HashMap<String, bool>) -> crate::executor::RequestContext {
+        crate::executor::RequestContext {
+            feature_flags: flags,
             async_registry: crate::executor::AsyncTaskRegistry::new(),
-            flags: Arc::new(flags),
-            cache: self.env.cache.clone(),
-            deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            deferred: Vec::new(),
+            metadata: crate::executor::RequestMetadata::default(),
         }
     }
 
@@ -254,17 +236,14 @@ impl WebPipeServer {
             named_pipelines: Arc::new(named_pipelines),
             invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
             environment: std::env::var("WEBPIPE_ENV").ok(),
-            async_registry: crate::executor::AsyncTaskRegistry::new(),
-            flags: Arc::new(HashMap::new()),
-            cache: Some(self.ctx.cache.clone()),
-            deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            cache: self.ctx.cache.clone(),
+            rate_limit: self.ctx.rate_limit.clone(),
         });
 
         // Set the execution environment in the Context so GraphQL middleware can access it
         *self.ctx.execution_env.write() = Some(env.clone());
 
         let server_state = ServerState {
-            middleware_registry: self.middleware_registry.clone(),
             get_router: Arc::new(get_router),
             post_router: Arc::new(post_router),
             put_router: Arc::new(put_router),
@@ -386,22 +365,21 @@ async fn respond_with_pipeline(
     let (mut request_json, _content_type) = build_request_from_axum_with_ip(&method, &headers, &path, &path_params, &query_params, &body, remote_ip);
 
     // --- PRE-FLIGHT CHECK: Execute feature flags pipeline if needed ---
+    let mut flags = HashMap::new();
     if payload.needs_flags {
         if let Some(flag_pipeline) = &state.feature_flags {
             // Execute Flag Pipeline with Timeout (50ms)
+            // Create a temporary RequestContext for the flag pipeline
+            let flag_ctx = state.create_request_context(HashMap::new());
             let flag_result = tokio::time::timeout(
                 std::time::Duration::from_millis(50),
-                state.execute_pipeline(flag_pipeline, request_json.clone())
+                state.execute_pipeline(flag_pipeline, request_json.clone(), flag_ctx)
             ).await;
 
             match flag_result {
-                Ok(Ok((result_json, _, _))) => {
-                    // Merge _metadata from result back into request_json
-                    if let Some(new_meta) = result_json.get("_metadata") {
-                        if let Some(obj) = request_json.as_object_mut() {
-                            obj.insert("_metadata".to_string(), new_meta.clone());
-                        }
-                    }
+                Ok(Ok((result_json, _, _, flag_ctx))) => {
+                    // 1. Extract flags from the Context (Primary source)
+                    flags.extend(flag_ctx.feature_flags);
 
                     // Merge user (if auth happened in pre-flight)
                     if let Some(user) = result_json.get("user") {
@@ -420,18 +398,14 @@ async fn respond_with_pipeline(
         }
     }
 
-    // Keep a snapshot for post_execute (contains _metadata, originalRequest, headers)
-    let request_snapshot = request_json.clone();
+    // Create RequestContext with feature flags
+    let ctx = state.create_request_context(flags);
 
-    // Create ExecutionEnv with feature flags from request
-    let env_with_flags = state.env_with_flags(&request_json);
-
-    // Execute the pipeline with the flags-aware environment
-    match crate::executor::execute_pipeline(&env_with_flags, &payload.pipeline, request_json.clone()).await {
-        Ok((result, content_type, status_code)) => {
+    // Execute the pipeline with the RequestContext
+    match crate::executor::execute_pipeline(&state.env, &payload.pipeline, request_json.clone(), ctx).await {
+        Ok((result, content_type, status_code, ctx)) => {
             // Run all deferred actions (e.g. caching, logging) with the clean result
-            // Logging middleware captures request context upfront, cache stores clean result
-            env_with_flags.run_deferred(&result, &content_type);
+            ctx.run_deferred(&result, &content_type, &state.env);
 
             // Determine the HTTP status code
             let http_status = if let Some(code) = status_code {
@@ -470,31 +444,8 @@ async fn respond_with_pipeline(
                 }
             };
 
-            // After building response, invoke post_execute for all middleware using an envelope that includes
-            // originalRequest, headers, and _metadata from the initial request snapshot.
-            let _registry = state.middleware_registry.clone();
-            let mut post_payload = if content_type.starts_with("text/html") {
-                Value::Object(serde_json::Map::new())
-            } else {
-                result.clone()
-            };
-            if !post_payload.is_object() {
-                post_payload = Value::Object(serde_json::Map::new());
-            }
-            if let Some(obj) = post_payload.as_object_mut() {
-                // Only include _metadata when a log step has written it
-                if request_snapshot.get("_metadata").and_then(|m| m.get("log")).is_some() {
-                    if let Some(meta) = request_snapshot.get("_metadata").cloned() {
-                        obj.insert("_metadata".to_string(), meta);
-                    }
-                }
-                if let Some(orig) = request_snapshot.get("originalRequest").cloned() {
-                    obj.insert("originalRequest".to_string(), orig);
-                }
-                if let Some(h) = request_snapshot.get("headers").cloned() {
-                    obj.insert("headers".to_string(), h);
-                }
-            }
+            // Note: post_execute hooks are no longer needed - logging uses ctx.defer()
+            // and rate limit info is in ctx.metadata.rate_limit_status
             response
         }
         Err(e) => {
@@ -771,19 +722,16 @@ mod tests {
     async fn respond_with_pipeline_sets_cookies_and_html() {
         // Build a minimal state with jq/handlebars available
         let ctx = Context::from_program_configs(vec![], &[]).await.unwrap();
-        let registry = Arc::new(MiddlewareRegistry::with_builtins(Arc::new(ctx)));
+        let registry = Arc::new(MiddlewareRegistry::with_builtins(Arc::new(ctx.clone())));
         let env = ExecutionEnv {
             variables: Arc::new(vec![]),
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(RealInvoker::new(registry.clone())),
             environment: None,
-            async_registry: crate::executor::AsyncTaskRegistry::new(),
-            flags: Arc::new(HashMap::new()),
-            cache: None,
-            deferred: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            cache: ctx.cache.clone(),
+            rate_limit: ctx.rate_limit.clone(),
         };
         let state = ServerState {
-            middleware_registry: registry.clone(),
             get_router: Arc::new(matchit::Router::new()),
             post_router: Arc::new(matchit::Router::new()),
             put_router: Arc::new(matchit::Router::new()),

@@ -156,7 +156,7 @@ fn resolve_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
 
 #[async_trait]
 impl super::Middleware for RateLimitMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
         let cfg = parse_config(config);
 
         // Check if rate limiting is enabled
@@ -184,9 +184,19 @@ impl super::Middleware for RateLimitMiddleware {
         // Interpolate the key template with values from input
         let key = interpolate_key(&key_template, input);
 
-        // Check rate limit
+        // Check rate limit using env.rate_limit (global shared store)
         let (allowed, current_count, effective_limit, retry_after) =
-            self.ctx.rate_limit.check_and_increment(&key, limit, window_secs, cfg.burst);
+            env.rate_limit.check_and_increment(&key, limit, window_secs, cfg.burst);
+
+        // Store rate limit status in typed context (The Backpack)
+        ctx.metadata.rate_limit_status = Some(crate::executor::RateLimitStatus {
+            allowed,
+            current_count,
+            limit: effective_limit,
+            retry_after_secs: retry_after,
+            key: key.clone(),
+            scope: cfg.scope,
+        });
 
         if !allowed {
             return Err(WebPipeError::RateLimitExceeded(format!(
@@ -195,44 +205,8 @@ impl super::Middleware for RateLimitMiddleware {
             )));
         }
 
-        // Add rate limit metadata to output
-        let mut out = input.clone();
-        if let Some(obj) = out.as_object_mut() {
-            let meta_entry = obj
-                .entry("_metadata")
-                .or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if !meta_entry.is_object() {
-                *meta_entry = Value::Object(serde_json::Map::new());
-            }
-            if let Some(meta) = meta_entry.as_object_mut() {
-                let rl_entry = meta
-                    .entry("rateLimit")
-                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
-                if !rl_entry.is_object() {
-                    *rl_entry = Value::Object(serde_json::Map::new());
-                }
-                if let Some(rl_map) = rl_entry.as_object_mut() {
-                    rl_map.insert("key".to_string(), Value::String(key));
-                    rl_map.insert(
-                        "remaining".to_string(),
-                        Value::Number(serde_json::Number::from(effective_limit - current_count)),
-                    );
-                    rl_map.insert(
-                        "limit".to_string(),
-                        Value::Number(serde_json::Number::from(effective_limit)),
-                    );
-                    rl_map.insert(
-                        "resetAfter".to_string(),
-                        Value::Number(serde_json::Number::from(retry_after)),
-                    );
-                    if let Some(scope) = cfg.scope {
-                        rl_map.insert("scope".to_string(), Value::String(scope));
-                    }
-                }
-            }
-        }
-
-        Ok(out)
+        // Return input unchanged - rate limit info is in ctx.metadata.rate_limit_status
+        Ok(input.clone())
     }
 }
 
@@ -241,13 +215,13 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
             Ok(Value::Null)
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
-        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
-        use parking_lot::Mutex;
+        use crate::executor::ExecutionEnv;
+        use crate::runtime::context::{CacheStore, RateLimitStore};
         use std::sync::Arc;
         use std::collections::HashMap;
 
@@ -256,10 +230,8 @@ mod tests {
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
             environment: None,
-            async_registry: AsyncTaskRegistry::new(),
-            flags: Arc::new(HashMap::new()),
-            cache: None,
-            deferred: Arc::new(Mutex::new(Vec::new())),
+            cache: CacheStore::new(8, 60),
+            rate_limit: RateLimitStore::new(1000),
         }
     }
     use super::*;
@@ -372,14 +344,17 @@ mod tests {
         });
 
         // First request should be allowed
+        let mut req_ctx = crate::executor::RequestContext::new();
         let result = mw
-            .execute("keyTemplate: test-{ip}, limit: 5, window: 60s", &input, &dummy_env())
+            .execute("keyTemplate: test-{ip}, limit: 5, window: 60s", &input, &dummy_env(), &mut req_ctx)
             .await;
         assert!(result.is_ok());
 
-        let out = result.unwrap();
-        assert_eq!(out["_metadata"]["rateLimit"]["remaining"], json!(4));
-        assert_eq!(out["_metadata"]["rateLimit"]["limit"], json!(5));
+        // Rate limit info is now in the typed context, not in JSON output
+        let status = req_ctx.metadata.rate_limit_status.unwrap();
+        assert!(status.allowed);
+        assert_eq!(status.limit - status.current_count, 4); // remaining
+        assert_eq!(status.limit, 5);
     }
 
     #[tokio::test]
@@ -394,16 +369,18 @@ mod tests {
         });
 
         // Make requests up to the limit
+        let env = dummy_env();
+        let mut req_ctx = crate::executor::RequestContext::new();
         for _ in 0..3 {
             let result = mw
-                .execute("keyTemplate: block-test-{ip}, limit: 3, window: 60s", &input, &dummy_env())
+                .execute("keyTemplate: block-test-{ip}, limit: 3, window: 60s", &input, &env, &mut req_ctx)
                 .await;
             assert!(result.is_ok());
         }
 
         // Next request should be blocked
         let result = mw
-            .execute("keyTemplate: block-test-{ip}, limit: 3, window: 60s", &input, &dummy_env())
+            .execute("keyTemplate: block-test-{ip}, limit: 3, window: 60s", &input, &env, &mut req_ctx)
             .await;
         assert!(result.is_err());
 
@@ -423,6 +400,8 @@ mod tests {
         let mw = RateLimitMiddleware { ctx };
 
         let input = json!({ "ip": "10.0.0.3" });
+        let env = dummy_env();
+        let mut req_ctx = crate::executor::RequestContext::new();
 
         // With limit: 2 and burst: 2, we should allow 4 requests
         for i in 0..4 {
@@ -430,7 +409,8 @@ mod tests {
                 .execute(
                     "keyTemplate: burst-test-{ip}, limit: 2, window: 60s, burst: 2",
                     &input,
-                    &dummy_env(),
+                    &env,
+                    &mut req_ctx,
                 )
                 .await;
             assert!(result.is_ok(), "Request {} should be allowed", i + 1);
@@ -441,7 +421,8 @@ mod tests {
             .execute(
                 "keyTemplate: burst-test-{ip}, limit: 2, window: 60s, burst: 2",
                 &input,
-                &dummy_env(),
+                &env,
+                &mut req_ctx,
             )
             .await;
         assert!(result.is_err());
@@ -457,7 +438,8 @@ mod tests {
         let input = json!({ "ip": "10.0.0.4" });
 
         // Even without valid config, disabled should pass through
-        let result = mw.execute("enabled: false", &input, &dummy_env()).await;
+        let mut req_ctx = crate::executor::RequestContext::new();
+        let result = mw.execute("enabled: false", &input, &dummy_env(), &mut req_ctx).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), input);
     }
@@ -470,9 +452,11 @@ mod tests {
         let mw = RateLimitMiddleware { ctx };
 
         let input = json!({});
+        let env = dummy_env();
+        let mut req_ctx = crate::executor::RequestContext::new();
 
         // Missing keyTemplate
-        let result = mw.execute("limit: 10, window: 60s", &input, &dummy_env()).await;
+        let result = mw.execute("limit: 10, window: 60s", &input, &env, &mut req_ctx).await;
         assert!(result.is_err());
         match result {
             Err(WebPipeError::ConfigError(msg)) => {
@@ -482,16 +466,16 @@ mod tests {
         }
 
         // Missing limit
-        let result = mw.execute("keyTemplate: test, window: 60s", &input, &dummy_env()).await;
+        let result = mw.execute("keyTemplate: test, window: 60s", &input, &env, &mut req_ctx).await;
         assert!(result.is_err());
 
         // Missing window
-        let result = mw.execute("keyTemplate: test, limit: 10", &input, &dummy_env()).await;
+        let result = mw.execute("keyTemplate: test, limit: 10", &input, &env, &mut req_ctx).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn rate_limit_adds_scope_to_metadata() {
+    async fn rate_limit_adds_scope_to_context() {
         crate::config::init_global(vec![]);
 
         let ctx = test_ctx();
@@ -499,17 +483,21 @@ mod tests {
 
         let input = json!({ "ip": "10.0.0.5" });
 
+        let mut req_ctx = crate::executor::RequestContext::new();
         let result = mw
             .execute(
                 "keyTemplate: scope-test-{ip}, limit: 10, window: 60s, scope: route",
                 &input,
                 &dummy_env(),
+                &mut req_ctx,
             )
             .await;
         assert!(result.is_ok());
 
-        let out = result.unwrap();
-        assert_eq!(out["_metadata"]["rateLimit"]["scope"], json!("route"));
+        // Scope is now in the typed context
+        let status = req_ctx.metadata.rate_limit_status.unwrap();
+        assert_eq!(status.scope, Some("route".to_string()));
+        assert_eq!(status.key, "scope-test-10.0.0.5");
     }
 }
 

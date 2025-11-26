@@ -56,7 +56,7 @@ fn render_key_template(template: &str, input: &Value) -> String {
 
 #[async_trait]
 impl super::Middleware for CacheMiddleware {
-    async fn execute(&self, config: &str, input: &Value, env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
         #[derive(Default)]
         struct LocalCfg { enabled: Option<bool>, ttl: Option<u64>, key_tpl: Option<String> }
         fn parse_bool(s: &str) -> Option<bool> { match s.trim().to_ascii_lowercase().as_str() { "true" => Some(true), "false" => Some(false), _ => None } }
@@ -100,6 +100,13 @@ impl super::Middleware for CacheMiddleware {
             return Ok(input.clone());
         }
 
+        // Store cache policy in typed context
+        ctx.metadata.cache_policy = Some(crate::executor::CachePolicy {
+            enabled,
+            ttl,
+            key_template: parsed.key_tpl.clone(),
+        });
+
         // Generate cache key
         let key = if let Some(tpl) = &parsed.key_tpl {
             render_key_template(tpl, input)
@@ -129,8 +136,8 @@ impl super::Middleware for CacheMiddleware {
             format!("pipeline:{:x}", hasher.finish())
         };
 
-        // Check cache for a hit
-        if let Some(cached_val) = self.ctx.cache.get(&key) {
+        // Check cache for a hit using env.cache (global shared cache)
+        if let Some(cached_val) = env.cache.get(&key) {
             // Extract stored content_type if available
             let (value, stored_content_type) = if let Some(obj) = cached_val.as_object() {
                 if let (Some(v), Some(ct)) = (obj.get("_cache_value"), obj.get("_cache_content_type")) {
@@ -158,9 +165,9 @@ impl super::Middleware for CacheMiddleware {
         }
 
         // CACHE MISS: Register deferred action to save result at pipeline end
-        let store = self.ctx.cache.clone();
+        let store = env.cache.clone();
         let key_clone = key.clone();
-        env.defer(move |final_result, content_type| {
+        ctx.defer(move |final_result, content_type, _env_ref| {
             // This runs AFTER the pipeline finishes
             // Store both the value and content_type
             let cached_data = serde_json::json!({
@@ -204,22 +211,20 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
             Ok(Value::Null)
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
-        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
-        use parking_lot::Mutex;
+        use crate::executor::ExecutionEnv;
+        use crate::runtime::context::{CacheStore, RateLimitStore};
         ExecutionEnv {
             variables: Arc::new(vec![]),
             named_pipelines: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(StubInvoker),
             environment: None,
-            async_registry: AsyncTaskRegistry::new(),
-            flags: Arc::new(std::collections::HashMap::new()),
-            cache: None,
-            deferred: Arc::new(Mutex::new(Vec::new())),
+            cache: CacheStore::new(8, 60),
+            rate_limit: RateLimitStore::new(1000),
         }
     }
 
@@ -231,22 +236,23 @@ mod tests {
         let mw = CacheMiddleware { ctx: ctx.clone() };
         let input = serde_json::json!({});
         let env = dummy_env();
+        let mut req_ctx = crate::executor::RequestContext::new();
 
         // Execute with cache miss
-        let out = mw.execute("ttl: 5, keyTemplate: test-key-123", &input, &env).await.unwrap();
+        let out = mw.execute("ttl: 5, keyTemplate: test-key-123", &input, &env, &mut req_ctx).await.unwrap();
 
         // Should return input unchanged (no metadata)
         assert_eq!(out, input);
 
-        // Verify cache is empty before deferred runs
-        assert!(ctx.cache.get("test-key-123").is_none());
+        // Verify cache is empty before deferred runs (env.cache is the one used by middleware)
+        assert!(env.cache.get("test-key-123").is_none());
 
         // Run deferred actions with final result
         let final_result = serde_json::json!({"final": "data"});
-        env.run_deferred(&final_result, "application/json");
+        req_ctx.run_deferred(&final_result, "application/json", &env);
 
-        // Verify cache was populated
-        let cached = ctx.cache.get("test-key-123").unwrap();
+        // Verify cache was populated (env.cache is the one used by middleware)
+        let cached = env.cache.get("test-key-123").unwrap();
         assert_eq!(cached["_cache_value"]["final"], serde_json::json!("data"));
         assert_eq!(cached["_cache_content_type"], serde_json::json!("application/json"));
     }
@@ -256,8 +262,12 @@ mod tests {
         crate::config::init_global(vec![]);
 
         let ctx = test_ctx();
-        // Pre-populate cache with wrapped value
-        ctx.cache.put(
+        let mw = CacheMiddleware { ctx };
+        let input = serde_json::json!({});
+        let env = dummy_env();
+
+        // Pre-populate env.cache (which is what the middleware uses)
+        env.cache.put(
             "test-key".to_string(),
             serde_json::json!({
                 "_cache_value": {"cached": "data"},
@@ -266,10 +276,8 @@ mod tests {
             Some(60)
         );
 
-        let mw = CacheMiddleware { ctx };
-        let input = serde_json::json!({});
-        let env = dummy_env();
-        let out = mw.execute("keyTemplate: test-key", &input, &env).await.unwrap();
+        let mut req_ctx = crate::executor::RequestContext::new();
+        let out = mw.execute("keyTemplate: test-key", &input, &env, &mut req_ctx).await.unwrap();
 
         // Should return stop signal with cached value and content_type
         assert_eq!(out["_control"]["stop"], serde_json::json!(true));
@@ -284,7 +292,8 @@ mod tests {
         let mw = CacheMiddleware { ctx: test_ctx() };
         let input = serde_json::json!({"original": "data"});
         let env = dummy_env();
-        let out = mw.execute("enabled: false", &input, &env).await.unwrap();
+        let mut req_ctx = crate::executor::RequestContext::new();
+        let out = mw.execute("enabled: false", &input, &env, &mut req_ctx).await.unwrap();
 
         // Should pass through original data unchanged
         assert_eq!(out["original"], serde_json::json!("data"));

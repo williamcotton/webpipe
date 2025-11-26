@@ -124,14 +124,16 @@ impl GraphQLRuntime {
             }
 
             // Execute the resolver pipeline
+            let ctx = crate::executor::RequestContext::new();
             let result = crate::executor::execute_pipeline(
                 env,
                 pipeline,
-                field_state
+                field_state,
+                ctx
             ).await;
 
             match result {
-                Ok((field_data, _, _)) => {
+                Ok((field_data, _, _, _)) => {
                     data.insert(field_name.clone(), field_data);
                 }
                 Err(e) => {

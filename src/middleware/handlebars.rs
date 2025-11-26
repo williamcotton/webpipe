@@ -83,7 +83,7 @@ impl HandlebarsMiddleware {
 
 #[async_trait]
 impl super::Middleware for HandlebarsMiddleware {
-    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+    async fn execute(&self, config: &str, input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
         let rendered = self.render_template(config, input)?;
         Ok(Value::String(rendered))
     }
@@ -105,13 +105,13 @@ mod tests {
     struct StubInvoker;
     #[async_trait::async_trait]
     impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
+        async fn call(&self, _name: &str, _cfg: &str, _input: &Value, _env: &crate::executor::ExecutionEnv, _ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
             Ok(Value::Null)
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
-        use crate::executor::{ExecutionEnv, AsyncTaskRegistry};
-        use parking_lot::Mutex;
+        use crate::executor::ExecutionEnv;
+        use crate::runtime::context::{CacheStore, RateLimitStore};
         use std::sync::Arc;
         use std::collections::HashMap;
 
@@ -120,10 +120,8 @@ mod tests {
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
             environment: None,
-            async_registry: AsyncTaskRegistry::new(),
-            flags: Arc::new(HashMap::new()),
-            cache: None,
-            deferred: Arc::new(Mutex::new(Vec::new())),
+            cache: CacheStore::new(8, 60),
+            rate_limit: RateLimitStore::new(1000),
         }
     }
 
@@ -132,9 +130,10 @@ mod tests {
         let hb = HandlebarsMiddleware::new();
         let data = serde_json::json!({"name":"Ada"});
         let env = dummy_env();
-        let v1 = hb.execute("Hello {{name}}", &data, &env).await.unwrap();
+        let mut ctx = crate::executor::RequestContext::new();
+        let v1 = hb.execute("Hello {{name}}", &data, &env, &mut ctx).await.unwrap();
         assert_eq!(v1, serde_json::json!("Hello Ada"));
-        let v2 = hb.execute("Hello {{name}}", &data, &env).await.unwrap();
+        let v2 = hb.execute("Hello {{name}}", &data, &env, &mut ctx).await.unwrap();
         assert_eq!(v2, serde_json::json!("Hello Ada"));
     }
 
