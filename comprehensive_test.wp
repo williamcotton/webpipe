@@ -191,6 +191,136 @@ GET /lua-cpu
     }
   `
 
+GET /lua-pipeline-benchmark
+  |> lua: `
+    -- Stage 1: Initialize with user data and array
+    return {
+      user = {
+        id = 12345,
+        name = "Test User",
+        email = "test@example.com",
+        roles = {"admin", "developer", "moderator"}
+      },
+      data = {},
+      items = {},
+      stage = 1,
+      timestamp = os.time()
+    }
+  `
+  |> lua: `
+    -- Stage 2: Generate array of 100 items with metadata
+    local items = {}
+    for i = 1, 100 do
+      items[i] = {
+        id = i,
+        value = i * 10,
+        squared = i * i,
+        label = "Item_" .. tostring(i)
+      }
+    end
+
+    return {
+      user = request.user,
+      data = request.data,
+      items = items,
+      itemCount = 100,
+      stage = 2,
+      timestamp = request.timestamp
+    }
+  `
+  |> lua: `
+    -- Stage 3: Process items and calculate statistics
+    local total = 0
+    local squared_total = 0
+    local processed = {}
+
+    for i, item in ipairs(request.items) do
+      total = total + item.value
+      squared_total = squared_total + item.squared
+      if item.value % 20 == 0 then
+        processed[#processed + 1] = {
+          id = item.id,
+          value = item.value,
+          category = "special"
+        }
+      end
+    end
+
+    return {
+      user = request.user,
+      items = request.items,
+      itemCount = request.itemCount,
+      data = {
+        sum = total,
+        squaredSum = squared_total,
+        average = total / request.itemCount,
+        specialItems = processed
+      },
+      stage = 3,
+      timestamp = request.timestamp
+    }
+  `
+  |> lua: `
+    -- Stage 4: Add computed fields and enrich user data
+    local userScore = 0
+    for i, role in ipairs(request.user.roles) do
+      userScore = userScore + string.len(role) * 10
+    end
+
+    local enrichedUser = {
+      id = request.user.id,
+      name = request.user.name,
+      email = request.user.email,
+      roles = request.user.roles,
+      roleCount = #request.user.roles,
+      computed = {
+        score = userScore,
+        level = math.floor(userScore / 50),
+        badge = userScore > 150 and "gold" or "silver"
+      }
+    }
+
+    return {
+      user = enrichedUser,
+      items = request.items,
+      itemCount = request.itemCount,
+      data = request.data,
+      stage = 4,
+      timestamp = request.timestamp
+    }
+  `
+  |> lua: `
+    -- Stage 5: Final aggregation and response formatting
+    local processingTime = os.time() - request.timestamp
+
+    return {
+      summary = {
+        user = request.user.name,
+        userId = request.user.id,
+        userLevel = request.user.computed.level,
+        userBadge = request.user.computed.badge,
+        totalItems = request.itemCount,
+        specialItemsFound = #request.data.specialItems,
+        dataProcessed = {
+          sum = request.data.sum,
+          average = request.data.average,
+          squaredSum = request.data.squaredSum
+        }
+      },
+      performance = {
+        stages = 5,
+        processingTimeSeconds = processingTime,
+        itemsProcessed = request.itemCount,
+        note = "5 Lua stages with data passing - tests zero-copy architecture"
+      },
+      benchmark = {
+        route = "/lua-pipeline-benchmark",
+        purpose = "A/B test Phase 1 performance improvements",
+        expectation = "Reduced memory allocations and faster execution"
+      }
+    }
+  `
+
 GET /test3
   |> jq: `{message: "Hello World", status: "success"}`
   |> result
