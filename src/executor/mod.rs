@@ -431,6 +431,10 @@ fn is_effectively_last_step(
                 // Result branches always execute, so current is not last
                 return false;
             }
+            PipelineStep::If { .. } => {
+                // If blocks always execute (condition is always evaluated), so current is not last
+                return false;
+            }
         }
     }
     // No remaining steps will execute
@@ -645,8 +649,8 @@ async fn execute_pipeline_internal<'a>(
 
                         // Update state and content type
                         // For non-final steps, merge JSON objects; final step replaces entirely
-                        // Handlebars always replaces (produces HTML string)
-                        if !is_last_step && name != "handlebars" {
+                        // Handlebars and jq always replace (produce transformed data)
+                        if !is_last_step && name != "handlebars" && name != "jq" {
                             // Merge: previous state + new result (new takes precedence)
                             if let (Some(prev_obj), Some(new_obj)) = (
                                 pipeline_ctx.state.as_object_mut(),
@@ -684,6 +688,53 @@ async fn execute_pipeline_internal<'a>(
             }
             PipelineStep::Result { branches } => {
                 return handle_result_step(env, ctx, branches, pipeline_ctx.state, content_type).await;
+            }
+            PipelineStep::If { condition, then_branch, else_branch } => {
+                // 1. Run Condition on Cloned State
+                let (cond_result, _, _) = execute_pipeline_internal(
+                    env,
+                    condition,
+                    pipeline_ctx.state.clone(), // <--- CLONE
+                    ctx
+                ).await?;
+
+                // 2. Determine Truthiness
+                let is_truthy = match cond_result {
+                    Value::Bool(b) => b,
+                    Value::Null => false,
+                    _ => true,
+                };
+
+                // 3. Execute Branch
+                if is_truthy {
+                    // Run THEN branch with ORIGINAL state
+                    let (res, ct, status) = execute_pipeline_internal(
+                        env,
+                        then_branch,
+                        pipeline_ctx.state.clone(),
+                        ctx
+                    ).await?;
+
+                    // Update Context
+                    pipeline_ctx.state = res;
+                    if let Some(s) = status { status_code_out = Some(s); }
+                    if ct != "application/json" { content_type = ct; }
+
+                } else if let Some(else_pipe) = else_branch {
+                    // Run ELSE branch with ORIGINAL state
+                    let (res, ct, status) = execute_pipeline_internal(
+                        env,
+                        else_pipe,
+                        pipeline_ctx.state.clone(),
+                        ctx
+                    ).await?;
+
+                    // Update Context
+                    pipeline_ctx.state = res;
+                    if let Some(s) = status { status_code_out = Some(s); }
+                    if ct != "application/json" { content_type = ct; }
+                }
+                // If false and no else: state remains unchanged (pass-through)
             }
         }
     }

@@ -2032,3 +2032,147 @@ GET /test-rate-limit
     window: 10s
   `
   |> jq: `{ message: "Rate limited" }`
+
+## If/Else Feature Demo (v2.1+)
+# Demonstrates the new implicit condition if/else syntax
+# The condition is itself a pipeline, making it very powerful
+
+# Test 1: Simple boolean condition
+GET /test-if-simple
+  |> jq: `{ count: 15 }`
+  |> if
+    |> jq: `.count > 10`
+    then:
+      |> jq: `{ status: "high", count: .count }`
+    else:
+      |> jq: `{ status: "low", count: .count }`
+
+# Simple test without result step
+GET /test-if-simple/:value
+  |> jq: `{ value: (.params.value | tonumber) }`
+  |> if
+    |> jq: `.value > 50`
+    then:
+      |> jq: `{ category: "high", then: true }`
+    else:
+      |> jq: `{ category: "low", else: true }`
+    end
+  |> jq: `{ final: true, wrapped: . }`
+
+# Test 2: Multi-step condition with external API check
+pipeline protectedResource =
+  |> jq: `{ message: "Access granted to protected resource" }`
+
+GET /test-if-auth
+  |> if
+    |> jq: `{ authorized: true }`
+    then:
+      |> log: "Access Granted"
+      |> pipeline: protectedResource
+    else:
+      |> jq: `{ error: "Unauthorized", status: 401 }`
+
+# Test 3: If without else (pass-through behavior)
+GET /test-if-no-else
+  |> jq: `{ initial: "data", count: 7 }`
+  |> if
+    |> jq: `.count > 5`
+    then:
+      |> jq: `. + { modified: true, bonus: "high count" }`
+
+# Test 4: Nested if blocks
+GET /test-if-nested
+  |> jq: `{ level: 12 }`
+  |> if
+    |> jq: `.level > 0`
+    then:
+      |> if
+        |> jq: `.level > 10`
+        then:
+          |> jq: `. + { status: "high", tier: "premium" }`
+        else:
+          |> jq: `. + { status: "medium", tier: "standard" }`
+    else:
+      |> jq: `. + { status: "low", tier: "free" }`
+
+# Test 5: Condition returns null (should be falsy)
+GET /test-if-null
+  |> if
+    |> jq: `null`
+    then:
+      |> jq: `{ result: "should not see this" }`
+    else:
+      |> jq: `{ result: "null is falsy" }`
+
+# Test 6: Condition returns false
+GET /test-if-false
+  |> if
+    |> jq: `false`
+    then:
+      |> jq: `{ result: "should not see this" }`
+    else:
+      |> jq: `{ result: "false is falsy" }`
+
+# Test 7: Condition returns object (should be truthy)
+GET /test-if-object
+  |> if
+    |> jq: `{ some: "data" }`
+    then:
+      |> jq: `{ result: "objects are truthy" }`
+    else:
+      |> jq: `{ result: "should not see this" }`
+
+# Test 8: Condition with database query
+GET /test-if-db-check/:userId
+  |> if
+    |> jq: `{ sqlParams: [.params.userId] }`
+    |> pg: `SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND status = 'active') as active`
+    |> jq: `.data.rows[0].active`
+    then:
+      |> jq: `{ message: "User is active", userId: .params.userId }`
+    else:
+      |> jq: `{ error: "User not found or inactive", userId: .params.userId }`
+
+# Test 9: If/else with result branches
+GET /test-if-with-result/:value
+  |> jq: `{ value: (.params.value | tonumber) }`
+  |> if
+    |> jq: `.value > 50`
+    then:
+      |> jq: `{ category: "high", value: .value }`
+    else:
+      |> jq: `{ category: "low", value: .value }`
+    end
+  |> result
+    ok(200):
+      |> jq: `{ success: true, data: . }`
+
+# Test 10: Complex condition with multiple steps
+GET /test-if-complex
+  |> jq: `{ userId: 123 }`
+  |> if
+    |> jq: `{ sqlParams: [.userId] }`
+    |> pg: `SELECT COUNT(*) as count FROM users WHERE id = $1`
+    |> jq: `.data.rows[0].count > 0`
+    then:
+      |> jq: `{ authorized: true, message: "User found in database" }`
+    else:
+      |> jq: `{ authorized: false, message: "User not found" }`
+
+describe "if/else feature"
+  it "executes then branch when condition is true"
+    when calling GET /test-if-simple
+    then output `.status` equals "high"
+    and output `.count` equals 15
+
+  it "executes else branch when condition is false"
+    when calling GET /test-if-false
+    then output `.result` equals "false is falsy"
+
+  it "treats null as falsy"
+    when calling GET /test-if-null
+    then output `.result` equals "null is falsy"
+
+  it "treats objects as truthy"
+    when calling GET /test-if-object
+    then output `.result` equals "objects are truthy"

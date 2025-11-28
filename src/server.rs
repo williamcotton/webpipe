@@ -60,6 +60,20 @@ fn pipeline_needs_flags(
                         return true;
                     }
                 }
+            },
+            PipelineStep::If { condition, then_branch, else_branch } => {
+                // 5. If/Else blocks: check condition, then, and else branches
+                if pipeline_needs_flags(condition, named_pipelines) {
+                    return true;
+                }
+                if pipeline_needs_flags(then_branch, named_pipelines) {
+                    return true;
+                }
+                if let Some(else_pipe) = else_branch {
+                    if pipeline_needs_flags(else_pipe, named_pipelines) {
+                        return true;
+                    }
+                }
             }
         }
     }

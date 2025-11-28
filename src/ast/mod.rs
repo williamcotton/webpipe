@@ -114,6 +114,11 @@ pub struct Tag {
 pub enum PipelineStep {
     Regular { name: String, config: String, config_type: ConfigType, tags: Vec<Tag> },
     Result { branches: Vec<ResultBranch> },
+    If {
+        condition: Pipeline,
+        then_branch: Pipeline,
+        else_branch: Option<Pipeline>
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +316,26 @@ impl Display for PipelineStep {
                 writeln!(f, "  |> result")?;
                 for branch in branches {
                     write!(f, "    {}", branch)?;
+                }
+                Ok(())
+            }
+            PipelineStep::If { condition, then_branch, else_branch } => {
+                writeln!(f, "  |> if")?;
+                // Format condition pipeline with proper indentation
+                for step in &condition.steps {
+                    writeln!(f, "  {}", step)?;
+                }
+                writeln!(f, "    then:")?;
+                // Format then branch with proper indentation
+                for step in &then_branch.steps {
+                    writeln!(f, "    {}", step)?;
+                }
+                // Format else branch if present
+                if let Some(else_pipe) = else_branch {
+                    writeln!(f, "    else:")?;
+                    for step in &else_pipe.steps {
+                        writeln!(f, "    {}", step)?;
+                    }
                 }
                 Ok(())
             }
@@ -539,9 +564,46 @@ fn parse_config(input: &str) -> IResult<&str, Config> {
 }
 
 // Pipeline parsing
+fn parse_if_step(input: &str) -> IResult<&str, PipelineStep> {
+    // 1. Parse Header: "|> if"
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("|>")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("if")(input)?;
+    let (input, _) = multispace0(input)?;
+
+    // 2. Parse Condition Pipeline
+    // This works because parse_pipeline stops at tokens not starting with "|>"
+    let (input, condition) = parse_pipeline(input)?;
+    let (input, _) = multispace0(input)?;
+
+    // 3. Parse "then:" block
+    let (input, _) = tag("then:")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, then_branch) = parse_pipeline(input)?;
+    let (input, _) = multispace0(input)?;
+
+    // 4. Parse Optional "else:" block
+    let (input, else_branch) = opt(preceded(
+        (tag("else:"), multispace0),
+        parse_pipeline
+    )).parse(input)?;
+    let (input, _) = multispace0(input)?;
+
+    // 5. Parse Optional "end" keyword
+    let (input, _) = opt(tag("end")).parse(input)?;
+
+    Ok((input, PipelineStep::If {
+        condition,
+        then_branch,
+        else_branch,
+    }))
+}
+
 fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
     alt((
         parse_result_step,
+        parse_if_step,
         parse_regular_step
     )).parse(input)
 }
