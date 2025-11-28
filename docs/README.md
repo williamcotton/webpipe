@@ -27,7 +27,7 @@ A concise index for everything Web Pipe—from first steps to advanced usage.
 - **Concurrency** — Async tasks and joining results.  
   [concurrency.md](./concurrency.md)
 
-- **Flow Control** — Conditional execution with tags (`@env`, `@flag`).  
+- **Flow Control** — Conditional execution with tags (`@env`, `@flag`) and if/else blocks.
   [flow-control.md](./flow-control.md)
 
 - **Variables & Partials** — Reusable SQL, templates, and pipeline fragments.  
