@@ -455,6 +455,30 @@ impl Display for MutationResolver {
     }
 }
 
+// Skip whitespace and comments (lines starting with #)
+fn skip_ws_and_comments(input: &str) -> IResult<&str, ()> {
+    let mut remaining = input;
+    loop {
+        // Skip whitespace
+        let (new_input, _) = multispace0(remaining)?;
+        remaining = new_input;
+        
+        // Check for comment line
+        if remaining.starts_with('#') {
+            // Skip to end of line
+            if let Some(newline_pos) = remaining.find('\n') {
+                remaining = &remaining[newline_pos + 1..];
+            } else {
+                // Comment goes to end of input
+                remaining = "";
+            }
+        } else {
+            break;
+        }
+    }
+    Ok((remaining, ()))
+}
+
 // Multi-line string parser for backtick-delimited content
 fn parse_multiline_string(input: &str) -> IResult<&str, String> {
     delimited(
@@ -566,29 +590,32 @@ fn parse_config(input: &str) -> IResult<&str, Config> {
 // Pipeline parsing
 fn parse_if_step(input: &str) -> IResult<&str, PipelineStep> {
     // 1. Parse Header: "|> if"
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("|>")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("if")(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
 
     // 2. Parse Condition Pipeline
     // This works because parse_pipeline stops at tokens not starting with "|>"
     let (input, condition) = parse_pipeline(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
 
     // 3. Parse "then:" block
     let (input, _) = tag("then:")(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
     let (input, then_branch) = parse_pipeline(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
 
     // 4. Parse Optional "else:" block
     let (input, else_branch) = opt(preceded(
-        (tag("else:"), multispace0),
+        |i| {
+            let (i, _) = tag("else:")(i)?;
+            skip_ws_and_comments(i)
+        },
         parse_pipeline
     )).parse(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
 
     // 5. Parse Optional "end" keyword
     let (input, _) = opt(tag("end")).parse(input)?;
@@ -648,7 +675,7 @@ fn parse_tags(input: &str) -> IResult<&str, Vec<Tag>> {
 }
 
 fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("|>")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, name) = parse_identifier(input)?;
@@ -664,17 +691,17 @@ fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
 }
 
 fn parse_result_step(input: &str) -> IResult<&str, PipelineStep> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("|>")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("result")(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
     let (input, branches) = many0(parse_result_branch).parse(input)?;
     Ok((input, PipelineStep::Result { branches }))
 }
 
 fn parse_result_branch(input: &str) -> IResult<&str, ResultBranch> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
     let (input, branch_type_str) = parse_identifier(input)?;
     let branch_type = match branch_type_str.as_str() {
         "ok" => ResultBranchType::Ok,
@@ -694,7 +721,23 @@ fn parse_result_branch(input: &str) -> IResult<&str, ResultBranch> {
 }
 
 fn parse_pipeline(input: &str) -> IResult<&str, Pipeline> {
-    map(many0(parse_pipeline_step), |steps| Pipeline { steps }).parse(input)
+    let mut steps = Vec::new();
+    let mut remaining = input;
+    
+    loop {
+        // Skip whitespace and comments before checking for next step
+        let (new_input, _) = skip_ws_and_comments(remaining)?;
+        
+        // Try to parse a pipeline step
+        if let Ok((after_step, step)) = parse_pipeline_step(new_input) {
+            steps.push(step);
+            remaining = after_step;
+        } else {
+            // No more steps, return what we have
+            // Don't consume the whitespace/comments if there's no step
+            return Ok((remaining, Pipeline { steps }));
+        }
+    }
 }
 
 fn parse_named_pipeline(input: &str) -> IResult<&str, NamedPipeline> {
@@ -1320,6 +1363,64 @@ mutation update =
         assert!(formatted.contains("query hello"));
         assert!(formatted.contains("mutation update"));
         assert!(formatted.contains("type Query"));
+    }
+
+    #[test]
+    fn parse_comments_inside_pipeline() {
+        let src = r#"
+GET /test
+  # comment before first step
+  |> jq: `{ hello: "world" }`
+  # comment between steps
+  |> handlebars: `<p>{{hello}}</p>`
+  # comment after last step
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        assert_eq!(program.routes.len(), 1);
+        
+        // Verify all steps were parsed despite comments
+        if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
+            assert_eq!(pipeline.steps.len(), 2);
+        } else {
+            panic!("Expected inline pipeline");
+        }
+    }
+
+    #[test]
+    fn parse_comments_inside_if_blocks() {
+        let src = r#"
+GET /test-if
+  |> jq: `{ level: 10 }`
+  # comment before if
+  |> if
+    |> jq: `.level > 5`
+    # comment before then
+    then:
+      # comment inside then
+      |> jq: `. + { status: "high" }`
+    # comment before else
+    else:
+      # comment inside else
+      |> jq: `. + { status: "low" }`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        assert_eq!(program.routes.len(), 1);
+        
+        if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
+            assert_eq!(pipeline.steps.len(), 2); // jq + if
+            
+            // Verify the if step was parsed correctly
+            if let PipelineStep::If { condition, then_branch, else_branch } = &pipeline.steps[1] {
+                assert_eq!(condition.steps.len(), 1);
+                assert_eq!(then_branch.steps.len(), 1);
+                assert!(else_branch.is_some());
+                assert_eq!(else_branch.as_ref().unwrap().steps.len(), 1);
+            } else {
+                panic!("Expected If step");
+            }
+        } else {
+            panic!("Expected inline pipeline");
+        }
     }
 
     #[test]

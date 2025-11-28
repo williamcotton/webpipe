@@ -2083,8 +2083,10 @@ GET /test-if-no-else
 # Test 4: Nested if blocks
 GET /test-if-nested
   |> jq: `{ level: 12 }`
+  # comment here
   |> if
     |> jq: `.level > 0`
+    # comment here
     then:
       |> if
         |> jq: `.level > 10`
