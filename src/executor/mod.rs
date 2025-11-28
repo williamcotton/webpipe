@@ -13,6 +13,35 @@ use crate::{
     runtime::context::{CacheStore, RateLimitStore},
 };
 
+/// Output from pipeline execution
+#[derive(Debug, Clone)]
+pub struct PipelineOutput {
+    /// The current JSON body/state of the pipeline
+    pub state: Value,
+    /// The MIME type (e.g., "application/json", "text/html")
+    pub content_type: String,
+    /// The HTTP status code, if set
+    pub status_code: Option<u16>,
+}
+
+impl PipelineOutput {
+    pub fn new(state: Value) -> Self {
+        Self {
+            state,
+            content_type: "application/json".to_string(),
+            status_code: None,
+        }
+    }
+}
+
+/// Loop control enum to manage flow within the pipeline loop
+enum StepOutcome {
+    /// Continue to the next step
+    Continue,
+    /// Stop execution and return the pipeline result immediately
+    Return(PipelineOutput),
+}
+
 /// Represents different execution modes for pipeline steps
 #[derive(Debug)]
 enum ExecutionMode {
@@ -367,33 +396,6 @@ fn select_branch<'a>(
         .find(|b| matches!(b.branch_type, ResultBranchType::Default))
 }
 
-#[async_recursion]
-async fn handle_result_step<'a>(
-    env: &'a ExecutionEnv,
-    ctx: &'a mut RequestContext,
-    branches: &'a [crate::ast::ResultBranch],
-    input: Value,
-    mut content_type: String,
-) -> Result<(Value, String, Option<u16>), WebPipeError> {
-    let error_type = extract_error_type(&input);
-    let selected = select_branch(branches, &error_type);
-    if let Some(branch) = selected {
-        let inherited_cookies = input.get("setCookies").cloned();
-        let (mut result, branch_content_type, _status) = execute_pipeline_internal(env, &branch.pipeline, input, ctx).await?;
-        if inherited_cookies.is_some() {
-            if let Some(obj) = result.as_object_mut() {
-                if !obj.contains_key("setCookies") {
-                    if let Some(c) = inherited_cookies { obj.insert("setCookies".to_string(), c); }
-                }
-            }
-        }
-        if branch_content_type != "application/json" { content_type = branch_content_type; }
-        Ok((result, content_type, Some(branch.status_code)))
-    } else {
-        Ok((input, content_type, None))
-    }
-}
-
 /// Determine the execution mode for a step
 fn detect_execution_mode(name: &str, tags: &[crate::ast::Tag]) -> ExecutionMode {
     // Check for async tag first
@@ -406,6 +408,59 @@ fn detect_execution_mode(name: &str, tags: &[crate::ast::Tag]) -> ExecutionMode 
         "join" => ExecutionMode::Join,
         "pipeline" => ExecutionMode::Recursive,
         _ => ExecutionMode::Standard,
+    }
+}
+
+/// Update pipeline state after a step execution
+///
+/// Handles the complex logic of whether to merge or replace state:
+/// - Merge: Default behavior for most middleware (Backpack semantics)
+/// - Replace: Used for jq, handlebars, or if it is the last step
+/// - JQ Hack: If jq and not last step, preserve runtime keys from old state
+fn update_pipeline_state(
+    ctx: &mut crate::runtime::PipelineContext,
+    new_value: Value,
+    step_name: &str,
+    is_last_step: bool,
+) {
+    // Terminal transformers (jq, handlebars) and final steps replace entirely
+    // Other middleware steps merge (Backpack semantics)
+    let should_merge = !is_last_step && step_name != "handlebars" && step_name != "jq";
+
+    if should_merge {
+        ctx.merge_state(new_value);
+    } else {
+        // For non-final jq steps, preserve runtime context keys
+        // These are needed for async/join, accumulated results, and request context
+        // Final steps should produce clean output without runtime metadata
+        const RUNTIME_KEYS: &[&str] = &[
+            "async", "data", "originalRequest",
+            "query", "params", "body", "headers", "cookies",
+            "method", "path", "ip", "content_type"
+        ];
+
+        let backups: Vec<(String, Value)> = if step_name == "jq" && !is_last_step {
+            RUNTIME_KEYS.iter()
+                .filter_map(|&key| {
+                    ctx.state.get(key).map(|v| (key.to_string(), v.clone()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        ctx.replace_state(new_value);
+
+        // Restore runtime keys if they existed and aren't in the new state
+        if !backups.is_empty() {
+            if let Some(obj) = ctx.state.as_object_mut() {
+                for (key, val) in backups {
+                    if !obj.contains_key(&key) {
+                        obj.insert(key, val);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -579,6 +634,223 @@ async fn handle_standard_execution(
     })
 }
 
+/// Dispatch to the appropriate step handler
+async fn execute_step<'a>(
+    step: &'a PipelineStep,
+    idx: usize,
+    all_steps: &'a [PipelineStep],
+    env: &'a ExecutionEnv,
+    ctx: &'a mut RequestContext,
+    pipeline_ctx: &mut crate::runtime::PipelineContext,
+    current_output: &mut PipelineOutput,
+) -> Result<StepOutcome, WebPipeError> {
+    match step {
+        PipelineStep::Regular { name, config, tags, parsed_join_targets, .. } => {
+            execute_regular_step(
+                name,
+                config,
+                tags,
+                parsed_join_targets.as_ref(),
+                idx,
+                all_steps,
+                env,
+                ctx,
+                pipeline_ctx,
+                current_output,
+            ).await
+        }
+        PipelineStep::Result { branches } => {
+            // Handle result step - returns immediately
+            let error_type = extract_error_type(&pipeline_ctx.state);
+            let selected = select_branch(branches, &error_type);
+            if let Some(branch) = selected {
+                let inherited_cookies = pipeline_ctx.state.get("setCookies").cloned();
+                let (mut result, branch_content_type, _status) = execute_pipeline_internal(
+                    env,
+                    &branch.pipeline,
+                    pipeline_ctx.state.clone(),
+                    ctx
+                ).await?;
+                if inherited_cookies.is_some() {
+                    if let Some(obj) = result.as_object_mut() {
+                        if !obj.contains_key("setCookies") {
+                            if let Some(c) = inherited_cookies {
+                                obj.insert("setCookies".to_string(), c);
+                            }
+                        }
+                    }
+                }
+                let final_content_type = if branch_content_type != "application/json" {
+                    branch_content_type
+                } else {
+                    current_output.content_type.clone()
+                };
+                Ok(StepOutcome::Return(PipelineOutput {
+                    state: result,
+                    content_type: final_content_type,
+                    status_code: Some(branch.status_code),
+                }))
+            } else {
+                Ok(StepOutcome::Return(PipelineOutput {
+                    state: pipeline_ctx.state.clone(),
+                    content_type: current_output.content_type.clone(),
+                    status_code: current_output.status_code,
+                }))
+            }
+        }
+        PipelineStep::If { condition, then_branch, else_branch } => {
+            // 1. Run Condition on Cloned State
+            let (cond_result, _, _) = execute_pipeline_internal(
+                env,
+                condition,
+                pipeline_ctx.state.clone(),
+                ctx
+            ).await?;
+
+            // 2. Determine Truthiness
+            let is_truthy = match cond_result {
+                Value::Bool(b) => b,
+                Value::Null => false,
+                _ => true,
+            };
+
+            // 3. Execute Branch
+            if is_truthy {
+                // Run THEN branch with ORIGINAL state
+                let (res, ct, status) = execute_pipeline_internal(
+                    env,
+                    then_branch,
+                    pipeline_ctx.state.clone(),
+                    ctx
+                ).await?;
+
+                // Update Context
+                pipeline_ctx.state = res;
+                if let Some(s) = status {
+                    current_output.status_code = Some(s);
+                }
+                if ct != "application/json" {
+                    current_output.content_type = ct;
+                }
+            } else if let Some(else_pipe) = else_branch {
+                // Run ELSE branch with ORIGINAL state
+                let (res, ct, status) = execute_pipeline_internal(
+                    env,
+                    else_pipe,
+                    pipeline_ctx.state.clone(),
+                    ctx
+                ).await?;
+
+                // Update Context
+                pipeline_ctx.state = res;
+                if let Some(s) = status {
+                    current_output.status_code = Some(s);
+                }
+                if ct != "application/json" {
+                    current_output.content_type = ct;
+                }
+            }
+            // If false and no else: state remains unchanged (pass-through)
+
+            Ok(StepOutcome::Continue)
+        }
+    }
+}
+
+/// Execute a regular pipeline step
+async fn execute_regular_step(
+    name: &str,
+    config: &str,
+    tags: &[crate::ast::Tag],
+    parsed_join_targets: Option<&Vec<String>>,
+    idx: usize,
+    all_steps: &[PipelineStep],
+    env: &ExecutionEnv,
+    ctx: &mut RequestContext,
+    pipeline_ctx: &mut crate::runtime::PipelineContext,
+    current_output: &mut PipelineOutput,
+) -> Result<StepOutcome, WebPipeError> {
+    // 1. Guard Checks: should_execute_step
+    if !should_execute_step(tags, env, ctx, &pipeline_ctx.state) {
+        return Ok(StepOutcome::Continue);
+    }
+
+    // Check if this is effectively the last step (no remaining steps will execute)
+    let is_last_step = is_effectively_last_step(idx, all_steps, env, ctx, &pipeline_ctx.state);
+
+    // 2. Determine Execution Mode
+    let mode = detect_execution_mode(name, tags);
+
+    // Handle async execution separately (no state merge needed)
+    if let ExecutionMode::Async(async_name) = mode {
+        spawn_async_step(env, ctx, name, config, pipeline_ctx.state.clone(), async_name);
+        return Ok(StepOutcome::Continue);
+    }
+
+    // 3. Config Resolution: resolve_config_and_autoname. Handle resultName injection.
+    let (effective_config, effective_input, auto_named) =
+        resolve_config_and_autoname(&env.variables, name, config, &pipeline_ctx.state);
+
+    // If auto-named, update the pipeline context state with resultName
+    if auto_named {
+        pipeline_ctx.state = effective_input.clone();
+    }
+
+    // 4. Execution Mode: Switch on Standard, Join, Recursive
+    let step_result = match mode {
+        ExecutionMode::Join => {
+            // Use pre-parsed targets for hot path optimization
+            handle_join(ctx, &effective_config, parsed_join_targets, effective_input.clone()).await?
+        }
+        ExecutionMode::Recursive => {
+            handle_recursive_pipeline(env, ctx, &effective_config, effective_input.clone()).await?
+        }
+        ExecutionMode::Standard => {
+            // Standard execution - pass mutable context
+            let mut temp_ctx = crate::runtime::PipelineContext::new(pipeline_ctx.state.clone());
+            handle_standard_execution(env, ctx, name, &effective_config, &mut temp_ctx).await?;
+            StepResult {
+                value: temp_ctx.state,
+                content_type: if name == "handlebars" { "text/html".to_string() } else { "application/json".to_string() },
+                status_code: None,
+            }
+        }
+        ExecutionMode::Async(_) => unreachable!("Async handled above"),
+    };
+
+    // 5. State Update: Call update_pipeline_state
+    update_pipeline_state(pipeline_ctx, step_result.value, name, is_last_step);
+
+    // 6. Metadata Update: Update content_type and status_code in current_output
+    if step_result.content_type != "application/json" || is_last_step {
+        if name == "pipeline" || is_last_step || name == "handlebars" {
+            current_output.content_type = step_result.content_type;
+        }
+    }
+    if let Some(status) = step_result.status_code {
+        current_output.status_code = Some(status);
+    }
+
+    // 7. Cache Check: Check for cache stop signals. If found, return StepOutcome::Return.
+    if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&pipeline_ctx.state) {
+        let final_content_type = cached_content_type.unwrap_or_else(|| current_output.content_type.clone());
+        return Ok(StepOutcome::Return(PipelineOutput {
+            state: cached_val,
+            content_type: final_content_type,
+            status_code: current_output.status_code,
+        }));
+    }
+
+    // 8. Cleanup: Remove resultName if auto-named
+    if auto_named {
+        if let Some(obj) = pipeline_ctx.state.as_object_mut() {
+            obj.remove("resultName");
+        }
+    }
+
+    Ok(StepOutcome::Continue)
+}
+
 /// Internal pipeline execution that accepts a mutable RequestContext
 #[async_recursion]
 async fn execute_pipeline_internal<'a>(
@@ -587,180 +859,42 @@ async fn execute_pipeline_internal<'a>(
     input: Value,
     ctx: &'a mut RequestContext,
 ) -> Result<(Value, String, Option<u16>), WebPipeError> {
+    // Track content_type and status_code as we execute steps
     let mut content_type = "application/json".to_string();
-    let mut status_code_out: Option<u16> = None;
+    let mut status_code: Option<u16> = None;
 
-    // Create PipelineContext with the initial state
-    let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
+    let mut pipeline_ctx = crate::runtime::PipelineContext::new(input);
 
     for (idx, step) in pipeline.steps.iter().enumerate() {
-        match step {
-            PipelineStep::Regular { name, config, config_type: _, tags, parsed_join_targets } => {
-                // 1. Check Guards (tags/flags)
-                if !should_execute_step(tags, env, ctx, &pipeline_ctx.state) {
-                    continue;
-                }
+        // Create output tracker for this iteration
+        let mut current_output = PipelineOutput {
+            state: Value::Null, // Not used during step execution
+            content_type: content_type.clone(),
+            status_code,
+        };
 
-                // Check if this is effectively the last step (no remaining steps will execute)
-                let is_last_step = is_effectively_last_step(idx, &pipeline.steps, env, ctx, &pipeline_ctx.state);
+        let outcome = execute_step(
+            step,
+            idx,
+            &pipeline.steps,
+            env,
+            ctx,
+            &mut pipeline_ctx,
+            &mut current_output,
+        ).await?;
 
-                // 2. Determine Execution Mode
-                let mode = detect_execution_mode(name, tags);
+        // Update tracked metadata
+        content_type = current_output.content_type;
+        status_code = current_output.status_code;
 
-                // Handle async execution separately (no state merge needed)
-                if let ExecutionMode::Async(async_name) = mode {
-                    spawn_async_step(env, ctx, name, config, pipeline_ctx.state.clone(), async_name);
-                    continue;
-                }
-
-                // Resolve configuration and handle auto-naming
-                let (effective_config, effective_input, auto_named) =
-                    resolve_config_and_autoname(&env.variables, name, config, &pipeline_ctx.state);
-
-                // If auto-named, update the pipeline context state with resultName
-                if auto_named {
-                    pipeline_ctx.state = effective_input.clone();
-                }
-
-                // 3. Execute Strategy - delegate to specialized handlers
-                let step_result = match mode {
-                    ExecutionMode::Join => {
-                        // Use pre-parsed targets for hot path optimization
-                        handle_join(ctx, &effective_config, parsed_join_targets.as_ref(), effective_input.clone()).await?
-                    }
-                    ExecutionMode::Recursive => {
-                        handle_recursive_pipeline(env, ctx, &effective_config, effective_input.clone()).await?
-                    }
-                    ExecutionMode::Standard => {
-                        // Standard execution - pass mutable context
-                        let mut temp_ctx = crate::runtime::PipelineContext::new(pipeline_ctx.state.clone());
-                        handle_standard_execution(env, ctx, name, &effective_config, &mut temp_ctx).await?;
-                        StepResult {
-                            value: temp_ctx.state,
-                            content_type: if name == "handlebars" { "text/html".to_string() } else { "application/json".to_string() },
-                            status_code: None,
-                        }
-                    }
-                    ExecutionMode::Async(_) => unreachable!("Async handled above"),
-                };
-
-                // 4. Update Pipeline State using centralized merge logic
-                // Terminal transformers (jq, handlebars) and final steps replace entirely
-                // Other middleware steps merge (Backpack semantics)
-                let should_merge = !is_last_step && name != "handlebars" && name != "jq";
-                if should_merge {
-                    pipeline_ctx.merge_state(step_result.value);
-                } else {
-                    // For non-final jq steps, preserve runtime context keys
-                    // These are needed for async/join, accumulated results, and request context
-                    // Final steps should produce clean output without runtime metadata
-                    const RUNTIME_KEYS: &[&str] = &[
-                        "async", "data", "originalRequest",
-                        "query", "params", "body", "headers", "cookies",
-                        "method", "path", "ip", "content_type"
-                    ];
-                    
-                    let backups: Vec<(String, Value)> = if name == "jq" && !is_last_step {
-                        RUNTIME_KEYS.iter()
-                            .filter_map(|&key| {
-                                pipeline_ctx.state.get(key).map(|v| (key.to_string(), v.clone()))
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                    
-                    pipeline_ctx.replace_state(step_result.value);
-                    
-                    // Restore runtime keys if they existed and aren't in the new state
-                    if !backups.is_empty() {
-                        if let Some(obj) = pipeline_ctx.state.as_object_mut() {
-                            for (key, val) in backups {
-                                if !obj.contains_key(&key) {
-                                    obj.insert(key, val);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // 5. Update content type if changed
-                if step_result.content_type != "application/json" || is_last_step {
-                    if name == "pipeline" || is_last_step || name == "handlebars" {
-                        content_type = step_result.content_type;
-                    }
-                }
-                if let Some(status) = step_result.status_code {
-                    status_code_out = Some(status);
-                }
-
-                // 6. Handle Signals (Cache hits, etc)
-                if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&pipeline_ctx.state) {
-                    let final_content_type = cached_content_type.unwrap_or(content_type);
-                    return Ok((cached_val, final_content_type, status_code_out));
-                }
-
-                // 7. Clean up auto-naming
-                if auto_named {
-                    if let Some(obj) = pipeline_ctx.state.as_object_mut() {
-                        obj.remove("resultName");
-                    }
-                }
-            }
-            PipelineStep::Result { branches } => {
-                return handle_result_step(env, ctx, branches, pipeline_ctx.state, content_type).await;
-            }
-            PipelineStep::If { condition, then_branch, else_branch } => {
-                // 1. Run Condition on Cloned State
-                let (cond_result, _, _) = execute_pipeline_internal(
-                    env,
-                    condition,
-                    pipeline_ctx.state.clone(), // <--- CLONE
-                    ctx
-                ).await?;
-
-                // 2. Determine Truthiness
-                let is_truthy = match cond_result {
-                    Value::Bool(b) => b,
-                    Value::Null => false,
-                    _ => true,
-                };
-
-                // 3. Execute Branch
-                if is_truthy {
-                    // Run THEN branch with ORIGINAL state
-                    let (res, ct, status) = execute_pipeline_internal(
-                        env,
-                        then_branch,
-                        pipeline_ctx.state.clone(),
-                        ctx
-                    ).await?;
-
-                    // Update Context
-                    pipeline_ctx.state = res;
-                    if let Some(s) = status { status_code_out = Some(s); }
-                    if ct != "application/json" { content_type = ct; }
-
-                } else if let Some(else_pipe) = else_branch {
-                    // Run ELSE branch with ORIGINAL state
-                    let (res, ct, status) = execute_pipeline_internal(
-                        env,
-                        else_pipe,
-                        pipeline_ctx.state.clone(),
-                        ctx
-                    ).await?;
-
-                    // Update Context
-                    pipeline_ctx.state = res;
-                    if let Some(s) = status { status_code_out = Some(s); }
-                    if ct != "application/json" { content_type = ct; }
-                }
-                // If false and no else: state remains unchanged (pass-through)
-            }
+        match outcome {
+            StepOutcome::Continue => continue,
+            StepOutcome::Return(output) => return Ok((output.state, output.content_type, output.status_code)),
         }
     }
 
-    Ok((pipeline_ctx.state, content_type, status_code_out))
+    // Return final result with accumulated state and metadata
+    Ok((pipeline_ctx.state, content_type, status_code))
 }
 
 /// Public entry point for pipeline execution
