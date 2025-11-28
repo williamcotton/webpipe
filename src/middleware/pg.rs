@@ -54,17 +54,22 @@ impl super::Middleware for PgMiddleware {
 
             let result_value = serde_json::json!({ "rows": rows_json, "rowCount": row_count });
 
-            // Mutate state in place
-            if let Some(obj) = pipeline_ctx.state.as_object_mut() {
-                match result_name.as_deref() {
-                    Some(name) => {
-                        let data_entry = obj.entry("data").or_insert_with(|| Value::Object(serde_json::Map::new()));
-                        if !data_entry.is_object() { *data_entry = Value::Object(serde_json::Map::new()); }
-                        if let Some(map) = data_entry.as_object_mut() { map.insert(name.to_string(), result_value); }
-                    }
-                    None => {
-                        obj.insert("data".to_string(), result_value);
-                    }
+            // Replace state with query result (Transform behavior)
+            // The executor will handle preserving context if this is not the last step
+            match result_name.as_deref() {
+                Some(name) => {
+                    // With resultName: store under .data.<name>
+                    pipeline_ctx.state = serde_json::json!({
+                        "data": {
+                            name: result_value
+                        }
+                    });
+                }
+                None => {
+                    // Without resultName: store under .data
+                    pipeline_ctx.state = serde_json::json!({
+                        "data": result_value
+                    });
                 }
             }
             Ok(())
@@ -81,9 +86,17 @@ impl super::Middleware for PgMiddleware {
             };
 
             let result_value = serde_json::json!({ "rows": [], "rowCount": result.rows_affected() });
-            if let Some(obj) = pipeline_ctx.state.as_object_mut() { obj.insert("data".to_string(), result_value); }
+            pipeline_ctx.state = serde_json::json!({
+                "data": result_value
+            });
             Ok(())
         }
+    }
+
+    fn behavior(&self) -> super::StateBehavior {
+        // PG middleware acts as Transform - it replaces state with query results
+        // When not terminal, context is preserved. When terminal, clean output.
+        super::StateBehavior::Transform
     }
 }
 

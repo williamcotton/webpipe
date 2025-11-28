@@ -62,6 +62,10 @@ impl super::Middleware for JqMiddleware {
             .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ result parse error: {}", e)))?;
         Ok(())
     }
+
+    fn behavior(&self) -> super::StateBehavior {
+        super::StateBehavior::Transform
+    }
 }
 
 
@@ -90,10 +94,12 @@ mod tests {
         use std::sync::Arc;
         use std::collections::HashMap;
 
+        let registry = Arc::new(crate::middleware::MiddlewareRegistry::empty());
         ExecutionEnv {
             variables: Arc::new(vec![]),
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
+            registry,
             environment: None,
             cache: CacheStore::new(8, 60),
             rate_limit: RateLimitStore::new(1000),

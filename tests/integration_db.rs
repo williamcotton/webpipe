@@ -72,7 +72,8 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
     let env = ExecutionEnv {
         variables: Arc::new(program.variables.clone()),
         named_pipelines: Arc::new(named),
-        invoker: Arc::new(RealInvoker::new(registry)),
+        invoker: Arc::new(RealInvoker::new(registry.clone())),
+        registry: registry.clone(),
         environment: None,
         cache: ctx.cache.clone(),
         rate_limit: ctx.rate_limit.clone(),

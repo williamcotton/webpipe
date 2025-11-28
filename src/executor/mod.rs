@@ -194,6 +194,9 @@ pub struct ExecutionEnv {
     /// Middleware invoker
     pub invoker: Arc<dyn MiddlewareInvoker>,
 
+    /// Middleware registry (for accessing behavior metadata)
+    pub registry: Arc<MiddlewareRegistry>,
+
     /// Environment name (e.g. "production", "development", "staging")
     pub environment: Option<String>,
 
@@ -413,53 +416,42 @@ fn detect_execution_mode(name: &str, tags: &[crate::ast::Tag]) -> ExecutionMode 
 
 /// Update pipeline state after a step execution
 ///
-/// Handles the complex logic of whether to merge or replace state:
+/// Handles the complex logic of whether to merge or replace state based on middleware behavior:
 /// - Merge: Default behavior for most middleware (Backpack semantics)
-/// - Replace: Used for jq, handlebars, or if it is the last step
-/// - JQ Hack: If jq and not last step, preserve runtime keys from old state
+/// - Transform: Replace state entirely, but preserve system context if not terminal
+/// - Render: Replace state entirely (for final output like HTML/Text)
+/// - ReadOnly: No state modification needed (handled by middleware)
 fn update_pipeline_state(
-    ctx: &mut crate::runtime::PipelineContext,
+    pipeline_ctx: &mut crate::runtime::PipelineContext,
     new_value: Value,
-    step_name: &str,
+    behavior: crate::middleware::StateBehavior,
     is_last_step: bool,
 ) {
-    // Terminal transformers (jq, handlebars) and final steps replace entirely
-    // Other middleware steps merge (Backpack semantics)
-    let should_merge = !is_last_step && step_name != "handlebars" && step_name != "jq";
+    use crate::middleware::StateBehavior;
 
-    if should_merge {
-        ctx.merge_state(new_value);
-    } else {
-        // For non-final jq steps, preserve runtime context keys
-        // These are needed for async/join, accumulated results, and request context
-        // Final steps should produce clean output without runtime metadata
-        const RUNTIME_KEYS: &[&str] = &[
-            "async", "data", "originalRequest",
-            "query", "params", "body", "headers", "cookies",
-            "method", "path", "ip", "content_type"
-        ];
-
-        let backups: Vec<(String, Value)> = if step_name == "jq" && !is_last_step {
-            RUNTIME_KEYS.iter()
-                .filter_map(|&key| {
-                    ctx.state.get(key).map(|v| (key.to_string(), v.clone()))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        ctx.replace_state(new_value);
-
-        // Restore runtime keys if they existed and aren't in the new state
-        if !backups.is_empty() {
-            if let Some(obj) = ctx.state.as_object_mut() {
-                for (key, val) in backups {
-                    if !obj.contains_key(&key) {
-                        obj.insert(key, val);
-                    }
-                }
+    match behavior {
+        StateBehavior::Merge => {
+            pipeline_ctx.merge_state(new_value);
+        }
+        StateBehavior::Transform => {
+            if is_last_step {
+                // If it's the last step, just replace everything
+                pipeline_ctx.replace_state(new_value);
+            } else {
+                // For non-terminal transforms, preserve runtime context keys
+                let backups = pipeline_ctx.backup_system_keys();
+                pipeline_ctx.replace_state(new_value);
+                pipeline_ctx.restore_system_keys(backups);
             }
+        }
+        StateBehavior::Render => {
+            // Render always replaces content entirely
+            pipeline_ctx.replace_state(new_value);
+        }
+        StateBehavior::ReadOnly => {
+            // ReadOnly middleware don't modify state through this path
+            // (they may have side effects but don't change pipeline state)
+            // In practice, they shouldn't call this function, but if they do, do nothing
         }
     }
 }
@@ -818,8 +810,9 @@ async fn execute_regular_step(
         ExecutionMode::Async(_) => unreachable!("Async handled above"),
     };
 
-    // 5. State Update: Call update_pipeline_state
-    update_pipeline_state(pipeline_ctx, step_result.value, name, is_last_step);
+    // 5. State Update: Call update_pipeline_state with behavior from registry
+    let behavior = env.registry.get_behavior(name).unwrap_or(crate::middleware::StateBehavior::Merge);
+    update_pipeline_state(pipeline_ctx, step_result.value, behavior, is_last_step);
 
     // 6. Metadata Update: Update content_type and status_code in current_output
     if step_result.content_type != "application/json" || is_last_step {
@@ -956,12 +949,14 @@ mod tests {
     }
 
     fn env_with_vars(vars: Vec<Variable>) -> ExecutionEnv {
+        let registry = Arc::new(MiddlewareRegistry::empty());
         ExecutionEnv {
             variables: Arc::new(vars),
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
+            registry,
             environment: None,
-            
+
             cache: CacheStore::new(8, 60),
             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
         }

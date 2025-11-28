@@ -32,6 +32,26 @@ pub use join::JoinMiddleware;
 pub use graphql::GraphQLMiddleware;
 pub use rate_limit::RateLimitMiddleware;
 
+/// Describes how a middleware interacts with the pipeline state
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StateBehavior {
+    /// "Backpack" semantics: Merge object keys into the existing state.
+    /// Used by: pg, fetch, auth, validate
+    Merge,
+
+    /// Transform semantics: Replace state entirely, but preserve system context (headers, params, etc) if not terminal.
+    /// Used by: jq, lua
+    Transform,
+
+    /// Render/Replace semantics: Replace state entirely, intended for final output (HTML/Text).
+    /// Used by: handlebars
+    Render,
+
+    /// Read-only: Does not modify state.
+    /// Used by: log, debug, cache (mostly)
+    ReadOnly,
+}
+
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
     /// Execute middleware, mutating pipeline_ctx.state in place
@@ -43,6 +63,12 @@ pub trait Middleware: Send + Sync + std::fmt::Debug {
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
     ) -> Result<(), WebPipeError>;
+
+    /// Returns the state manipulation behavior of this middleware.
+    /// Default implementation returns Merge (the most common behavior).
+    fn behavior(&self) -> StateBehavior {
+        StateBehavior::Merge
+    }
 }
 
 #[derive(Debug)]
@@ -83,6 +109,11 @@ impl MiddlewareRegistry {
         Self::with_builtins(Arc::new(ctx))
     }
 
+    /// Create an empty registry without any middleware (useful for tests)
+    pub fn empty() -> Self {
+        Self { middlewares: HashMap::new() }
+    }
+
     pub fn register(&mut self, name: &str, middleware: Box<dyn Middleware>) {
         self.middlewares.insert(name.to_string(), middleware);
     }
@@ -91,6 +122,10 @@ impl MiddlewareRegistry {
         let middleware = self.middlewares.get(name)
             .ok_or_else(|| WebPipeError::MiddlewareNotFound(name.to_string()))?;
         middleware.execute(config, pipeline_ctx, env, ctx).await
+    }
+
+    pub fn get_behavior(&self, name: &str) -> Option<StateBehavior> {
+        self.middlewares.get(name).map(|m| m.behavior())
     }
 }
 
@@ -137,10 +172,12 @@ mod tests {
         use std::sync::Arc;
         use std::collections::HashMap;
 
+        let registry = Arc::new(MiddlewareRegistry::empty());
         ExecutionEnv {
             variables: Arc::new(vec![]),
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
+            registry,
             environment: None,
             cache: CacheStore::new(8, 60),
             rate_limit: RateLimitStore::new(1000),

@@ -145,6 +145,12 @@ impl Middleware for GraphQLMiddleware {
             Ok(())
         }
     }
+
+    fn behavior(&self) -> super::StateBehavior {
+        // GraphQL acts as a Transform middleware - it replaces the entire state
+        // with the query result, but should preserve system context when not terminal
+        super::StateBehavior::Transform
+    }
 }
 
 #[cfg(test)]
@@ -171,10 +177,12 @@ mod tests {
         let input = json!({});
 
         let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = Arc::new(crate::middleware::MiddlewareRegistry::default());
         let env = crate::executor::ExecutionEnv {
             variables: Arc::new(vec![]),
             named_pipelines: Arc::new(std::collections::HashMap::new()),
-            invoker: Arc::new(crate::executor::RealInvoker::new(Arc::new(crate::middleware::MiddlewareRegistry::default()))),
+            invoker: Arc::new(crate::executor::RealInvoker::new(registry.clone())),
+            registry: registry.clone(),
             environment: None,
             cache: crate::runtime::context::CacheStore::new(8, 60),
             rate_limit: crate::runtime::context::RateLimitStore::new(1000),

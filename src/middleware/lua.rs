@@ -277,6 +277,10 @@ impl super::Middleware for LuaMiddleware {
         pipeline_ctx.state = result;
         Ok(())
     }
+
+    fn behavior(&self) -> super::StateBehavior {
+        super::StateBehavior::Transform
+    }
 }
 
 
@@ -348,10 +352,12 @@ mod tests {
     fn dummy_env() -> crate::executor::ExecutionEnv {
         use crate::executor::ExecutionEnv;
         use crate::runtime::context::{CacheStore, RateLimitStore};
+        let registry = Arc::new(crate::middleware::MiddlewareRegistry::empty());
         ExecutionEnv {
             variables: Arc::new(vec![]),
             named_pipelines: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(StubInvoker),
+            registry,
             environment: None,
             cache: CacheStore::new(8, 60),
             rate_limit: RateLimitStore::new(1000),

@@ -94,6 +94,10 @@ impl super::Middleware for HandlebarsMiddleware {
         pipeline_ctx.state = Value::String(rendered);
         Ok(())
     }
+
+    fn behavior(&self) -> super::StateBehavior {
+        super::StateBehavior::Render
+    }
 }
 
 
@@ -129,10 +133,12 @@ mod tests {
         use std::sync::Arc;
         use std::collections::HashMap;
 
+        let registry = Arc::new(crate::middleware::MiddlewareRegistry::empty());
         ExecutionEnv {
             variables: Arc::new(vec![]),
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
+            registry,
             environment: None,
             cache: CacheStore::new(8, 60),
             rate_limit: RateLimitStore::new(1000),

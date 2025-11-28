@@ -266,9 +266,10 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                 variables: Arc::new(program.variables.clone()),
                                 named_pipelines: Arc::new(named),
                                 invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
+                                registry: registry.clone(),
                                 environment: None,
-                                
-                                
+
+
                                 cache: crate::runtime::context::CacheStore::new(8, 60),
                     rate_limit: crate::runtime::context::RateLimitStore::new(1000),
                                 
@@ -312,9 +313,10 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             variables: Arc::new(program.variables.clone()),
                             named_pipelines: Arc::new(named),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
+                            registry: registry.clone(),
                             environment: None,
-                            
-                            
+
+
                             cache: crate::runtime::context::CacheStore::new(8, 60),
                     rate_limit: crate::runtime::context::RateLimitStore::new(1000),
                                 
@@ -343,9 +345,10 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             variables: Arc::new(program.variables.clone()),
                             named_pipelines: Arc::new(named),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
+                            registry: registry.clone(),
                             environment: None,
-                            
-                            
+
+
                             cache: crate::runtime::context::CacheStore::new(8, 60),
                     rate_limit: crate::runtime::context::RateLimitStore::new(1000),
                                 
