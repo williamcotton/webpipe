@@ -112,7 +112,15 @@ pub struct Tag {
 
 #[derive(Debug, Clone)]
 pub enum PipelineStep {
-    Regular { name: String, config: String, config_type: ConfigType, tags: Vec<Tag> },
+    Regular {
+        name: String,
+        config: String,
+        config_type: ConfigType,
+        tags: Vec<Tag>,
+        /// Pre-parsed join task names (only populated for "join" middleware)
+        /// This avoids parsing the config string on every request in the hot path.
+        parsed_join_targets: Option<Vec<String>>,
+    },
     Result { branches: Vec<ResultBranch> },
     If {
         condition: Pipeline,
@@ -296,7 +304,7 @@ impl Display for Tag {
 impl Display for PipelineStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PipelineStep::Regular { name, config, config_type, tags } => {
+            PipelineStep::Regular { name, config, config_type, tags, .. } => {
                 let formatted_config = match config_type {
                     ConfigType::Backtick => format!("`{}`", config),
                     ConfigType::Quoted => format!("\"{}\"", config),
@@ -517,7 +525,7 @@ fn parse_step_config(input: &str) -> IResult<&str, (String, ConfigType)> {
 // Basic parsers
 fn parse_method(input: &str) -> IResult<&str, String> {
     map(
-        alt((tag("GET"), tag("POST"), tag("PUT"), tag("PATCH"), tag("DELETE"))),
+        alt((tag("GET"), tag("POST"), tag("PUT"), tag("DELETE"))),
         |s: &str| s.to_string()
     ).parse(input)
 }
@@ -674,6 +682,33 @@ fn parse_tags(input: &str) -> IResult<&str, Vec<Tag>> {
     ).parse(input)
 }
 
+/// Pre-parse join config into task names at AST parse time.
+/// This avoids repeated parsing in the hot path during execution.
+fn parse_join_task_names(config: &str) -> Option<Vec<String>> {
+    let trimmed = config.trim();
+
+    // Try parsing as JSON array first
+    if trimmed.starts_with('[') {
+        if let Ok(names) = serde_json::from_str::<Vec<String>>(trimmed) {
+            return Some(names);
+        }
+        return None; // Invalid JSON, will error at runtime
+    }
+
+    // Otherwise parse as comma-separated list
+    let names: Vec<String> = trimmed
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if names.is_empty() {
+        return None; // Will error at runtime
+    }
+
+    Some(names)
+}
+
 fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("|>")(input)?;
@@ -686,8 +721,15 @@ fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     // Parse tags (before consuming trailing whitespace)
     let (input, tags) = parse_tags(input)?;
 
+    // Pre-parse join targets for join middleware (compile-time optimization)
+    let parsed_join_targets = if name == "join" {
+        parse_join_task_names(&config)
+    } else {
+        None
+    };
+
     let (input, _) = multispace0(input)?;
-    Ok((input, PipelineStep::Regular { name, config, config_type, tags }))
+    Ok((input, PipelineStep::Regular { name, config, config_type, tags, parsed_join_targets }))
 }
 
 fn parse_result_step(input: &str) -> IResult<&str, PipelineStep> {

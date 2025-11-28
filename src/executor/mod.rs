@@ -442,13 +442,18 @@ fn is_effectively_last_step(
 }
 
 /// Handle join operation - wait for async tasks and merge results
+/// Uses pre-parsed task names when available (compile-time optimization)
 async fn handle_join(
     ctx: &mut RequestContext,
     config: &str,
+    parsed_targets: Option<&Vec<String>>,
     input: Value,
 ) -> Result<StepResult, WebPipeError> {
-    // Parse task names from config
-    let task_names = parse_join_task_names(config)?;
+    // Use pre-parsed targets if available, otherwise parse at runtime (fallback)
+    let task_names: Vec<String> = match parsed_targets {
+        Some(targets) => targets.clone(),
+        None => parse_join_task_names(config)?,
+    };
 
     // Wait for all async tasks
     let mut async_results = serde_json::Map::new();
@@ -590,7 +595,7 @@ async fn execute_pipeline_internal<'a>(
 
     for (idx, step) in pipeline.steps.iter().enumerate() {
         match step {
-            PipelineStep::Regular { name, config, config_type: _, tags } => {
+            PipelineStep::Regular { name, config, config_type: _, tags, parsed_join_targets } => {
                 // 1. Check Guards (tags/flags)
                 if !should_execute_step(tags, env, ctx, &pipeline_ctx.state) {
                     continue;
@@ -617,69 +622,55 @@ async fn execute_pipeline_internal<'a>(
                     pipeline_ctx.state = effective_input.clone();
                 }
 
-                // 3. Execute Strategy
-                match mode {
+                // 3. Execute Strategy - delegate to specialized handlers
+                let step_result = match mode {
                     ExecutionMode::Join => {
-                        // Join needs special handling - create temporary context
-                        let temp_ctx = crate::runtime::PipelineContext::new(effective_input.clone());
-                        let step_result = handle_join(ctx, &effective_config, temp_ctx.state.clone()).await?;
-                        pipeline_ctx.state = step_result.value;
-                        if name == "handlebars" || step_result.content_type != "application/json" {
-                            content_type = step_result.content_type;
-                        }
-                        if let Some(status) = step_result.status_code {
-                            status_code_out = Some(status);
-                        }
+                        // Use pre-parsed targets for hot path optimization
+                        handle_join(ctx, &effective_config, parsed_join_targets.as_ref(), effective_input.clone()).await?
                     }
                     ExecutionMode::Recursive => {
-                        // Recursive pipeline needs special handling
-                        let step_result = handle_recursive_pipeline(env, ctx, &effective_config, effective_input.clone()).await?;
-                        pipeline_ctx.state = step_result.value;
-                        if is_last_step || name == "pipeline" {
-                            content_type = step_result.content_type;
-                        }
-                        if let Some(status) = step_result.status_code {
-                            status_code_out = Some(status);
-                        }
+                        handle_recursive_pipeline(env, ctx, &effective_config, effective_input.clone()).await?
                     }
                     ExecutionMode::Standard => {
                         // Standard execution - pass mutable context
                         let mut temp_ctx = crate::runtime::PipelineContext::new(pipeline_ctx.state.clone());
                         handle_standard_execution(env, ctx, name, &effective_config, &mut temp_ctx).await?;
-
-                        // Update state and content type
-                        // For non-final steps, merge JSON objects; final step replaces entirely
-                        // Handlebars and jq always replace (produce transformed data)
-                        if !is_last_step && name != "handlebars" && name != "jq" {
-                            // Merge: previous state + new result (new takes precedence)
-                            if let (Some(prev_obj), Some(new_obj)) = (
-                                pipeline_ctx.state.as_object_mut(),
-                                temp_ctx.state.as_object()
-                            ) {
-                                for (k, v) in new_obj {
-                                    prev_obj.insert(k.clone(), v.clone());
-                                }
-                            } else {
-                                // Non-object result, just replace
-                                pipeline_ctx.state = temp_ctx.state;
-                            }
-                        } else {
-                            pipeline_ctx.state = temp_ctx.state;
-                        }
-                        if name == "handlebars" {
-                            content_type = "text/html".to_string();
+                        StepResult {
+                            value: temp_ctx.state,
+                            content_type: if name == "handlebars" { "text/html".to_string() } else { "application/json".to_string() },
+                            status_code: None,
                         }
                     }
                     ExecutionMode::Async(_) => unreachable!("Async handled above"),
                 };
 
-                // 4. Handle Signals (Cache hits, etc)
+                // 4. Update Pipeline State using centralized merge logic
+                // Terminal transformers (jq, handlebars) and final steps replace entirely
+                // Other middleware steps merge (Backpack semantics)
+                let should_merge = !is_last_step && name != "handlebars" && name != "jq";
+                if should_merge {
+                    pipeline_ctx.merge_state(step_result.value);
+                } else {
+                    pipeline_ctx.replace_state(step_result.value);
+                }
+
+                // 5. Update content type if changed
+                if step_result.content_type != "application/json" || is_last_step {
+                    if name == "pipeline" || is_last_step || name == "handlebars" {
+                        content_type = step_result.content_type;
+                    }
+                }
+                if let Some(status) = step_result.status_code {
+                    status_code_out = Some(status);
+                }
+
+                // 6. Handle Signals (Cache hits, etc)
                 if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&pipeline_ctx.state) {
                     let final_content_type = cached_content_type.unwrap_or(content_type);
                     return Ok((cached_val, final_content_type, status_code_out));
                 }
 
-                // 5. Clean up auto-naming
+                // 7. Clean up auto-naming
                 if auto_named {
                     if let Some(obj) = pipeline_ctx.state.as_object_mut() {
                         obj.remove("resultName");
@@ -817,7 +808,7 @@ mod tests {
     async fn result_branch_selection_and_status() {
         let env = env_with_vars(vec![]);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "echo".to_string(), config: "{}".to_string(), config_type: crate::ast::ConfigType::Quoted, tags: vec![] },
+            PipelineStep::Regular { name: "echo".to_string(), config: "{}".to_string(), config_type: crate::ast::ConfigType::Quoted, tags: vec![], parsed_join_targets: None },
             PipelineStep::Result { branches: vec![
                 crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Ok, status_code: 201, pipeline: Pipeline { steps: vec![] } },
                 crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 200, pipeline: Pipeline { steps: vec![] } },
@@ -846,7 +837,7 @@ mod tests {
     async fn handlebars_sets_html_content_type() {
         let env = env_with_vars(vec![]);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "handlebars".to_string(), config: "Hello".to_string(), config_type: crate::ast::ConfigType::Quoted, tags: vec![] }
+            PipelineStep::Regular { name: "handlebars".to_string(), config: "Hello".to_string(), config_type: crate::ast::ConfigType::Quoted, tags: vec![], parsed_join_targets: None }
         ]};
         let (_out, ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert_eq!(ct, "text/html");
@@ -857,7 +848,7 @@ mod tests {
         let vars = vec![Variable { var_type: "echo".to_string(), name: "myVar".to_string(), value: "{}".to_string() }];
         let env = env_with_vars(vars);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "echo".to_string(), config: "myVar".to_string(), config_type: crate::ast::ConfigType::Identifier, tags: vec![] }
+            PipelineStep::Regular { name: "echo".to_string(), config: "myVar".to_string(), config_type: crate::ast::ConfigType::Identifier, tags: vec![], parsed_join_targets: None }
         ]};
         let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert!(out.get("resultName").is_none());
@@ -875,7 +866,8 @@ mod tests {
                 name: "echo".to_string(),
                 config: "test".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] }],
+                parsed_join_targets: None,
             }
         ]};
 
@@ -894,7 +886,8 @@ mod tests {
                 name: "echo".to_string(),
                 config: r#"{"message": "production only"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] }],
+                parsed_join_targets: None,
             }
         ]};
 
@@ -914,7 +907,8 @@ mod tests {
                 name: "echo".to_string(),
                 config: r#"{"debug": true}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: true, args: vec!["production".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: true, args: vec!["production".to_string()] }],
+                parsed_join_targets: None,
             }
         ]};
 
@@ -934,7 +928,8 @@ mod tests {
                 name: "echo".to_string(),
                 config: "dev".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: true, args: vec!["production".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: true, args: vec!["production".to_string()] }],
+                parsed_join_targets: None,
             }
         ]};
 
@@ -956,7 +951,8 @@ mod tests {
                 tags: vec![
                     crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] },
                     crate::ast::Tag { name: "env".to_string(), negated: true, args: vec!["staging".to_string()] }
-                ]
+                ],
+                parsed_join_targets: None,
             }
         ]};
 
@@ -975,7 +971,8 @@ mod tests {
                 name: "echo".to_string(),
                 config: "noenv".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] }],
+                parsed_join_targets: None,
             }
         ]};
 
@@ -995,7 +992,8 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 tags: vec![
                     crate::ast::Tag { name: "flag".to_string(), negated: false, args: vec!["beta".to_string()] }
-                ]
+                ],
+                parsed_join_targets: None,
             }
         ]};
 
@@ -1021,7 +1019,8 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 tags: vec![
                     crate::ast::Tag { name: "needs".to_string(), negated: false, args: vec!["flags".to_string()] }
-                ]
+                ],
+                parsed_join_targets: None,
             }
         ]};
 
@@ -1040,13 +1039,15 @@ mod tests {
                 name: "echo".to_string(),
                 config: r#"{"async": "data"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task1".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task1".to_string()] }],
+                parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "echo".to_string(),
                 config: r#"{"sync": "data"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![]
+                tags: vec![],
+                parsed_join_targets: None,
             }
         ]};
 
@@ -1068,13 +1069,15 @@ mod tests {
                 name: "echo".to_string(),
                 config: r#"{"result": "from-async"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task1".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task1".to_string()] }],
+                parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
                 config: "task1".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![]
+                tags: vec![],
+                parsed_join_targets: Some(vec!["task1".to_string()]),
             }
         ]};
 
@@ -1098,19 +1101,22 @@ mod tests {
                 name: "echo".to_string(),
                 config: r#"{"data": "task1"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task1".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task1".to_string()] }],
+                parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "echo".to_string(),
                 config: r#"{"data": "task2"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task2".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["task2".to_string()] }],
+                parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
                 config: "task1,task2".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![]
+                tags: vec![],
+                parsed_join_targets: Some(vec!["task1".to_string(), "task2".to_string()]),
             }
         ]};
 
@@ -1132,13 +1138,15 @@ mod tests {
                 name: "echo".to_string(),
                 config: r#"{"data": "a"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["a".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["a".to_string()] }],
+                parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
                 config: r#"["a"]"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![]
+                tags: vec![],
+                parsed_join_targets: Some(vec!["a".to_string()]),
             }
         ]};
 
@@ -1158,27 +1166,31 @@ mod tests {
                 name: "echo".to_string(),
                 config: r#"{"counter": 1}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![]
+                tags: vec![],
+                parsed_join_targets: None,
             },
             // Async task should see counter: 1
             PipelineStep::Regular {
                 name: "echo".to_string(),
                 config: r#"{"asyncSaw": 0}"#.to_string(), // Will be replaced with actual counter value
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["snapshot".to_string()] }]
+                tags: vec![crate::ast::Tag { name: "async".to_string(), negated: false, args: vec!["snapshot".to_string()] }],
+                parsed_join_targets: None,
             },
             // Modify state after async spawn
             PipelineStep::Regular {
                 name: "echo".to_string(),
                 config: r#"{"counter": 2}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![]
+                tags: vec![],
+                parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
                 config: "snapshot".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
-                tags: vec![]
+                tags: vec![],
+                parsed_join_targets: Some(vec!["snapshot".to_string()]),
             }
         ]};
 

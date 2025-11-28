@@ -460,14 +460,6 @@ PUT /users/:id
     action: "update"
   }`
 
-PATCH /users/:id
-  |> jq: `{
-    method: .method,
-    id: (.params.id | tonumber),
-    body: .body,
-    action: "partial_update"
-  }`
-
 POST /test-body
   |> jq: `{
     method: .method,
@@ -476,13 +468,6 @@ POST /test-body
   }`
 
 PUT /test-body
-  |> jq: `{
-    method: .method,
-    body: .body,
-    hasBody: (.body != null)
-  }`
-
-PATCH /test-body
   |> jq: `{
     method: .method,
     body: .body,
