@@ -468,7 +468,7 @@ fn parse_step_config(input: &str) -> IResult<&str, (String, ConfigType)> {
 // Basic parsers
 fn parse_method(input: &str) -> IResult<&str, String> {
     map(
-        alt((tag("GET"), tag("POST"), tag("PUT"), tag("DELETE"))),
+        alt((tag("GET"), tag("POST"), tag("PUT"), tag("PATCH"), tag("DELETE"))),
         |s: &str| s.to_string()
     ).parse(input)
 }
