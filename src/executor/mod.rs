@@ -651,7 +651,37 @@ async fn execute_pipeline_internal<'a>(
                 if should_merge {
                     pipeline_ctx.merge_state(step_result.value);
                 } else {
+                    // For non-final jq steps, preserve runtime context keys
+                    // These are needed for async/join, accumulated results, and request context
+                    // Final steps should produce clean output without runtime metadata
+                    const RUNTIME_KEYS: &[&str] = &[
+                        "async", "data", "originalRequest",
+                        "query", "params", "body", "headers", "cookies",
+                        "method", "path", "ip", "content_type"
+                    ];
+                    
+                    let backups: Vec<(String, Value)> = if name == "jq" && !is_last_step {
+                        RUNTIME_KEYS.iter()
+                            .filter_map(|&key| {
+                                pipeline_ctx.state.get(key).map(|v| (key.to_string(), v.clone()))
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    
                     pipeline_ctx.replace_state(step_result.value);
+                    
+                    // Restore runtime keys if they existed and aren't in the new state
+                    if !backups.is_empty() {
+                        if let Some(obj) = pipeline_ctx.state.as_object_mut() {
+                            for (key, val) in backups {
+                                if !obj.contains_key(&key) {
+                                    obj.insert(key, val);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // 5. Update content type if changed
