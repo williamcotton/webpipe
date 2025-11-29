@@ -16,29 +16,49 @@ pub struct JqMiddleware;
 impl JqMiddleware {
     pub fn new() -> Self { Self }
 
-    fn execute_jq(&self, filter: &str, input_json: &str) -> Result<String, WebPipeError> {
-        JQ_PROGRAM_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
+    fn execute_jq(&self, filter: &str, input_json: &str, context_json: Option<&str>) -> Result<String, WebPipeError> {
+        if let Some(ctx_str) = context_json {
+            // JQ approach: inject context as a variable using the pattern: <context> as $context | <filter>
+            // This makes $context available as a read-only variable in the filter
+            let final_filter = format!(
+                r#"{} as $context | {}"#,
+                ctx_str,
+                filter
+            );
 
-            if let Some(program) = cache.get_mut(filter) {
-                return program
-                    .run(input_json)
-                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
-            }
-
-            match jq_rs::compile(filter) {
+            match jq_rs::compile(&final_filter) {
                 Ok(mut program) => {
-                    let result = program
+                    program
                         .run(input_json)
-                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
-                    if result.is_ok() {
-                        cache.put(filter.to_string(), program);
-                    }
-                    result
+                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)))
                 }
                 Err(e) => Err(WebPipeError::MiddlewareExecutionError(format!("JQ compilation error: {}", e))),
             }
-        })
+        } else {
+            // Original behavior when no context
+            JQ_PROGRAM_CACHE.with(|cache| {
+                let mut cache = cache.borrow_mut();
+
+                if let Some(program) = cache.get_mut(filter) {
+                    return program
+                        .run(input_json)
+                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
+                }
+
+                match jq_rs::compile(filter) {
+                    Ok(mut program) => {
+                        let result = program
+                            .run(input_json)
+                            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
+                        if result.is_ok() {
+                            cache.put(filter.to_string(), program);
+                        }
+                        result
+                    }
+                    Err(e) => Err(WebPipeError::MiddlewareExecutionError(format!("JQ compilation error: {}", e))),
+                }
+            })
+        }
     }
 }
 
@@ -52,12 +72,18 @@ impl super::Middleware for JqMiddleware {
         &self,
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
-        _env: &crate::executor::ExecutionEnv,
-        _ctx: &mut crate::executor::RequestContext,
+        env: &crate::executor::ExecutionEnv,
+        ctx: &mut crate::executor::RequestContext,
     ) -> Result<(), WebPipeError> {
         let input_json = serde_json::to_string(&pipeline_ctx.state)
             .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Input serialization error: {}", e)))?;
-        let result_json = self.execute_jq(config, &input_json)?;
+
+        // Inject context as a read-only variable
+        let context_value = ctx.to_value(env);
+        let context_json = serde_json::to_string(&context_value)
+            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Context serialization error: {}", e)))?;
+
+        let result_json = self.execute_jq(config, &input_json, Some(&context_json))?;
         pipeline_ctx.state = serde_json::from_str(&result_json)
             .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ result parse error: {}", e)))?;
         Ok(())

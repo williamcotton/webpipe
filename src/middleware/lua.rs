@@ -213,7 +213,7 @@ impl LuaMiddleware {
         }
     }
 
-    fn execute_lua_script(&self, script: &str, input: &Value, ctx: &mut crate::executor::RequestContext) -> Result<Value, WebPipeError> {
+    fn execute_lua_script(&self, script: &str, input: &Value, ctx: &mut crate::executor::RequestContext, env: &crate::executor::ExecutionEnv) -> Result<Value, WebPipeError> {
         // Fast path: check if already initialized without function call overhead
         let initialized = LUA_INITIALIZED.with(|initialized| initialized.get());
         if !initialized {
@@ -237,6 +237,11 @@ impl LuaMiddleware {
                 // 3. Inject 'request' directly into the sandbox (shadowing any global 'request')
                 let lua_input = Self::json_to_lua(lua, input)?;
                 sandbox.set("request", lua_input)?;
+
+                // 3.5. Inject 'context' as read-only system metadata
+                let context_value = ctx.to_value(env);
+                let lua_context = Self::json_to_lua(lua, &context_value)?;
+                sandbox.set("context", lua_context)?;
 
                 // 4. Inject 'getFlag' and 'setFlag' functions for feature flag access
                 // Clone flags for getFlag (snapshot at script start)
@@ -270,10 +275,10 @@ impl super::Middleware for LuaMiddleware {
         &self,
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
-        _env: &crate::executor::ExecutionEnv,
+        env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
     ) -> Result<(), WebPipeError> {
-        let result = self.execute_lua_script(config, &pipeline_ctx.state, ctx)?;
+        let result = self.execute_lua_script(config, &pipeline_ctx.state, ctx, env)?;
         pipeline_ctx.state = result;
         Ok(())
     }
@@ -366,6 +371,7 @@ mod tests {
 
     #[tokio::test]
     async fn json_lua_roundtrip_primitives_and_tables() {
+        use crate::middleware::Middleware;
         let mw = LuaMiddleware::new(ctx_no_db());
         let input = serde_json::json!({"x": 1, "arr": [1,2], "obj": {"a": true}});
         let env = dummy_env();

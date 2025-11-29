@@ -87,10 +87,31 @@ impl super::Middleware for HandlebarsMiddleware {
         &self,
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
-        _env: &crate::executor::ExecutionEnv,
-        _ctx: &mut crate::executor::RequestContext,
+        env: &crate::executor::ExecutionEnv,
+        ctx: &mut crate::executor::RequestContext,
     ) -> Result<(), WebPipeError> {
-        let rendered = self.render_template(config, &pipeline_ctx.state)?;
+        // Create a wrapper object that includes both the pipeline state and the context
+        let context_value = ctx.to_value(env);
+
+        // Merge context into render data
+        let render_data = if let Some(state_obj) = pipeline_ctx.state.as_object() {
+            let mut merged = serde_json::Map::new();
+            // First add all state properties at the top level (backward compatibility)
+            for (k, v) in state_obj {
+                merged.insert(k.clone(), v.clone());
+            }
+            // Add context under the "context" key
+            merged.insert("context".to_string(), context_value);
+            Value::Object(merged)
+        } else {
+            // If state is not an object, wrap it
+            serde_json::json!({
+                "data": pipeline_ctx.state,
+                "context": context_value
+            })
+        };
+
+        let rendered = self.render_template(config, &render_data)?;
         pipeline_ctx.state = Value::String(rendered);
         Ok(())
     }

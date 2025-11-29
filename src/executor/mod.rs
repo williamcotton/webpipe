@@ -104,7 +104,7 @@ impl AsyncTaskRegistry {
 }
 
 /// Cache policy configuration for middleware communication
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct CachePolicy {
     pub enabled: bool,
     pub ttl: u64,
@@ -112,7 +112,7 @@ pub struct CachePolicy {
 }
 
 /// Log configuration for logging middleware
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct LogConfig {
     pub level: String,
     pub include_body: bool,
@@ -120,7 +120,7 @@ pub struct LogConfig {
 }
 
 /// Rate limit status for headers/logging
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct RateLimitStatus {
     pub allowed: bool,
     pub current_count: u64,
@@ -138,6 +138,32 @@ pub struct RequestMetadata {
     pub cache_policy: Option<CachePolicy>,
     pub log_config: Option<LogConfig>,
     pub rate_limit_status: Option<RateLimitStatus>,
+}
+
+impl RequestMetadata {
+    /// Convert metadata to a JSON Value for context injection
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "cache": self.cache_policy.as_ref().map(|cp| serde_json::json!({
+                "enabled": cp.enabled,
+                "ttl": cp.ttl,
+                "key_template": cp.key_template,
+            })),
+            "log": self.log_config.as_ref().map(|lc| serde_json::json!({
+                "level": lc.level,
+                "include_body": lc.include_body,
+                "include_headers": lc.include_headers,
+            })),
+            "rate_limit": self.rate_limit_status.as_ref().map(|rl| serde_json::json!({
+                "allowed": rl.allowed,
+                "remaining": rl.limit.saturating_sub(rl.current_count),
+                "limit": rl.limit,
+                "retry_after": rl.retry_after_secs,
+                "key": rl.key,
+                "scope": rl.scope,
+            })),
+        })
+    }
 }
 
 /// Per-request mutable context (The Backpack)
@@ -178,6 +204,44 @@ impl RequestContext {
         for action in self.deferred.drain(..) {
             action(final_result, content_type, env);
         }
+    }
+
+    /// Convert RequestContext to a JSON Value for middleware injection
+    /// This provides read-only access to system metadata for user scripts
+    pub fn to_value(&self, env: &ExecutionEnv) -> serde_json::Value {
+        let mut context = serde_json::Map::new();
+
+        // Add feature flags
+        let flags: serde_json::Map<String, serde_json::Value> = self.feature_flags
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::Bool(*v)))
+            .collect();
+        context.insert("flags".to_string(), serde_json::Value::Object(flags));
+
+        // Add environment name
+        if let Some(env_name) = &env.environment {
+            context.insert("env".to_string(), serde_json::Value::String(env_name.clone()));
+        }
+
+        // Add metadata (cache, log, rate_limit)
+        let metadata_json = self.metadata.to_value();
+        if let Some(cache) = metadata_json.get("cache") {
+            if !cache.is_null() {
+                context.insert("cache".to_string(), cache.clone());
+            }
+        }
+        if let Some(log) = metadata_json.get("log") {
+            if !log.is_null() {
+                context.insert("log".to_string(), log.clone());
+            }
+        }
+        if let Some(rate_limit) = metadata_json.get("rate_limit") {
+            if !rate_limit.is_null() {
+                context.insert("rate_limit".to_string(), rate_limit.clone());
+            }
+        }
+
+        serde_json::Value::Object(context)
     }
 }
 

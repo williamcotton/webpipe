@@ -2163,3 +2163,77 @@ describe "if/else feature"
   it "treats objects as truthy"
     when calling GET /test-if-object
     then output `.result` equals "objects are truthy"
+
+# ========================================
+# Context Injection Tests
+# ========================================
+# Test JQ middleware with $context
+GET /test-context-jq
+  |> jq: `{
+    has_context: ($context != null),
+    has_flags: ($context.flags != null),
+    message: "JQ context works"
+  }`
+
+# Test Lua middleware with context variable
+GET /test-context-lua
+  |> lua: `
+    return {
+      has_context = (context ~= nil),
+      has_flags = (context.flags ~= nil),
+      message = "Lua context works"
+    }
+  `
+
+# Test Handlebars middleware with context
+GET /test-context-handlebars
+  |> jq: `{ name: "WebPipe" }`
+  |> handlebars: `<p>Hello {{name}}! Env: {{context.env}}</p>`
+
+# Test rate limit metadata in context
+GET /test-context-ratelimit
+  |> rateLimit: `keyTemplate: context-test, limit: 100, window: 1m`
+  |> jq: `{
+    allowed: $context.rate_limit.allowed,
+    has_limit: ($context.rate_limit.limit != null),
+    has_remaining: ($context.rate_limit.remaining != null)
+  }`
+
+# Test context with feature flags
+GET /test-context-flags
+  |> jq: `{
+    flag_count: ($context.flags | length)
+  }`
+
+describe "Context Injection"
+
+  it "injects context into JQ middleware"
+    when calling GET /test-context-jq
+    then status is 200
+    and output `.has_context` equals true
+    and output `.has_flags` equals true
+    and output `.message` equals "JQ context works"
+
+  it "injects context into Lua middleware"
+    when calling GET /test-context-lua
+    then status is 200
+    and output `.has_context` equals true
+    and output `.has_flags` equals true
+    and output `.message` equals "Lua context works"
+
+  it "injects context into Handlebars middleware"
+    when calling GET /test-context-handlebars
+    then status is 200
+    and output contains "Hello WebPipe!"
+
+  it "exposes rate limit metadata in context"
+    when calling GET /test-context-ratelimit
+    then status is 200
+    and output `.allowed` equals true
+    and output `.has_limit` equals true
+    and output `.has_remaining` equals true
+
+  it "exposes feature flags in context"
+    when calling GET /test-context-flags
+    then status is 200
+    and output `.flag_count` is a number
