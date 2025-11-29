@@ -75,6 +75,25 @@ fn pipeline_needs_flags(
                     }
                 }
             }
+            PipelineStep::Dispatch { branches, default } => {
+                // 6. Dispatch blocks: check all case branches and tags
+                for branch in branches {
+                    // Check if branch tag itself is a flag
+                    if branch.tag.name == "flag" {
+                        return true;
+                    }
+                    // Check if branch pipeline needs flags
+                    if pipeline_needs_flags(&branch.pipeline, named_pipelines) {
+                        return true;
+                    }
+                }
+                // Check default branch if present
+                if let Some(default_pipe) = default {
+                    if pipeline_needs_flags(default_pipe, named_pipelines) {
+                        return true;
+                    }
+                }
+            }
         }
     }
     false

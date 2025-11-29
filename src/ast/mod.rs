@@ -127,6 +127,16 @@ pub enum PipelineStep {
         then_branch: Pipeline,
         else_branch: Option<Pipeline>
     },
+    Dispatch {
+        branches: Vec<DispatchBranch>,
+        default: Option<Pipeline>
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct DispatchBranch {
+    pub tag: Tag,
+    pub pipeline: Pipeline,
 }
 
 #[derive(Debug, Clone)]
@@ -342,6 +352,30 @@ impl Display for PipelineStep {
                 if let Some(else_pipe) = else_branch {
                     writeln!(f, "    else:")?;
                     for step in &else_pipe.steps {
+                        writeln!(f, "    {}", step)?;
+                    }
+                }
+                Ok(())
+            }
+            PipelineStep::Dispatch { branches, default } => {
+                writeln!(f, "  |> dispatch")?;
+                // Format case branches
+                for branch in branches {
+                    write!(f, "    case {}: ", branch.tag)?;
+                    // If pipeline has only one step, format inline
+                    if branch.pipeline.steps.len() == 1 {
+                        writeln!(f, "{}", branch.pipeline.steps[0])?;
+                    } else {
+                        writeln!(f)?;
+                        for step in &branch.pipeline.steps {
+                            writeln!(f, "    {}", step)?;
+                        }
+                    }
+                }
+                // Format default branch if present
+                if let Some(default_pipe) = default {
+                    writeln!(f, "    default:")?;
+                    for step in &default_pipe.steps {
                         writeln!(f, "    {}", step)?;
                     }
                 }
@@ -635,10 +669,53 @@ fn parse_if_step(input: &str) -> IResult<&str, PipelineStep> {
     }))
 }
 
+// Parse a single dispatch branch: case @tag: |> pipeline
+fn parse_dispatch_branch(input: &str) -> IResult<&str, DispatchBranch> {
+    let (input, _) = skip_ws_and_comments(input)?;
+    let (input, _) = tag("case")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, tag) = parse_tag(input)?;
+    let (input, _) = char(':')(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
+    // parse_pipeline stops when it hits tokens it doesn't recognize
+    let (input, pipeline) = parse_pipeline(input)?;
+    Ok((input, DispatchBranch { tag, pipeline }))
+}
+
+// Parse the dispatch step: |> dispatch case ... case ... default: ... end
+fn parse_dispatch_step(input: &str) -> IResult<&str, PipelineStep> {
+    // 1. Parse Header: "|> dispatch"
+    let (input, _) = skip_ws_and_comments(input)?;
+    let (input, _) = tag("|>")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("dispatch")(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
+
+    // 2. Parse 'case' branches
+    let (input, branches) = many0(parse_dispatch_branch).parse(input)?;
+
+    // 3. Parse optional 'default:' branch
+    let (input, default) = opt(preceded(
+        |i| {
+            let (i, _) = skip_ws_and_comments(i)?;
+            let (i, _) = tag("default:")(i)?;
+            skip_ws_and_comments(i)
+        },
+        parse_pipeline
+    )).parse(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
+
+    // 4. Parse optional 'end' keyword
+    let (input, _) = opt(tag("end")).parse(input)?;
+
+    Ok((input, PipelineStep::Dispatch { branches, default }))
+}
+
 fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
     alt((
         parse_result_step,
         parse_if_step,
+        parse_dispatch_step,
         parse_regular_step
     )).parse(input)
 }
@@ -1507,5 +1584,220 @@ GET /graphql
         assert_eq!(program.queries.len(), 1);
         assert_eq!(program.mutations.len(), 1);
         assert_eq!(program.routes.len(), 1);
+    }
+
+    #[test]
+    fn parse_dispatch_basic() {
+        let src = r#"
+GET /dashboard
+  |> dispatch
+    case @flag(experimental):
+      |> pipeline: experimentalDash
+    case @env(dev):
+      |> pipeline: devDash
+    default:
+      |> pipeline: standardDash
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        assert_eq!(program.routes.len(), 1);
+
+        if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
+            assert_eq!(pipeline.steps.len(), 1);
+
+            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+                assert_eq!(branches.len(), 2);
+
+                // Check first case: @flag(experimental)
+                assert_eq!(branches[0].tag.name, "flag");
+                assert_eq!(branches[0].tag.args, vec!["experimental"]);
+                assert_eq!(branches[0].pipeline.steps.len(), 1);
+
+                // Check second case: @env(dev)
+                assert_eq!(branches[1].tag.name, "env");
+                assert_eq!(branches[1].tag.args, vec!["dev"]);
+                assert_eq!(branches[1].pipeline.steps.len(), 1);
+
+                // Check default branch exists
+                assert!(default.is_some());
+                assert_eq!(default.as_ref().unwrap().steps.len(), 1);
+            } else {
+                panic!("Expected Dispatch step");
+            }
+        } else {
+            panic!("Expected inline pipeline");
+        }
+    }
+
+    #[test]
+    fn parse_dispatch_no_default() {
+        let src = r#"
+GET /test
+  |> dispatch
+    case @flag(beta):
+      |> jq: `{ version: "beta" }`
+    case @flag(alpha):
+      |> jq: `{ version: "alpha" }`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+
+        if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
+            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+                assert_eq!(branches.len(), 2);
+                assert!(default.is_none());
+            } else {
+                panic!("Expected Dispatch step");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_dispatch_with_end_keyword() {
+        let src = r#"
+GET /test
+  |> dispatch
+    case @env(prod):
+      |> jq: `{ env: "production" }`
+    default:
+      |> jq: `{ env: "other" }`
+  end
+  |> handlebars: `<p>{{env}}</p>`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+
+        if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
+            assert_eq!(pipeline.steps.len(), 2); // dispatch + handlebars
+
+            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+                assert_eq!(branches.len(), 1);
+                assert!(default.is_some());
+            } else {
+                panic!("Expected Dispatch step");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_dispatch_multi_step_pipelines() {
+        let src = r#"
+GET /complex
+  |> dispatch
+    case @flag(experimental):
+      |> jq: `{ step: 1 }`
+      |> pg: `SELECT * FROM experimental`
+      |> handlebars: `<p>Experimental</p>`
+    default:
+      |> jq: `{ step: 1 }`
+      |> handlebars: `<p>Default</p>`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+
+        if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
+            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+                // First branch has 3 steps
+                assert_eq!(branches[0].pipeline.steps.len(), 3);
+                // Default branch has 2 steps
+                assert_eq!(default.as_ref().unwrap().steps.len(), 2);
+            } else {
+                panic!("Expected Dispatch step");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_dispatch_negated_tag() {
+        let src = r#"
+GET /test
+  |> dispatch
+    case @!env(production):
+      |> jq: `{ mode: "non-production" }`
+    default:
+      |> jq: `{ mode: "production" }`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+
+        if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
+            if let PipelineStep::Dispatch { branches, .. } = &pipeline.steps[0] {
+                assert_eq!(branches[0].tag.name, "env");
+                assert_eq!(branches[0].tag.negated, true);
+                assert_eq!(branches[0].tag.args, vec!["production"]);
+            } else {
+                panic!("Expected Dispatch step");
+            }
+        }
+    }
+
+    #[test]
+    fn parse_dispatch_with_comments() {
+        let src = r#"
+GET /test
+  # comment before dispatch
+  |> dispatch
+    # comment before first case
+    case @flag(experimental):
+      # comment inside branch
+      |> jq: `{ version: "experimental" }`
+    # comment between cases
+    case @env(dev):
+      |> jq: `{ env: "dev" }`
+    # comment before default
+    default:
+      # comment inside default
+      |> jq: `{ fallback: true }`
+  # comment after dispatch
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        assert_eq!(program.routes.len(), 1);
+
+        if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
+            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+                assert_eq!(branches.len(), 2);
+                assert!(default.is_some());
+            } else {
+                panic!("Expected Dispatch step");
+            }
+        }
+    }
+
+    #[test]
+    fn roundtrip_dispatch_formatting() {
+        let src = r#"
+pipeline test =
+  |> dispatch
+    case @flag(experimental):
+      |> pipeline: experimentalDash
+    case @env(dev):
+      |> pipeline: devDash
+    default:
+      |> pipeline: standardDash
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        let formatted = format!("{}", program);
+
+        // Check key elements are preserved
+        assert!(formatted.contains("dispatch"));
+        assert!(formatted.contains("case @flag(experimental):"));
+        assert!(formatted.contains("case @env(dev):"));
+        assert!(formatted.contains("default:"));
+    }
+
+    #[test]
+    fn parse_dispatch_oneliner_syntax() {
+        // Test that one-liner syntax works (case keyword is the delimiter)
+        let src = r#"
+GET /dash
+  |> dispatch case @flag(exp): |> pipeline: exp case @env(dev): |> pipeline: dev default: |> pipeline: std end
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+
+        if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
+            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+                assert_eq!(branches.len(), 2);
+                assert!(default.is_some());
+                assert_eq!(branches[0].tag.name, "flag");
+                assert_eq!(branches[1].tag.name, "env");
+            } else {
+                panic!("Expected Dispatch step");
+            }
+        }
     }
 }

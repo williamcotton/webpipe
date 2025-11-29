@@ -1943,7 +1943,6 @@ GET /feature-test
   |> jq: `{ message: "Standard feature (no flag required)" }` @!flag(experimental-feature)
   |> jq: `{ message: "Experimental feature enabled!" }` @flag(experimental-feature)
 
-
 GET /feature-gui
   |> jq: `{
     title: "Standard Dashboard",
@@ -2233,7 +2232,81 @@ describe "Context Injection"
     and output `.has_limit` equals true
     and output `.has_remaining` equals true
 
-  it "exposes feature flags in context"
-    when calling GET /test-context-flags
+## Dispatch Feature Demo (v2.1+)
+# Demonstrates the new dispatch syntax as an alternative to @tag filtering on steps
+
+# Equivalent using dispatch syntax - cleaner for branching logic
+GET /feature-test-dispatch
+  |> dispatch
+    case @flag(experimental-feature):
+      |> jq: `{ message: "Experimental feature enabled!" }`
+    default:
+      |> jq: `{ message: "Standard feature (no flag required)" }`
+
+# More complex example: environment-based dispatch
+GET /env-dispatch
+  |> dispatch
+    case @env(production):
+      |> jq: `{ env: "production", debug: false, caching: true }`
+    case @env(staging):
+      |> jq: `{ env: "staging", debug: true, caching: true }`
+    case @env(development):
+      |> jq: `{ env: "development", debug: true, caching: false }`
+    default:
+      |> jq: `{ env: "unknown", debug: false, caching: false }`
+
+# Dispatch with negated tags
+GET /non-production-dispatch
+  |> dispatch
+    case @!env(production):
+      |> jq: `{
+        message: "Non-production environment",
+        debugTools: true,
+        mockData: true
+      }`
+    default:
+      |> jq: `{
+        message: "Production environment",
+        debugTools: false,
+        mockData: false
+      }`
+
+# Dispatch with multi-step pipelines
+GET /multi-step-dispatch
+  |> dispatch
+    case @flag(experimental):
+      |> jq: `{ step: 1, version: "experimental" }`
+      |> jq: `. + { step: 2, features: ["ai", "realtime"] }`
+      |> jq: `. + { step: 3, complete: true }`
+    case @flag(beta):
+      |> jq: `{ step: 1, version: "beta" }`
+      |> jq: `. + { step: 2, features: ["analytics"] }`
+    default:
+      |> jq: `{ step: 1, version: "stable", features: [] }`
+
+describe "Dispatch Feature"
+  it "routes to experimental branch when flag is set"
+    when calling GET /feature-test-dispatch
     then status is 200
-    and output `.flag_count` is a number
+    and output `.message` equals "Experimental feature enabled!"
+
+  it "routes to default branch when flag is not set"
+    when calling GET /feature-test-dispatch
+    then status is 200
+    and output `.message` equals "Standard feature (no flag required)"
+
+  it "handles environment-based routing"
+    when calling GET /env-dispatch
+    then status is 200
+    and output `.env` equals "unknown"
+    and output `.debug` equals false
+
+  it "handles negated tags in dispatch"
+    when calling GET /non-production-dispatch
+    then status is 200
+    and output `.message` contains "environment"
+
+  it "executes multi-step pipelines in dispatch branches"
+    when calling GET /multi-step-dispatch
+    then status is 200
+    and output `.step` equals 1

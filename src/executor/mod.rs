@@ -546,6 +546,10 @@ fn is_effectively_last_step(
                 // If blocks always execute (condition is always evaluated), so current is not last
                 return false;
             }
+            PipelineStep::Dispatch { .. } => {
+                // Dispatch blocks always execute (at least default case), so current is not last
+                return false;
+            }
         }
     }
     // No remaining steps will execute
@@ -807,6 +811,45 @@ async fn execute_step<'a>(
                 }
             }
             // If false and no else: state remains unchanged (pass-through)
+
+            Ok(StepOutcome::Continue)
+        }
+        PipelineStep::Dispatch { branches, default } => {
+            // Iterate through branches and find the first matching tag
+            let mut matched_pipeline = None;
+
+            for branch in branches {
+                // Check if this branch's tag matches
+                if check_tag(&branch.tag, env, ctx, &pipeline_ctx.state) {
+                    matched_pipeline = Some(&branch.pipeline);
+                    break;
+                }
+            }
+
+            // If no case matched, use default
+            if matched_pipeline.is_none() {
+                matched_pipeline = default.as_ref();
+            }
+
+            // Execute the matched pipeline (or do nothing if no match and no default)
+            if let Some(pipeline) = matched_pipeline {
+                let (res, ct, status) = execute_pipeline_internal(
+                    env,
+                    pipeline,
+                    pipeline_ctx.state.clone(),
+                    ctx
+                ).await?;
+
+                // Update Context
+                pipeline_ctx.state = res;
+                if let Some(s) = status {
+                    current_output.status_code = Some(s);
+                }
+                if ct != "application/json" {
+                    current_output.content_type = ct;
+                }
+            }
+            // If no match and no default: state remains unchanged (pass-through)
 
             Ok(StepOutcome::Continue)
         }
