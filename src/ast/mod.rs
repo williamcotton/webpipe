@@ -131,6 +131,14 @@ pub enum PipelineStep {
         branches: Vec<DispatchBranch>,
         default: Option<Pipeline>
     },
+    /// A structural block that iterates over a JSON array
+    /// Syntax: |> foreach data.rows
+    Foreach {
+        /// The selector string, e.g., "data.rows"
+        selector: String,
+        /// The inner pipeline to execute for each item
+        pipeline: Pipeline,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -380,6 +388,14 @@ impl Display for PipelineStep {
                     }
                 }
                 Ok(())
+            }
+            PipelineStep::Foreach { selector, pipeline } => {
+                writeln!(f, "  |> foreach {}", selector)?;
+                // Format inner pipeline with proper indentation
+                for step in &pipeline.steps {
+                    writeln!(f, "  {}", step)?;
+                }
+                write!(f, "  end")
             }
         }
     }
@@ -711,11 +727,40 @@ fn parse_dispatch_step(input: &str) -> IResult<&str, PipelineStep> {
     Ok((input, PipelineStep::Dispatch { branches, default }))
 }
 
+fn parse_foreach_step(input: &str) -> IResult<&str, PipelineStep> {
+    // 1. Header: "|> foreach"
+    let (input, _) = skip_ws_and_comments(input)?;
+    let (input, _) = tag("|>")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("foreach")(input)?;
+    let (input, _) = nom::character::complete::multispace1(input)?; // Enforce space
+
+    // 2. Selector: "data.rows"
+    // Consume characters until we hit a newline or a comment start (#)
+    let (input, raw_selector) = take_till1(|c| c == '\n' || c == '#')(input)?;
+    let selector = raw_selector.trim().to_string();
+    let (input, _) = skip_ws_and_comments(input)?;
+
+    // 3. Inner Pipeline
+    // Recursively parse the block content
+    let (input, pipeline) = parse_pipeline(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
+
+    // 4. Footer: "end"
+    let (input, _) = tag("end")(input)?;
+
+    Ok((input, PipelineStep::Foreach {
+        selector,
+        pipeline,
+    }))
+}
+
 fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
     alt((
         parse_result_step,
         parse_if_step,
         parse_dispatch_step,
+        parse_foreach_step,
         parse_regular_step
     )).parse(input)
 }

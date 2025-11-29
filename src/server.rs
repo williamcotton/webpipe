@@ -94,6 +94,12 @@ fn pipeline_needs_flags(
                     }
                 }
             }
+            PipelineStep::Foreach { pipeline, .. } => {
+                // 7. Foreach blocks: check inner pipeline
+                if pipeline_needs_flags(pipeline, named_pipelines) {
+                    return true;
+                }
+            }
         }
     }
     false

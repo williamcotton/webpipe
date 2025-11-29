@@ -11,6 +11,7 @@ use crate::{
     error::WebPipeError,
     middleware::MiddlewareRegistry,
     runtime::context::{CacheStore, RateLimitStore},
+    runtime::json_path,
 };
 
 /// Output from pipeline execution
@@ -550,6 +551,10 @@ fn is_effectively_last_step(
                 // Dispatch blocks always execute (at least default case), so current is not last
                 return false;
             }
+            PipelineStep::Foreach { .. } => {
+                // Foreach blocks always execute, so current is not last
+                return false;
+            }
         }
     }
     // No remaining steps will execute
@@ -850,6 +855,47 @@ async fn execute_step<'a>(
                 }
             }
             // If no match and no default: state remains unchanged (pass-through)
+
+            Ok(StepOutcome::Continue)
+        }
+        PipelineStep::Foreach { selector, pipeline } => {
+            // SURGICAL EXTRACTION PATTERN
+            // 1. EXTRACTION
+            // Use json_path helper to find the node and .take() it.
+            // This leaves 'Null' in the tree at the selector path.
+            let items_opt = json_path::get_value_mut(&mut pipeline_ctx.state, selector)
+                .map(|val| val.take());
+
+            if let Some(Value::Array(items)) = items_opt {
+                let mut results = Vec::with_capacity(items.len());
+
+                // 2. ITERATION
+                for item in items {
+                    // Execute the inner pipeline with the item as input.
+                    // This creates isolated context for each iteration.
+                    let (final_state, _, _) = execute_pipeline_internal(
+                        env,
+                        pipeline,
+                        item,
+                        ctx
+                    ).await?;
+
+                    results.push(final_state);
+                }
+
+                // 3. IMPLANTATION
+                // Find the path again (since our mutable borrow ended) and
+                // overwrite the 'Null' with our new Array of results.
+                if let Some(slot) = json_path::get_value_mut(&mut pipeline_ctx.state, selector) {
+                    *slot = Value::Array(results);
+                }
+            } else {
+                // Path not found or not an array.
+                // Fail fast so the user knows their path is wrong.
+                return Err(WebPipeError::MiddlewareExecutionError(
+                    format!("foreach: path '{}' is not an array or does not exist", selector)
+                ));
+            }
 
             Ok(StepOutcome::Continue)
         }

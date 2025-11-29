@@ -2304,3 +2304,39 @@ describe "Dispatch Feature"
     then status is 200
     and output `.step` equals 1
     and output `.version` equals "stable"
+
+## Foreach Feature Demo (v2.2+)
+# Demonstrates the new foreach syntax for iterating over arrays in-place
+# Syntax: |> foreach selector
+#           |> ... inner pipeline steps ...
+#         end
+
+# Pipeline to enrich a single team with additional data
+pipeline getTeamStats =
+  |> jq: `{ sqlParams: [.id] }`
+  |> pg: `SELECT COUNT(*) as member_count FROM team_members WHERE team_id = $1`
+  |> jq: `. + { stats: { members: .data.rows[0].member_count } }`
+
+# Basic foreach example: transform each item in an array
+GET /test-foreach-basic
+  |> jq: `{
+    data: {
+      rows: [
+        { id: 1, name: "Alpha Team" },
+        { id: 2, name: "Beta Team" },
+        { id: 3, name: "Gamma Team" }
+      ]
+    }
+  }`
+  |> foreach data.rows
+    |> jq: `. + { processed: true, uppercase_name: (.name | ascii_upcase) }`
+  end
+  |> jq: `{ teams: .data.rows }`
+
+describe "Foreach Feature"
+  it "transforms each item in an array"
+    when calling GET /test-foreach-basic
+    then status is 200
+    and output `.teams | length` equals 3
+    and output `.teams[0].processed` equals true
+    and output `.teams[0].uppercase_name` equals "ALPHA TEAM"
