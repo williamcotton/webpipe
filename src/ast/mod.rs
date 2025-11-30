@@ -110,13 +110,29 @@ pub struct Tag {
     pub args: Vec<String>,
 }
 
+/// A boolean expression of tags for dispatch routing
+/// Supports AND, OR operations with standard precedence (AND binds tighter than OR)
+#[derive(Debug, Clone)]
+pub enum TagExpr {
+    /// A single tag: @when(admin), @!flag(beta), @env(prod)
+    Tag(Tag),
+    
+    /// Logical AND: expr1 and expr2
+    And(Box<TagExpr>, Box<TagExpr>),
+    
+    /// Logical OR: expr1 or expr2
+    Or(Box<TagExpr>, Box<TagExpr>),
+}
+
 #[derive(Debug, Clone)]
 pub enum PipelineStep {
     Regular {
         name: String,
         config: String,
         config_type: ConfigType,
-        tags: Vec<Tag>,
+        /// Optional tag expression for conditional execution
+        /// Supports boolean expressions: @when(a) and @when(b), @flag(x) or @env(dev)
+        condition: Option<TagExpr>,
         /// Pre-parsed join task names (only populated for "join" middleware)
         /// This avoids parsing the config string on every request in the hot path.
         parsed_join_targets: Option<Vec<String>>,
@@ -143,7 +159,7 @@ pub enum PipelineStep {
 
 #[derive(Debug, Clone)]
 pub struct DispatchBranch {
-    pub tag: Tag,
+    pub condition: TagExpr,
     pub pipeline: Pipeline,
 }
 
@@ -319,10 +335,31 @@ impl Display for Tag {
     }
 }
 
+impl Display for TagExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TagExpr::Tag(tag) => write!(f, "{}", tag),
+            TagExpr::And(left, right) => {
+                // Add parentheses around OR expressions inside AND for clarity
+                let left_str = match left.as_ref() {
+                    TagExpr::Or(_, _) => format!("({})", left),
+                    _ => format!("{}", left),
+                };
+                let right_str = match right.as_ref() {
+                    TagExpr::Or(_, _) => format!("({})", right),
+                    _ => format!("{}", right),
+                };
+                write!(f, "{} and {}", left_str, right_str)
+            }
+            TagExpr::Or(left, right) => write!(f, "{} or {}", left, right),
+        }
+    }
+}
+
 impl Display for PipelineStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PipelineStep::Regular { name, config, config_type, tags, .. } => {
+            PipelineStep::Regular { name, config, config_type, condition, .. } => {
                 let formatted_config = match config_type {
                     ConfigType::Backtick => format!("`{}`", config),
                     ConfigType::Quoted => format!("\"{}\"", config),
@@ -330,11 +367,9 @@ impl Display for PipelineStep {
                 };
                 write!(f, "  |> {}: {}", name, formatted_config)?;
 
-                // Append tags if any
-                if !tags.is_empty() {
-                    for tag in tags {
-                        write!(f, " {}", tag)?;
-                    }
+                // Append condition if present
+                if let Some(cond) = condition {
+                    write!(f, " {}", cond)?;
                 }
                 Ok(())
             }
@@ -369,7 +404,7 @@ impl Display for PipelineStep {
                 writeln!(f, "  |> dispatch")?;
                 // Format case branches
                 for branch in branches {
-                    write!(f, "    case {}: ", branch.tag)?;
+                    write!(f, "    case {}: ", branch.condition)?;
                     // If pipeline has only one step, format inline
                     if branch.pipeline.steps.len() == 1 {
                         writeln!(f, "{}", branch.pipeline.steps[0])?;
@@ -685,17 +720,69 @@ fn parse_if_step(input: &str) -> IResult<&str, PipelineStep> {
     }))
 }
 
+// Parse a tag expression with boolean operators (and, or) and grouping
+// Grammar (precedence: AND > OR):
+//   tag_expr := or_expr
+//   or_expr  := and_expr ("or" and_expr)*
+//   and_expr := primary ("and" primary)*
+//   primary  := tag | "(" tag_expr ")"
+fn parse_tag_expr(input: &str) -> IResult<&str, TagExpr> {
+    parse_or_expr(input)
+}
+
+fn parse_or_expr(input: &str) -> IResult<&str, TagExpr> {
+    let (input, first) = parse_and_expr(input)?;
+    let (input, rest) = many0(preceded(
+        delimited(multispace0, tag("or"), multispace0),
+        parse_and_expr
+    )).parse(input)?;
+    
+    Ok((input, rest.into_iter().fold(first, |acc, expr| {
+        TagExpr::Or(Box::new(acc), Box::new(expr))
+    })))
+}
+
+fn parse_and_expr(input: &str) -> IResult<&str, TagExpr> {
+    let (input, first) = parse_tag_primary(input)?;
+    let (input, rest) = many0(preceded(
+        delimited(multispace0, tag("and"), multispace0),
+        parse_tag_primary
+    )).parse(input)?;
+    
+    Ok((input, rest.into_iter().fold(first, |acc, expr| {
+        TagExpr::And(Box::new(acc), Box::new(expr))
+    })))
+}
+
+fn parse_tag_primary(input: &str) -> IResult<&str, TagExpr> {
+    alt((
+        // Grouped expression: ( expr )
+        map(
+            delimited(
+                (char('('), multispace0),
+                parse_tag_expr,
+                (multispace0, char(')'))
+            ),
+            |expr| expr
+        ),
+        // Single tag
+        map(parse_tag, TagExpr::Tag)
+    )).parse(input)
+}
+
 // Parse a single dispatch branch: case @tag: |> pipeline
+// Now supports boolean expressions: case @when(a) and @when(b):
 fn parse_dispatch_branch(input: &str) -> IResult<&str, DispatchBranch> {
     let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("case")(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, tag) = parse_tag(input)?;
+    let (input, condition) = parse_tag_expr(input)?;
+    let (input, _) = multispace0(input)?;
     let (input, _) = char(':')(input)?;
     let (input, _) = skip_ws_and_comments(input)?;
     // parse_pipeline stops when it hits tokens it doesn't recognize
     let (input, pipeline) = parse_pipeline(input)?;
-    Ok((input, DispatchBranch { tag, pipeline }))
+    Ok((input, DispatchBranch { condition, pipeline }))
 }
 
 // Parse the dispatch step: |> dispatch case ... case ... default: ... end
@@ -794,16 +881,6 @@ fn parse_tag_args(input: &str) -> IResult<&str, Vec<String>> {
     ).parse(input)
 }
 
-fn parse_tags(input: &str) -> IResult<&str, Vec<Tag>> {
-    many0(
-        preceded(
-            // Skip inline spaces before each tag
-            nom::bytes::complete::take_while(|c| c == ' ' || c == '\t'),
-            parse_tag
-        )
-    ).parse(input)
-}
-
 /// Pre-parse join config into task names at AST parse time.
 /// This avoids repeated parsing in the hot path during execution.
 fn parse_join_task_names(config: &str) -> Option<Vec<String>> {
@@ -831,6 +908,49 @@ fn parse_join_task_names(config: &str) -> Option<Vec<String>> {
     Some(names)
 }
 
+/// Parse optional step condition (tag expression after the config)
+/// Supports:
+///   - @tag (single tag)
+///   - @tag @tag2 (implicit AND for backwards compatibility)  
+///   - @tag and @tag2 (explicit AND)
+///   - @tag or @tag2 (explicit OR)
+///   - (@tag or @tag2) and @tag3 (grouping)
+fn parse_step_condition(input: &str) -> IResult<&str, Option<TagExpr>> {
+    // Skip inline whitespace
+    let (input, _) = nom::bytes::complete::take_while(|c| c == ' ' || c == '\t')(input)?;
+    
+    // Check if there's a tag expression starting (@ for tags, ( for grouped expressions)
+    if !input.starts_with('@') && !input.starts_with('(') {
+        return Ok((input, None));
+    }
+    
+    // Parse the first tag expression (which may include and/or)
+    let (mut input, mut expr) = parse_tag_expr(input)?;
+    
+    // Check for additional space-separated tags (implicit AND for backwards compatibility)
+    // This handles: @dev @flag(x) which was valid in the old Vec<Tag> format
+    loop {
+        let (remaining, _) = nom::bytes::complete::take_while(|c| c == ' ' || c == '\t')(input)?;
+        
+        // Check if there's another tag starting (without and/or keyword)
+        if !remaining.starts_with('@') {
+            break;
+        }
+        
+        // Make sure it's not just a newline or comment coming
+        if remaining.starts_with('\n') || remaining.starts_with('#') || remaining.starts_with("//") {
+            break;
+        }
+        
+        // Parse the next tag (just a single tag, not a full expression)
+        let (remaining, next_tag) = parse_tag(remaining)?;
+        expr = TagExpr::And(Box::new(expr), Box::new(TagExpr::Tag(next_tag)));
+        input = remaining;
+    }
+    
+    Ok((input, Some(expr)))
+}
+
 fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("|>")(input)?;
@@ -840,8 +960,8 @@ fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, _) = multispace0(input)?;
     let (input, (config, config_type)) = parse_step_config(input)?;
 
-    // Parse tags (before consuming trailing whitespace)
-    let (input, tags) = parse_tags(input)?;
+    // Parse optional condition (tag expression)
+    let (input, condition) = parse_step_condition(input)?;
 
     // Pre-parse join targets for join middleware (compile-time optimization)
     let parsed_join_targets = if name == "join" {
@@ -851,7 +971,7 @@ fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     };
 
     let (input, _) = multispace0(input)?;
-    Ok((input, PipelineStep::Regular { name, config, config_type, tags, parsed_join_targets }))
+    Ok((input, PipelineStep::Regular { name, config, config_type, condition, parsed_join_targets }))
 }
 
 fn parse_result_step(input: &str) -> IResult<&str, PipelineStep> {
@@ -1345,51 +1465,73 @@ pipeline test =
         let pipeline = &program.pipelines[0].pipeline;
         assert_eq!(pipeline.steps.len(), 4);
 
-        // Step 0: @prod
-        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[0] {
-            assert_eq!(tags.len(), 1);
-            assert_eq!(tags[0].name, "prod");
-            assert_eq!(tags[0].negated, false);
-            assert_eq!(tags[0].args.len(), 0);
+        // Step 0: @prod (single tag)
+        if let PipelineStep::Regular { condition: Some(TagExpr::Tag(tag)), .. } = &pipeline.steps[0] {
+            assert_eq!(tag.name, "prod");
+            assert_eq!(tag.negated, false);
+            assert_eq!(tag.args.len(), 0);
         } else {
-            panic!("Expected Regular step");
+            panic!("Expected Regular step with single tag");
         }
 
-        // Step 1: @dev @flag(new-ui)
-        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[1] {
-            assert_eq!(tags.len(), 2);
-            assert_eq!(tags[0].name, "dev");
-            assert_eq!(tags[1].name, "flag");
-            assert_eq!(tags[1].args, vec!["new-ui"]);
+        // Step 1: @dev @flag(new-ui) (implicit AND of two tags)
+        if let PipelineStep::Regular { condition: Some(expr), .. } = &pipeline.steps[1] {
+            // Should be: And(Tag(dev), Tag(flag(new-ui)))
+            if let TagExpr::And(left, right) = expr {
+                if let TagExpr::Tag(dev_tag) = left.as_ref() {
+                    assert_eq!(dev_tag.name, "dev");
+                } else {
+                    panic!("Expected dev tag on left");
+                }
+                if let TagExpr::Tag(flag_tag) = right.as_ref() {
+                    assert_eq!(flag_tag.name, "flag");
+                    assert_eq!(flag_tag.args, vec!["new-ui"]);
+                } else {
+                    panic!("Expected flag tag on right");
+                }
+            } else {
+                panic!("Expected And expression");
+            }
         } else {
-            panic!("Expected Regular step");
+            panic!("Expected Regular step with condition");
         }
 
-        // Step 2: @!prod @async(user)
-        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[2] {
-            assert_eq!(tags.len(), 2);
-            assert_eq!(tags[0].name, "prod");
-            assert_eq!(tags[0].negated, true);
-            assert_eq!(tags[1].name, "async");
-            assert_eq!(tags[1].args, vec!["user"]);
+        // Step 2: @!prod @async(user) (negated tag AND async tag)
+        if let PipelineStep::Regular { condition: Some(expr), .. } = &pipeline.steps[2] {
+            if let TagExpr::And(left, right) = expr {
+                if let TagExpr::Tag(prod_tag) = left.as_ref() {
+                    assert_eq!(prod_tag.name, "prod");
+                    assert_eq!(prod_tag.negated, true);
+                } else {
+                    panic!("Expected prod tag on left");
+                }
+                if let TagExpr::Tag(async_tag) = right.as_ref() {
+                    assert_eq!(async_tag.name, "async");
+                    assert_eq!(async_tag.args, vec!["user"]);
+                } else {
+                    panic!("Expected async tag on right");
+                }
+            } else {
+                panic!("Expected And expression");
+            }
         } else {
-            panic!("Expected Regular step");
+            panic!("Expected Regular step with condition");
         }
 
-        // Step 3: @flag(beta,staff)
-        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[3] {
-            assert_eq!(tags.len(), 1);
-            assert_eq!(tags[0].name, "flag");
-            assert_eq!(tags[0].args, vec!["beta", "staff"]);
+        // Step 3: @flag(beta,staff) (single tag with multiple args)
+        if let PipelineStep::Regular { condition: Some(TagExpr::Tag(tag)), .. } = &pipeline.steps[3] {
+            assert_eq!(tag.name, "flag");
+            assert_eq!(tag.args, vec!["beta", "staff"]);
         } else {
-            panic!("Expected Regular step");
+            panic!("Expected Regular step with single tag");
         }
 
         // Test roundtrip
         let displayed = format!("{}", pipeline);
         assert!(displayed.contains("@prod"));
-        assert!(displayed.contains("@dev @flag(new-ui)"));
-        assert!(displayed.contains("@!prod @async(user)"));
+        // Note: Display now uses TagExpr::Display which shows "X and Y" for And expressions
+        assert!(displayed.contains("@dev and @flag(new-ui)"));
+        assert!(displayed.contains("@!prod and @async(user)"));
         assert!(displayed.contains("@flag(beta,staff)"));
     }
 
@@ -1403,12 +1545,12 @@ pipeline test =
         let (_rest, program) = parse_program(src).unwrap();
         let pipeline = &program.pipelines[0].pipeline;
 
-        // Steps without tags should have empty tags vec
-        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[0] {
-            assert_eq!(tags.len(), 0);
+        // Steps without tags should have condition = None
+        if let PipelineStep::Regular { condition, .. } = &pipeline.steps[0] {
+            assert!(condition.is_none());
         }
-        if let PipelineStep::Regular { tags, .. } = &pipeline.steps[1] {
-            assert_eq!(tags.len(), 0);
+        if let PipelineStep::Regular { condition, .. } = &pipeline.steps[1] {
+            assert!(condition.is_none());
         }
     }
 
@@ -1421,7 +1563,8 @@ pipeline test =
         let (_rest, program) = parse_program(src).unwrap();
         let formatted = format!("{}", program);
 
-        assert!(formatted.contains("@prod @dev"));
+        // Multiple space-separated tags are now parsed as implicit AND
+        assert!(formatted.contains("@prod and @dev"));
     }
 
     #[test]
@@ -1653,13 +1796,21 @@ GET /dashboard
                 assert_eq!(branches.len(), 2);
 
                 // Check first case: @flag(experimental)
-                assert_eq!(branches[0].tag.name, "flag");
-                assert_eq!(branches[0].tag.args, vec!["experimental"]);
+                if let TagExpr::Tag(tag) = &branches[0].condition {
+                    assert_eq!(tag.name, "flag");
+                    assert_eq!(tag.args, vec!["experimental"]);
+                } else {
+                    panic!("Expected Tag");
+                }
                 assert_eq!(branches[0].pipeline.steps.len(), 1);
 
                 // Check second case: @env(dev)
-                assert_eq!(branches[1].tag.name, "env");
-                assert_eq!(branches[1].tag.args, vec!["dev"]);
+                if let TagExpr::Tag(tag) = &branches[1].condition {
+                    assert_eq!(tag.name, "env");
+                    assert_eq!(tag.args, vec!["dev"]);
+                } else {
+                    panic!("Expected Tag");
+                }
                 assert_eq!(branches[1].pipeline.steps.len(), 1);
 
                 // Check default branch exists
@@ -1762,9 +1913,13 @@ GET /test
 
         if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
             if let PipelineStep::Dispatch { branches, .. } = &pipeline.steps[0] {
-                assert_eq!(branches[0].tag.name, "env");
-                assert_eq!(branches[0].tag.negated, true);
-                assert_eq!(branches[0].tag.args, vec!["production"]);
+                if let TagExpr::Tag(tag) = &branches[0].condition {
+                    assert_eq!(tag.name, "env");
+                    assert_eq!(tag.negated, true);
+                    assert_eq!(tag.args, vec!["production"]);
+                } else {
+                    panic!("Expected Tag");
+                }
             } else {
                 panic!("Expected Dispatch step");
             }
@@ -1838,8 +1993,16 @@ GET /dash
             if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
                 assert_eq!(branches.len(), 2);
                 assert!(default.is_some());
-                assert_eq!(branches[0].tag.name, "flag");
-                assert_eq!(branches[1].tag.name, "env");
+                if let TagExpr::Tag(tag0) = &branches[0].condition {
+                    assert_eq!(tag0.name, "flag");
+                } else {
+                    panic!("Expected Tag");
+                }
+                if let TagExpr::Tag(tag1) = &branches[1].condition {
+                    assert_eq!(tag1.name, "env");
+                } else {
+                    panic!("Expected Tag");
+                }
             } else {
                 panic!("Expected Dispatch step");
             }

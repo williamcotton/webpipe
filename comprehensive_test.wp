@@ -2431,6 +2431,28 @@ GET /test-when-on-step
   |> jq: `. + { metadata: { timestamp: "2024-01-01" } }` @when(add_metadata)
   |> jq: `. + { skipped: true }` @when(never_set_condition)
 
+# Test boolean expressions on individual steps
+GET /test-bool-expr-on-step
+  |> jq: `{ base: "data" }`
+  |> lua: `
+    setWhen("feature_a", true)
+    setWhen("feature_b", true)
+    setWhen("feature_c", false)
+    return request
+  `
+  # Should execute: both feature_a and feature_b are true
+  |> jq: `. + { both_ab: true }` @when(feature_a) and @when(feature_b)
+  # Should NOT execute: feature_c is false
+  |> jq: `. + { all_abc: true }` @when(feature_a) and @when(feature_b) and @when(feature_c)
+  # Should execute: feature_a is true (OR short-circuits)
+  |> jq: `. + { a_or_c: true }` @when(feature_a) or @when(feature_c)
+  # Should execute: feature_c is false, so !feature_c is true
+  |> jq: `. + { a_and_not_c: true }` @when(feature_a) and @!when(feature_c)
+  # Should NOT execute: feature_a is true, so !feature_a is false
+  |> jq: `. + { not_a: true }` @!when(feature_a)
+  # Test grouping: (a or c) and b = (true or false) and true = true
+  |> jq: `. + { grouped: true }` (@when(feature_a) or @when(feature_c)) and @when(feature_b)
+
 # Test request classifier pattern - analyze request and route accordingly
 GET /test-classifier-pattern
   |> lua: `
@@ -2500,3 +2522,148 @@ describe "Computed Context / @when Tag Feature"
     and output `.base` equals "data"
     and output `.metadata.timestamp` equals "2024-01-01"
     and output `.skipped` equals null
+
+  it "applies boolean expressions on individual steps"
+    when calling GET /test-bool-expr-on-step
+    then status is 200
+    and output `.base` equals "data"
+    and output `.both_ab` equals true
+    and output `.all_abc` equals null
+    and output `.a_or_c` equals true
+    and output `.a_and_not_c` equals true
+    and output `.not_a` equals null
+    and output `.grouped` equals true
+
+## Boolean Tag Expressions in Dispatch (v2.4+)
+# Demonstrates the new boolean expression support in dispatch case statements
+# Supports: @when(a) and @when(b), @when(a) or @when(b), parentheses for grouping
+
+# Test AND expression: both conditions must be true
+GET /test-dispatch-and
+  |> lua: `
+    setWhen("authenticated", true)
+    setWhen("admin", true)
+    return request
+  `
+  |> dispatch
+    case @when(authenticated) and @when(admin):
+      |> jq: `{ access: "admin_panel", matched: "and_both" }`
+    default:
+      |> jq: `{ access: "denied", matched: "default" }`
+
+# Test AND expression: one condition false
+GET /test-dispatch-and-partial
+  |> lua: `
+    setWhen("authenticated", true)
+    setWhen("admin", false)
+    return request
+  `
+  |> dispatch
+    case @when(authenticated) and @when(admin):
+      |> jq: `{ access: "admin_panel", matched: "and_both" }`
+    default:
+      |> jq: `{ access: "user_only", matched: "default" }`
+
+# Test OR expression: either condition can be true
+GET /test-dispatch-or
+  |> lua: `
+    setWhen("mobile", true)
+    setWhen("tablet", false)
+    return request
+  `
+  |> dispatch
+    case @when(mobile) or @when(tablet):
+      |> jq: `{ layout: "compact", matched: "mobile_or_tablet" }`
+    default:
+      |> jq: `{ layout: "desktop", matched: "default" }`
+
+# Test mixed tag types in expression: @when and @flag together
+GET /test-dispatch-mixed-tags
+  |> lua: `setWhen("premium_user", true); return request`
+  |> dispatch
+    case @when(premium_user) and @!flag(maintenance):
+      |> jq: `{ access: "premium", matched: "when_and_flag" }`
+    default:
+      |> jq: `{ access: "basic", matched: "default" }`
+
+# Test precedence: AND binds tighter than OR
+# a or b and c = a or (b and c)
+GET /test-dispatch-precedence
+  |> lua: `
+    setWhen("superadmin", true)
+    setWhen("admin", false)
+    setWhen("elevated", false)
+    return request
+  `
+  |> dispatch
+    case @when(superadmin) or @when(admin) and @when(elevated):
+      |> jq: `{ result: "matched", reason: "superadmin OR (admin AND elevated)" }`
+    default:
+      |> jq: `{ result: "no_match" }`
+
+# Test explicit grouping with parentheses
+# (a or b) and c - different from a or (b and c)
+GET /test-dispatch-grouping
+  |> lua: `
+    setWhen("admin", true)
+    setWhen("staff", false)
+    setWhen("on_duty", true)
+    return request
+  `
+  |> dispatch
+    case (@when(admin) or @when(staff)) and @when(on_duty):
+      |> jq: `{ result: "matched", reason: "(admin OR staff) AND on_duty" }`
+    default:
+      |> jq: `{ result: "no_match" }`
+
+# Test negation within boolean expression
+GET /test-dispatch-negated-expr
+  |> lua: `
+    setWhen("authenticated", true)
+    setWhen("banned", false)
+    return request
+  `
+  |> dispatch
+    case @when(authenticated) and @!when(banned):
+      |> jq: `{ status: "welcome", matched: "auth_and_not_banned" }`
+    default:
+      |> jq: `{ status: "blocked" }`
+
+describe "Boolean Tag Expressions"
+  it "matches when both AND conditions are true"
+    when calling GET /test-dispatch-and
+    then status is 200
+    and output `.access` equals "admin_panel"
+    and output `.matched` equals "and_both"
+
+  it "falls through to default when AND has one false condition"
+    when calling GET /test-dispatch-and-partial
+    then status is 200
+    and output `.access` equals "user_only"
+    and output `.matched` equals "default"
+
+  it "matches when any OR condition is true"
+    when calling GET /test-dispatch-or
+    then status is 200
+    and output `.layout` equals "compact"
+    and output `.matched` equals "mobile_or_tablet"
+
+  it "supports mixing @when and @flag in expressions"
+    when calling GET /test-dispatch-mixed-tags
+    then status is 200
+    and output `.access` equals "premium"
+
+  it "applies correct precedence (AND before OR)"
+    when calling GET /test-dispatch-precedence
+    then status is 200
+    and output `.result` equals "matched"
+
+  it "respects explicit grouping with parentheses"
+    when calling GET /test-dispatch-grouping
+    then status is 200
+    and output `.result` equals "matched"
+
+  it "supports negation within boolean expressions"
+    when calling GET /test-dispatch-negated-expr
+    then status is 200
+    and output `.status` equals "welcome"

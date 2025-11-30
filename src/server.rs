@@ -25,6 +25,28 @@ use crate::http::request::build_request_from_axum_with_ip;
 
 // merge helper moved to shared executor
 
+/// Check if a TagExpr contains any @flag tag
+fn tag_expr_has_flag(expr: &crate::ast::TagExpr) -> bool {
+    match expr {
+        crate::ast::TagExpr::Tag(tag) => tag.name == "flag",
+        crate::ast::TagExpr::And(left, right) | crate::ast::TagExpr::Or(left, right) => {
+            tag_expr_has_flag(left) || tag_expr_has_flag(right)
+        }
+    }
+}
+
+/// Check if a TagExpr contains @needs(flags)
+fn tag_expr_has_needs_flags(expr: &crate::ast::TagExpr) -> bool {
+    match expr {
+        crate::ast::TagExpr::Tag(tag) => {
+            tag.name == "needs" && tag.args.contains(&"flags".to_string())
+        }
+        crate::ast::TagExpr::And(left, right) | crate::ast::TagExpr::Or(left, right) => {
+            tag_expr_has_needs_flags(left) || tag_expr_has_needs_flags(right)
+        }
+    }
+}
+
 /// Recursive function to detect if a pipeline requires feature flags
 fn pipeline_needs_flags(
     pipeline: &Pipeline,
@@ -32,15 +54,17 @@ fn pipeline_needs_flags(
 ) -> bool {
     for step in &pipeline.steps {
         match step {
-            PipelineStep::Regular { name, config, tags, .. } => {
-                // 1. Direct Usage: @flag(...)
-                if tags.iter().any(|t| t.name == "flag") {
-                    return true;
-                }
+            PipelineStep::Regular { name, config, condition, .. } => {
+                if let Some(expr) = condition {
+                    // 1. Direct Usage: @flag(...)
+                    if tag_expr_has_flag(expr) {
+                        return true;
+                    }
 
-                // 2. Explicit Opt-in: @needs(flags)
-                if tags.iter().any(|t| t.name == "needs" && t.args.contains(&"flags".to_string())) {
-                    return true;
+                    // 2. Explicit Opt-in: @needs(flags)
+                    if tag_expr_has_needs_flags(expr) {
+                        return true;
+                    }
                 }
 
                 // 3. Recursive Reference: |> pipeline: name
@@ -78,8 +102,8 @@ fn pipeline_needs_flags(
             PipelineStep::Dispatch { branches, default } => {
                 // 6. Dispatch blocks: check all case branches and tags
                 for branch in branches {
-                    // Check if branch tag itself is a flag
-                    if branch.tag.name == "flag" {
+                    // Check if branch condition expression contains a flag tag
+                    if tag_expr_has_flag(&branch.condition) {
                         return true;
                     }
                     // Check if branch pipeline needs flags
@@ -783,7 +807,7 @@ mod tests {
         };
         // Craft a tiny pipeline that sets cookies via jq
         let p_set_cookie = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "jq".to_string(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, tags: vec![], parsed_join_targets: None }
+            crate::ast::PipelineStep::Regular { name: "jq".to_string(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
         ]});
         let resp = respond_with_pipeline(
             state.clone(),
@@ -802,7 +826,7 @@ mod tests {
 
         // Pipeline that renders HTML
         let p_html = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, tags: vec![], parsed_join_targets: None }
+            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
         ]});
         let resp2 = respond_with_pipeline(
             state,
