@@ -279,6 +279,28 @@ pub fn build_minimal_request_for_tests(
     })
 }
 
+pub fn build_request_for_tests(
+    method: &str,
+    path: &str,
+    path_params: &HashMap<String, String>,
+    query_params: &HashMap<String, String>,
+    headers: Option<&HashMap<String, String>>,
+    cookies: Option<&HashMap<String, String>>,
+    body: Value,
+) -> Value {
+    assemble_request_object(RequestAssembly {
+        method,
+        path,
+        path_params,
+        query_params,
+        headers,
+        cookies,
+        body,
+        content_type: "application/json",
+        ip: None,
+    })
+}
+
 
 
 #[cfg(test)]

@@ -196,6 +196,9 @@ pub struct It {
     pub mocks: Vec<Mock>,
     pub when: When,
     pub input: Option<String>,
+    pub body: Option<String>,
+    pub headers: Option<String>,
+    pub cookies: Option<String>,
     pub conditions: Vec<Condition>,
 }
 
@@ -210,6 +213,7 @@ pub enum When {
 pub struct Condition {
     pub condition_type: ConditionType,
     pub field: String,
+    pub header_name: Option<String>, // For "header Set-Cookie contains ..."
     pub jq_expr: Option<String>,
     pub comparison: String,
     pub value: String,
@@ -491,6 +495,15 @@ impl Display for It {
         if let Some(input) = &self.input {
             writeln!(f, "    with input `{}`", input)?;
         }
+        if let Some(body) = &self.body {
+            writeln!(f, "    with body `{}`", body)?;
+        }
+        if let Some(headers) = &self.headers {
+            writeln!(f, "    with headers `{}`", headers)?;
+        }
+        if let Some(cookies) = &self.cookies {
+            writeln!(f, "    with cookies `{}`", cookies)?;
+        }
         for condition in &self.conditions {
             writeln!(f, "    {}", condition)?;
         }
@@ -510,12 +523,14 @@ impl Display for When {
 
 impl Display for Condition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let field_with_jq = if let Some(expr) = &self.jq_expr {
+        let field_part = if let Some(header) = &self.header_name {
+            format!("{} \"{}\"", self.field, header)
+        } else if let Some(expr) = &self.jq_expr {
             format!("{} `{}`", self.field, expr)
         } else {
             self.field.clone()
         };
-        write!(f, "{} {} {} {}", self.condition_type, field_with_jq, self.comparison, self.value)
+        write!(f, "{} {} {} {}", self.condition_type, field_part, self.comparison, self.value)
     }
 }
 
@@ -1173,8 +1188,29 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
     let (input, _) = multispace0(input)?;
     let (input, field) = take_till1(|c| c == ' ')(input)?;
     let (input, _) = multispace0(input)?;
-    // Optional backticked jq filter following the field
-    let (input, jq_expr_opt) = opt(parse_multiline_string).parse(input)?;
+
+    // Check if field is "header" - if so, parse header name
+    let (input, header_name_opt) = if field == "header" {
+        let (input, header_val) = alt((
+            map(parse_multiline_string, |s| s.to_string()),
+            map(
+                delimited(char('"'), take_until("\""), char('"')),
+                |s: &str| s.to_string()
+            ),
+        )).parse(input)?;
+        let (input, _) = multispace0(input)?;
+        (input, Some(header_val))
+    } else {
+        (input, None)
+    };
+
+    // Optional backticked jq filter following the field (not for header assertions)
+    let (input, jq_expr_opt) = if header_name_opt.is_none() {
+        let (input, jq) = opt(parse_multiline_string).parse(input)?;
+        (input, jq)
+    } else {
+        (input, None)
+    };
     let (input, _) = multispace0(input)?;
     let (input, comparison) = take_till1(|c| c == ' ')(input)?;
     let (input, _) = multispace0(input)?;
@@ -1193,6 +1229,7 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
     Ok((input, Condition {
         condition_type,
         field: field.to_string(),
+        header_name: header_name_opt,
         jq_expr: jq_expr_opt,
         comparison: comparison.to_string(),
         value,
@@ -1229,10 +1266,32 @@ fn parse_and_mock(input: &str) -> IResult<&str, Mock> {
     let (input, _) = multispace0(input)?;
     let (input, return_value) = parse_multiline_string(input)?;
     let (input, _) = multispace0(input)?;
-    Ok((input, Mock { 
-        target: target.to_string(), 
-        return_value 
+    Ok((input, Mock {
+        target: target.to_string(),
+        return_value
     }))
+}
+
+fn parse_with_clause(input: &str) -> IResult<&str, (String, String)> {
+    let (input, _) = tag("with")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, kind) = alt((tag("input"), tag("body"), tag("headers"), tag("cookies"))).parse(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, value) = parse_multiline_string(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, (kind.to_string(), value)))
+}
+
+fn parse_and_with_clause(input: &str) -> IResult<&str, (String, String)> {
+    let (input, _) = tag("and")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("with")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, kind) = alt((tag("input"), tag("body"), tag("headers"), tag("cookies"))).parse(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, value) = parse_multiline_string(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, (kind.to_string(), value)))
 }
 
 fn parse_it(input: &str) -> IResult<&str, It> {
@@ -1252,31 +1311,63 @@ fn parse_it(input: &str) -> IResult<&str, It> {
     let (input, when) = parse_when(input)?;
     let (input, _) = multispace0(input)?;
     
-    // Parse optional input
-    let (input, input_opt) = opt(
-        preceded(
-            (tag("with"), multispace0, tag("input"), multispace0),
-            parse_multiline_string
-        )
-    ).parse(input)?;
+    // Parse optional with clauses (input, body, headers, cookies)
+    // First one uses "with", subsequent use "and with"
+    let (mut input, first_with) = opt(parse_with_clause).parse(input)?;
+    let mut input_opt = None;
+    let mut body_opt = None;
+    let mut headers_opt = None;
+    let mut cookies_opt = None;
+
+    if let Some((kind, value)) = first_with {
+        match kind.as_str() {
+            "input" => input_opt = Some(value),
+            "body" => body_opt = Some(value),
+            "headers" => headers_opt = Some(value),
+            "cookies" => cookies_opt = Some(value),
+            _ => {}
+        }
+
+        // Parse additional "and with" clauses
+        loop {
+            let (new_input, and_with) = opt(parse_and_with_clause).parse(input)?;
+            input = new_input;
+
+            if let Some((kind, value)) = and_with {
+                match kind.as_str() {
+                    "input" => input_opt = Some(value),
+                    "body" => body_opt = Some(value),
+                    "headers" => headers_opt = Some(value),
+                    "cookies" => cookies_opt = Some(value),
+                    _ => {}
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     let (input, _) = multispace0(input)?;
-    
+
     // Parse optional additional mocks starting with 'and mock'
     let (input, extra_mocks) = many0(parse_and_mock).parse(input)?;
     let (input, _) = multispace0(input)?;
 
     // Parse remaining conditions
     let (input, conditions) = many0(parse_condition).parse(input)?;
-    
+
     let mut all_mocks = mocks;
     all_mocks.extend(extra_mocks);
-    
-    Ok((input, It { 
-        name: name.to_string(), 
-        mocks: all_mocks, 
-        when, 
-        input: input_opt, 
-        conditions 
+
+    Ok((input, It {
+        name: name.to_string(),
+        mocks: all_mocks,
+        when,
+        input: input_opt,
+        body: body_opt,
+        headers: headers_opt,
+        cookies: cookies_opt,
+        conditions
     }))
 }
 

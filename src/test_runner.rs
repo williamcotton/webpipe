@@ -7,7 +7,7 @@ use crate::config;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::http::request::build_minimal_request_for_tests;
+use crate::http::request::build_request_for_tests;
 use regex::Regex;
 
 #[derive(Debug, Clone)]
@@ -252,8 +252,45 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                 .map(|(k, v)| (k.to_string(), v.to_string()))
                                 .collect::<HashMap<_, _>>();
 
+                            // Parse optional test body, headers, and cookies
+                            let test_body = if let Some(body_str) = &test.body {
+                                parse_backticked_json(body_str)?
+                            } else {
+                                Value::Object(serde_json::Map::new())
+                            };
+
+                            let test_headers = if let Some(h_str) = &test.headers {
+                                let parsed = parse_backticked_json(h_str)?;
+                                if let Value::Object(map) = parsed {
+                                    Some(map.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            let test_cookies = if let Some(c_str) = &test.cookies {
+                                let parsed = parse_backticked_json(c_str)?;
+                                if let Value::Object(map) = parsed {
+                                    Some(map.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
                             // Build request JSON via shared helper
-                            let input = build_minimal_request_for_tests(method, &path_str, &params_map, &query_map);
+                            let input = build_request_for_tests(
+                                method,
+                                &path_str,
+                                &params_map,
+                                &query_map,
+                                test_headers.as_ref(),
+                                test_cookies.as_ref(),
+                                test_body
+                            );
 
                             // Build shared ExecutionEnv with MockingInvoker
                             let named: HashMap<String, Arc<Pipeline>> = program
@@ -435,10 +472,10 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                         match op {
                             "equals" => {
                                 let expected = parse_backticked_json(val_str)?;
-                                if target != expected { 
-                                    cond_pass = false; 
+                                if target != expected {
+                                    cond_pass = false;
                                     if verbose {
-                                        failure_msgs.push(format!("output mismatch\nExpected: {}\nActual: {}", 
+                                        failure_msgs.push(format!("output mismatch\nExpected: {}\nActual: {}",
                                             serde_json::to_string_pretty(&expected).unwrap_or_else(|_| "<invalid JSON>".to_string()),
                                             serde_json::to_string_pretty(&target).unwrap_or_else(|_| "<invalid JSON>".to_string()
                                         )));
@@ -449,10 +486,10 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             }
                             "contains" => {
                                 let expected = parse_backticked_json(val_str)?;
-                                if !deep_contains(&target, &expected) { 
-                                    cond_pass = false; 
+                                if !deep_contains(&target, &expected) {
+                                    cond_pass = false;
                                     if verbose {
-                                        failure_msgs.push(format!("output missing expected fragment\nExpected to contain: {}\nActual output: {}", 
+                                        failure_msgs.push(format!("output missing expected fragment\nExpected to contain: {}\nActual output: {}",
                                             serde_json::to_string_pretty(&expected).unwrap_or_else(|_| "<invalid JSON>".to_string()),
                                             serde_json::to_string_pretty(&target).unwrap_or_else(|_| "<invalid JSON>".to_string()
                                         )));
@@ -469,6 +506,75 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                 if !re.is_match(&hay) { cond_pass = false; failure_msgs.push("output does not match regex".to_string()); }
                             }
                             _ => {}
+                        }
+                    }
+                    ("header", op) if ["contains", "equals", "matches"].contains(&op) => {
+                        // Header assertions
+                        if let Some(header_name) = &cond.header_name {
+                            // Extract header value from setCookies or other header mechanisms
+                            // For now, we primarily support setCookies which appears in the output JSON
+                            let header_value = if header_name.to_lowercase() == "set-cookie" {
+                                // Extract from setCookies array in output
+                                if let Some(cookies) = output_value.get("setCookies").and_then(|v| v.as_array()) {
+                                    // Join all cookies with "; " for matching
+                                    Some(cookies.iter()
+                                        .filter_map(|c| c.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join("; "))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                // For other headers, check if they're in the output JSON
+                                output_value.get(header_name).and_then(|v| v.as_str()).map(|s| s.to_string())
+                            };
+
+                            match op {
+                                "contains" => {
+                                    let expected = parse_backticked_json(val_str)?;
+                                    let expected_str = value_to_string(&expected);
+                                    if let Some(actual) = header_value {
+                                        if !actual.contains(&expected_str) {
+                                            cond_pass = false;
+                                            failure_msgs.push(format!("header '{}' does not contain '{}'", header_name, expected_str));
+                                        }
+                                    } else {
+                                        cond_pass = false;
+                                        failure_msgs.push(format!("header '{}' not found", header_name));
+                                    }
+                                }
+                                "equals" => {
+                                    let expected = parse_backticked_json(val_str)?;
+                                    let expected_str = value_to_string(&expected);
+                                    if let Some(actual) = header_value {
+                                        if actual != expected_str {
+                                            cond_pass = false;
+                                            failure_msgs.push(format!("header '{}' expected '{}' got '{}'", header_name, expected_str, actual));
+                                        }
+                                    } else {
+                                        cond_pass = false;
+                                        failure_msgs.push(format!("header '{}' not found", header_name));
+                                    }
+                                }
+                                "matches" => {
+                                    let expected = parse_backticked_json(val_str)?;
+                                    let pattern = value_to_string(&expected);
+                                    let re = Regex::new(&pattern).map_err(|e| WebPipeError::BadRequest(format!("invalid regex: {}", e)))?;
+                                    if let Some(actual) = header_value {
+                                        if !re.is_match(&actual) {
+                                            cond_pass = false;
+                                            failure_msgs.push(format!("header '{}' does not match pattern '{}'", header_name, pattern));
+                                        }
+                                    } else {
+                                        cond_pass = false;
+                                        failure_msgs.push(format!("header '{}' not found", header_name));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            cond_pass = false;
+                            failure_msgs.push("header assertion requires header name".to_string());
                         }
                     }
                     _ => {

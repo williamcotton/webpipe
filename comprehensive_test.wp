@@ -2667,3 +2667,95 @@ describe "Boolean Tag Expressions"
     when calling GET /test-dispatch-negated-expr
     then status is 200
     and output `.status` equals "welcome"
+# Test file demonstrating new test DSL features
+# Features: Request body, headers, cookies, and header assertions
+
+pipeline testCreateContact =
+  |> jq: `{
+    name: .body.name,
+    email: .body.email,
+    cookie_value: .cookies.session_id,
+    api_key: .headers["x-api-key"]
+  }`
+
+pipeline testAuthenticate =
+  |> jq: `{
+    user: .body.username,
+    setCookies: ["session=" + .body.username + "_token"]
+  }`
+
+pipeline testEcho =
+  |> jq: `.`
+
+POST /test-contacts
+  |> pipeline: testCreateContact
+
+POST /test-authenticate
+  |> pipeline: testAuthenticate
+
+POST /test-echo
+  |> pipeline: testEcho
+
+describe "POST body support"
+  it "creates a contact with POST body"
+    when calling POST /test-contacts
+    with body `{
+      "name": "Alice",
+      "email": "alice@example.com"
+    }`
+    then output `.name` equals `"Alice"`
+    and output `.email` equals `"alice@example.com"`
+
+describe "Headers support"
+  it "sends custom headers"
+    when calling POST /test-contacts
+    with headers `{
+      "x-api-key": "secret123",
+      "content-type": "application/json"
+    }`
+    and with body `{
+      "name": "Bob",
+      "email": "bob@example.com"
+    }`
+    then status is 200
+    and output `.api_key` equals `"secret123"`
+
+describe "Cookies support"
+  it "sends cookies with request"
+    when calling POST /test-contacts
+    with cookies `{
+      "session_id": "abc123"
+    }`
+    and with body `{
+      "name": "Charlie",
+      "email": "charlie@example.com"
+    }`
+    then status is 200
+    and output `.cookie_value` equals `"abc123"`
+
+describe "Header assertions"
+  it "verifies Set-Cookie header"
+    when calling POST /test-authenticate
+    with body `{
+      "username": "alice"
+    }`
+    then status is 200
+    and header "Set-Cookie" contains `session=alice_token`
+
+describe "Combined features"
+  it "uses body, headers, cookies together"
+    when calling POST /test-echo
+    with body `{
+      "name": "Dave",
+      "email": "dave@example.com"
+    }`
+    and with headers `{
+      "x-api-version": "v2"
+    }`
+    and with cookies `{
+      "session_id": "xyz789"
+    }`
+    then status is 200
+    and output `.body.name` equals `"Dave"`
+    and output `.cookies.session_id` equals `"xyz789"`
+    and output `.headers["x-api-version"]` equals `"v2"`
