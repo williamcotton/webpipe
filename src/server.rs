@@ -145,6 +145,7 @@ impl ServerState {
     fn create_request_context(&self, flags: HashMap<String, bool>) -> crate::executor::RequestContext {
         crate::executor::RequestContext {
             feature_flags: flags,
+            conditions: HashMap::new(),
             async_registry: crate::executor::AsyncTaskRegistry::new(),
             deferred: Vec::new(),
             metadata: crate::executor::RequestMetadata::default(),

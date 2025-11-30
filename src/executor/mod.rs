@@ -170,7 +170,12 @@ impl RequestMetadata {
 /// Per-request mutable context (The Backpack)
 pub struct RequestContext {
     /// Feature flags for this request (extracted from headers or auth, NOT from user JSON)
+    /// Static/Sticky configuration (e.g., ENABLE_BETA, NEW_UI). Controlled via @flag / getFlag / setFlag.
     pub feature_flags: HashMap<String, bool>,
+
+    /// Transient conditions for @when routing
+    /// Dynamic/Transient request state (e.g., is_admin, json_request). Controlled via @when / setWhen.
+    pub conditions: HashMap<String, bool>,
 
     /// Async task registry for @async steps
     pub async_registry: AsyncTaskRegistry,
@@ -186,6 +191,7 @@ impl RequestContext {
     pub fn new() -> Self {
         Self {
             feature_flags: HashMap::new(),
+            conditions: HashMap::new(),
             async_registry: AsyncTaskRegistry::new(),
             deferred: Vec::new(),
             metadata: RequestMetadata::default(),
@@ -218,6 +224,13 @@ impl RequestContext {
             .map(|(k, v)| (k.clone(), serde_json::Value::Bool(*v)))
             .collect();
         context.insert("flags".to_string(), serde_json::Value::Object(flags));
+
+        // Add conditions (transient request state for @when routing)
+        let conditions: serde_json::Map<String, serde_json::Value> = self.conditions
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::Bool(*v)))
+            .collect();
+        context.insert("conditions".to_string(), serde_json::Value::Object(conditions));
 
         // Add environment name
         if let Some(env_name) = &env.environment {
@@ -338,9 +351,38 @@ fn check_tag(tag: &crate::ast::Tag, env: &ExecutionEnv, ctx: &RequestContext, _i
         "env" => check_env_tag(tag, env),
         "async" => true, // async doesn't affect execution, just how it runs
         "flag" => check_flag_tag(tag, ctx),
+        "when" => check_when_tag(tag, ctx),
         "needs" => true, // @needs is only for static analysis, doesn't affect runtime
         _ => true,       // unknown tags don't prevent execution
     }
+}
+
+/// Check @when tag against transient conditions in RequestContext
+/// All arguments must be true (AND logic). If tag.negated is true, invert the result.
+fn check_when_tag(tag: &crate::ast::Tag, ctx: &RequestContext) -> bool {
+    if tag.args.is_empty() {
+        return true; // Invalid @when() tag without args, don't prevent execution
+    }
+
+    // Check all condition arguments - all must be met for step to execute
+    for condition_name in &tag.args {
+        let is_met = ctx.conditions.get(condition_name.as_str())
+            .copied()
+            .unwrap_or(false); // Default: False (Fail Closed)
+
+        let matches = if tag.negated {
+            !is_met // @!when(admin) - execute if condition is NOT met
+        } else {
+            is_met  // @when(admin) - execute if condition IS met
+        };
+
+        // If any condition check fails, the step should not execute
+        if !matches {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn check_flag_tag(tag: &crate::ast::Tag, ctx: &RequestContext) -> bool {
@@ -1516,6 +1558,161 @@ mod tests {
         let snapshot_result = async_obj.get("snapshot").unwrap();
         // The async echo will copy the input which had counter: 1
         assert!(snapshot_result.get("counter").is_some());
+    }
+
+    #[tokio::test]
+    async fn when_tag_skips_when_condition_not_set() {
+        let env = env_with_vars(vec![]);
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "admin_only".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![
+                    crate::ast::Tag { name: "when".to_string(), negated: false, args: vec!["is_admin".to_string()] }
+                ],
+                parsed_join_targets: None,
+            }
+        ]};
+
+        // No conditions set - should fail closed (skip the step)
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
+        assert!(out.get("echo").is_none());
+    }
+
+    #[tokio::test]
+    async fn when_tag_executes_when_condition_set() {
+        let env = env_with_vars(vec![]);
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "admin_only".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![
+                    crate::ast::Tag { name: "when".to_string(), negated: false, args: vec!["is_admin".to_string()] }
+                ],
+                parsed_join_targets: None,
+            }
+        ]};
+
+        // With condition enabled in RequestContext - should execute
+        let mut ctx_with_condition = RequestContext::new();
+        ctx_with_condition.conditions.insert("is_admin".to_string(), true);
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), ctx_with_condition).await.unwrap();
+        assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("admin_only"));
+    }
+
+    #[tokio::test]
+    async fn negated_when_tag_executes_when_condition_not_set() {
+        let env = env_with_vars(vec![]);
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "non_admin".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![
+                    crate::ast::Tag { name: "when".to_string(), negated: true, args: vec!["is_admin".to_string()] }
+                ],
+                parsed_join_targets: None,
+            }
+        ]};
+
+        // No conditions set - negated @!when(is_admin) should execute
+        let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
+        assert_eq!(out.get("echo").and_then(|v| v.as_str()), Some("non_admin"));
+    }
+
+    #[tokio::test]
+    async fn when_tag_multiple_conditions_all_must_be_true() {
+        let env = env_with_vars(vec![]);
+
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "admin_and_premium".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![
+                    crate::ast::Tag { name: "when".to_string(), negated: false, args: vec!["is_admin".to_string(), "is_premium".to_string()] }
+                ],
+                parsed_join_targets: None,
+            }
+        ]};
+
+        // Only one condition set - should skip
+        let mut ctx_partial = RequestContext::new();
+        ctx_partial.conditions.insert("is_admin".to_string(), true);
+        let (out1, _ct1, _st1, _ctx1) = execute_pipeline(&env, &pipeline, serde_json::json!({}), ctx_partial).await.unwrap();
+        assert!(out1.get("echo").is_none());
+
+        // Both conditions set - should execute
+        let mut ctx_both = RequestContext::new();
+        ctx_both.conditions.insert("is_admin".to_string(), true);
+        ctx_both.conditions.insert("is_premium".to_string(), true);
+        let (out2, _ct2, _st2, _ctx2) = execute_pipeline(&env, &pipeline, serde_json::json!({}), ctx_both).await.unwrap();
+        assert_eq!(out2.get("echo").and_then(|v| v.as_str()), Some("admin_and_premium"));
+    }
+
+    #[tokio::test]
+    async fn when_tag_isolation_from_flag_tag() {
+        let env = env_with_vars(vec![]);
+
+        // @flag(beta) step
+        let flag_pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "flag_beta".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![
+                    crate::ast::Tag { name: "flag".to_string(), negated: false, args: vec!["beta".to_string()] }
+                ],
+                parsed_join_targets: None,
+            }
+        ]};
+
+        // @when(beta) step
+        let when_pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "echo".to_string(),
+                config: "when_beta".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                tags: vec![
+                    crate::ast::Tag { name: "when".to_string(), negated: false, args: vec!["beta".to_string()] }
+                ],
+                parsed_join_targets: None,
+            }
+        ]};
+
+        // Set beta in conditions only (not in flags)
+        let mut ctx1 = RequestContext::new();
+        ctx1.conditions.insert("beta".to_string(), true);
+
+        // @flag(beta) should skip (beta is not in feature_flags)
+        let (out1, _ct1, _st1, _ctx1) = execute_pipeline(&env, &flag_pipeline, serde_json::json!({}), ctx1).await.unwrap();
+        assert!(out1.get("echo").is_none(), "flag tag should not match condition");
+
+        // @when(beta) should execute (beta is in conditions)
+        let mut ctx2 = RequestContext::new();
+        ctx2.conditions.insert("beta".to_string(), true);
+        let (out2, _ct2, _st2, _ctx2) = execute_pipeline(&env, &when_pipeline, serde_json::json!({}), ctx2).await.unwrap();
+        assert_eq!(out2.get("echo").and_then(|v| v.as_str()), Some("when_beta"));
+    }
+
+    #[tokio::test]
+    async fn request_context_to_value_includes_conditions() {
+        let mut ctx = RequestContext::new();
+        ctx.conditions.insert("is_admin".to_string(), true);
+        ctx.conditions.insert("is_mobile".to_string(), false);
+
+        let env = env_with_vars(vec![]);
+        let context_value = ctx.to_value(&env);
+
+        // Check that conditions are exposed
+        let conditions = context_value.get("conditions").expect("conditions should be present");
+        assert_eq!(conditions.get("is_admin").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(conditions.get("is_mobile").and_then(|v| v.as_bool()), Some(false));
     }
 }
 

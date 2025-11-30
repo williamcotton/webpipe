@@ -257,6 +257,20 @@ impl LuaMiddleware {
                 })?;
                 sandbox.set("setFlag", set_flag)?;
 
+                // 4.5. Inject 'setWhen' and 'getWhen' functions for transient condition routing
+                // Clone conditions for getWhen (snapshot at script start)
+                let conditions_snapshot = ctx.conditions.clone();
+                let get_when = scope.create_function(move |_, key: String| {
+                    Ok(conditions_snapshot.get(&key).copied().unwrap_or(false))
+                })?;
+                sandbox.set("getWhen", get_when)?;
+
+                let set_when = scope.create_function_mut(|_, (key, val): (String, bool)| {
+                    ctx.conditions.insert(key, val);
+                    Ok(())
+                })?;
+                sandbox.set("setWhen", set_when)?;
+
                 // 5. Load and Execute the Script INSIDE the Sandbox
                 let chunk = lua.load(script)
                     .set_environment(sandbox)

@@ -2340,3 +2340,163 @@ describe "Foreach Feature"
     and output `.teams | length` equals 3
     and output `.teams[0].processed` equals true
     and output `.teams[0].uppercase_name` equals "ALPHA TEAM"
+
+## Computed Context / @when Tag Feature (v2.3+)
+# Demonstrates the new @when tag for dynamic routing based on transient request conditions.
+# Unlike @flag (static/sticky configuration), @when is for dynamic runtime routing.
+# Lua middleware can use setWhen(key, value) to classify requests.
+# Conditions are available in $context.conditions for jq and context.conditions in Lua.
+
+# Basic @when routing - Lua classifier sets condition, dispatch routes based on it
+GET /test-when-basic
+  |> lua: `setWhen("is_admin", true); return request`
+  |> dispatch
+    case @when(is_admin):
+      |> jq: `{ role: "admin", access: "full" }`
+    default:
+      |> jq: `{ role: "guest", access: "limited" }`
+
+# Test @when vs @flag isolation - they should be independent namespaces
+GET /test-when-vs-flag-isolation
+  |> lua: `setWhen("beta", true); return request`
+  |> dispatch
+    case @flag(beta):
+      |> jq: `{ error: "BUG: beta is a condition, not a flag" }`
+    case @when(beta):
+      |> jq: `{ success: true, message: "Correctly matched @when(beta)" }`
+    default:
+      |> jq: `{ error: "BUG: should have matched @when(beta)" }`
+
+# Test negated @when tag - execute when condition is NOT met
+GET /test-when-negated
+  |> lua: `setWhen("is_premium", false); return request`
+  |> dispatch
+    case @!when(is_premium):
+      |> jq: `{ message: "Free tier - upgrade for more features" }`
+    case @when(is_premium):
+      |> jq: `{ message: "Premium tier - all features unlocked" }`
+
+# Test multiple conditions with AND logic - all must be true
+GET /test-when-multiple
+  |> lua: `
+    setWhen("is_authenticated", true)
+    setWhen("is_admin", true)
+    return request
+  `
+  |> dispatch
+    case @when(is_authenticated,is_admin):
+      |> jq: `{ access: "admin_panel", level: "superuser" }`
+    case @when(is_authenticated):
+      |> jq: `{ access: "dashboard", level: "user" }`
+    default:
+      |> jq: `{ access: "login", level: "anonymous" }`
+
+# Test conditions exposed in $context for jq
+GET /test-when-context-jq
+  |> lua: `setWhen("from_mobile", true); setWhen("dark_mode", false); return request`
+  |> jq: `{
+    conditions: $context.conditions,
+    from_mobile: $context.conditions.from_mobile,
+    dark_mode: $context.conditions.dark_mode
+  }`
+
+# Test conditions exposed in context for Lua
+# Note: context is a snapshot at script start, so conditions must be set in a prior step
+GET /test-when-context-lua
+  |> lua: `setWhen("test_condition", true); return request`
+  |> lua: `
+    return {
+      conditions = context.conditions,
+      test_condition = context.conditions.test_condition or false
+    }
+  `
+
+# Test getWhen function in Lua - read back conditions set in previous step
+# Note: getWhen takes a snapshot at script start, so conditions must be set in a prior step
+GET /test-get-when
+  |> lua: `setWhen("feature_x", true); return request`
+  |> lua: `
+    local hasFeatureX = getWhen("feature_x")
+    local hasFeatureY = getWhen("feature_y")  -- not set, should be false
+    return {
+      feature_x = hasFeatureX,
+      feature_y = hasFeatureY
+    }
+  `
+
+# Test @when on individual steps (not just dispatch)
+GET /test-when-on-step
+  |> jq: `{ base: "data" }`
+  |> lua: `setWhen("add_metadata", true); return request`
+  |> jq: `. + { metadata: { timestamp: "2024-01-01" } }` @when(add_metadata)
+  |> jq: `. + { skipped: true }` @when(never_set_condition)
+
+# Test request classifier pattern - analyze request and route accordingly
+GET /test-classifier-pattern
+  |> lua: `
+    -- Classifier: analyze request and apply semantic labels
+    local userAgent = request.headers and request.headers["user-agent"] or ""
+    
+    -- Classify based on content
+    if string.find(userAgent, "Mobile") then
+      setWhen("mobile_request", true)
+    else
+      setWhen("desktop_request", true)
+    end
+    
+    -- Classify based on other criteria
+    if request.path and string.find(request.path, "/api/") then
+      setWhen("api_request", true)
+    end
+    
+    return request
+  `
+  |> dispatch
+    case @when(api_request):
+      |> jq: `{ format: "json", compressed: true }`
+    case @when(mobile_request):
+      |> jq: `{ format: "json", simplified: true }`
+    default:
+      |> jq: `{ format: "json", full: true }`
+
+describe "Computed Context / @when Tag Feature"
+  it "routes based on conditions set by Lua classifier"
+    when calling GET /test-when-basic
+    then status is 200
+    and output `.role` equals "admin"
+    and output `.access` equals "full"
+
+  it "isolates @when conditions from @flag feature flags"
+    when calling GET /test-when-vs-flag-isolation
+    then status is 200
+    and output `.success` equals true
+
+  it "handles negated @when tags correctly"
+    when calling GET /test-when-negated
+    then status is 200
+    and output `.message` contains "Free tier"
+
+  it "requires all conditions with multiple arguments (AND logic)"
+    when calling GET /test-when-multiple
+    then status is 200
+    and output `.access` equals "admin_panel"
+    and output `.level` equals "superuser"
+
+  it "exposes conditions in $context for jq"
+    when calling GET /test-when-context-jq
+    then status is 200
+    and output `.from_mobile` equals true
+    and output `.dark_mode` equals false
+
+  it "supports getWhen to read back conditions in Lua"
+    when calling GET /test-get-when
+    then status is 200
+    and output `.feature_x` equals true
+    and output `.feature_y` equals false
+
+  it "applies @when tags on individual steps"
+    when calling GET /test-when-on-step
+    then status is 200
+    and output `.base` equals "data"
+    and output `.metadata.timestamp` equals "2024-01-01"
+    and output `.skipped` equals null
