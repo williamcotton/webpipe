@@ -74,6 +74,22 @@ impl MockResolver {
         }
         self.middleware_mocks.get(middleware)
     }
+
+    /// Get mock by key directly (for GraphQL query.users, mutation.createTodo etc.)
+    fn get_mock_by_key(&self, key: &str) -> Option<&Value> {
+        // Check if it's a pipeline mock (pipeline.name)
+        if let Some((prefix, name)) = key.split_once('.') {
+            if prefix == "pipeline" {
+                return self.pipeline_mocks.get(name);
+            }
+            // Check if it's a variable mock (middleware.varname)
+            if let Some(v) = self.variable_mocks.get(&(prefix.to_string(), name.to_string())) {
+                return Some(v);
+            }
+        }
+        // Check middleware-level mock
+        self.middleware_mocks.get(key)
+    }
 }
 
 #[derive(Clone)]
@@ -97,6 +113,11 @@ impl MiddlewareInvoker for MockingInvoker {
             return Ok(());
         }
         self.registry.execute(name, cfg, pipeline_ctx, _env, _ctx).await
+    }
+
+    fn get_mock(&self, target: &str) -> Option<Value> {
+        // Check if we have a mock for "query.users", "mutation.createTodo" etc.
+        self.mocks.get_mock_by_key(target).cloned()
     }
 }
 
@@ -199,7 +220,15 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
     // Initialize global config (Context builder will also set globals and register partials)
     config::init_global(program.configs.clone());
 
-    let ctx = Context::from_program_configs(program.configs.clone(), &program.variables).await?;
+    let mut ctx = Context::from_program_configs(program.configs.clone(), &program.variables).await?;
+
+    // Initialize GraphQL runtime if schema is defined
+    if program.graphql_schema.is_some() || !program.queries.is_empty() || !program.mutations.is_empty() {
+        let graphql_runtime = crate::graphql::GraphQLRuntime::from_program(&program)
+            .map_err(|e| WebPipeError::ConfigError(e.to_string()))?;
+        ctx.graphql = Some(Arc::new(graphql_runtime));
+    }
+
     let registry: Arc<MiddlewareRegistry> = Arc::new(MiddlewareRegistry::with_builtins(std::sync::Arc::new(ctx)));
 
     let mut outcomes: Vec<TestOutcome> = Vec::new();
@@ -211,7 +240,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
             // Test-level mocks override describe-level mocks (overlay describe <- test)
             let mocks = describe_mocks.overlay(&test_mocks);
 
-            let (status, output_value, content_type, pass, msg) = match &test.when {
+            let (status, output_value, content_type, pass, msg, exec_call_log) = match &test.when {
                 When::CallingRoute { method, path } => {
                     // Split query string if present
                     let mut path_str = path.clone();
@@ -315,25 +344,27 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             // Pipeline-level mock when route uses a named pipeline
                             if let Some(name) = selected_pipeline_name {
                                 if let Some(mock) = mocks.get_pipeline_mock(name) {
-                                    (200u16, mock.clone(), "application/json".to_string(), true, String::new())
+                                    (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
                                 } else {
                                     let ctx = crate::executor::RequestContext::new();
-                    let (out, ct, s, _ctx) = crate::executor::execute_pipeline(&env, selected_pipeline, input, ctx).await?;
-                                    (s.unwrap_or(200u16), out, ct, true, String::new())
+                                    let (out, ct, s, ctx) = crate::executor::execute_pipeline(&env, selected_pipeline, input, ctx).await?;
+                                    let log = ctx.call_log.clone();
+                                    (s.unwrap_or(200u16), out, ct, true, String::new(), log)
                                 }
                             } else {
                                 let ctx = crate::executor::RequestContext::new();
-                    let (out, ct, s, _ctx) = crate::executor::execute_pipeline(&env, selected_pipeline, input, ctx).await?;
-                                (s.unwrap_or(200u16), out, ct, true, String::new())
+                                let (out, ct, s, ctx) = crate::executor::execute_pipeline(&env, selected_pipeline, input, ctx).await?;
+                                let log = ctx.call_log.clone();
+                                (s.unwrap_or(200u16), out, ct, true, String::new(), log)
                             }
                         }
-                        Err(_) => (404u16, Value::Object(serde_json::Map::new()), "application/json".to_string(), false, format!("Route not found: {} {}", method, path)),
+                        Err(_) => (404u16, Value::Object(serde_json::Map::new()), "application/json".to_string(), false, format!("Route not found: {} {}", method, path), HashMap::new()),
                     }
                 }
                 When::ExecutingPipeline { name } => {
                     // If pipeline mock exists, return it directly
                     if let Some(mock) = mocks.get_pipeline_mock(name) {
-                        (200u16, mock.clone(), "application/json".to_string(), true, String::new())
+                        (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
                     } else {
                         let input = parse_optional_input(&test.input)?;
                         let pipeline = program
@@ -356,11 +387,12 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
 
                             cache: crate::runtime::context::CacheStore::new(8, 60),
                     rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-                                
+
                         };
                         let ctx = crate::executor::RequestContext::new();
-                        let (out, ct, status_opt, _ctx) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input, ctx).await?;
-                        (status_opt.unwrap_or(200u16), out, ct, true, String::new())
+                        let (out, ct, status_opt, ctx) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input, ctx).await?;
+                        let log = ctx.call_log.clone();
+                        (status_opt.unwrap_or(200u16), out, ct, true, String::new(), log)
                     }
                 }
                 When::ExecutingVariable { var_type, name } => {
@@ -369,7 +401,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                     let input = parse_optional_input(&test.input)?;
                     // If there's an explicit variable-level mock, return it directly
                     if let Some(mock) = mocks.variable_mocks.get(&(var.var_type.clone(), var.name.clone())) {
-                        (200u16, mock.clone(), "application/json".to_string(), true, String::new())
+                        (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
                     } else {
                         // Single-step pipeline invoking the variable's middleware
                         let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None }] };
@@ -388,11 +420,12 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
 
                             cache: crate::runtime::context::CacheStore::new(8, 60),
                     rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-                                
+
                         };
                         let ctx = crate::executor::RequestContext::new();
-                        let (out, ct, status_opt, _ctx) = crate::executor::execute_pipeline(&env, &pipeline, input, ctx).await?;
-                        (status_opt.unwrap_or(200u16), out, ct, true, String::new())
+                        let (out, ct, status_opt, ctx) = crate::executor::execute_pipeline(&env, &pipeline, input, ctx).await?;
+                        let log = ctx.call_log.clone();
+                        (status_opt.unwrap_or(200u16), out, ct, true, String::new(), log)
                     }
                 }
             };
@@ -400,12 +433,45 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
             // Evaluate conditions
             let mut cond_pass = pass;
             let mut failure_msgs: Vec<String> = Vec::new();
+
             for cond in &test.conditions {
+                // Handle call assertions separately
+                if cond.is_call_assertion {
+                    if let Some(target) = &cond.call_target {
+                        let expected_args = parse_backticked_json(&cond.value)?;
+
+                        // Check call log (exec_call_log from execution)
+                        if let Some(calls) = exec_call_log.get(target) {
+                            // Check if ANY call matches the expected arguments
+                            let match_found = calls.iter().any(|call_args| {
+                                deep_equals(call_args, &expected_args)
+                            });
+
+                            if !match_found {
+                                cond_pass = false;
+                                failure_msgs.push(format!(
+                                    "Expected {} to be called with {:?}, but no matching call found",
+                                    target, expected_args
+                                ));
+                            }
+                        } else {
+                            cond_pass = false;
+                            failure_msgs.push(format!("{} was never called", target));
+                        }
+                    }
+                    continue; // Skip to next condition
+                }
+
                 let field = cond.field.trim();
                 let cmp = cond.comparison.trim();
                 let val_str = cond.value.trim();
 
                 // Helpers
+                fn deep_equals(actual: &Value, expected: &Value) -> bool {
+                    // For call assertions, we use deep_contains logic
+                    // This allows partial matching (expected args must be present in actual)
+                    deep_contains(actual, expected)
+                }
                 fn deep_contains(actual: &Value, expected: &Value) -> bool {
                     match (actual, expected) {
                         (Value::Object(ao), Value::Object(eo)) => eo

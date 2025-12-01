@@ -76,6 +76,7 @@ impl GraphQLRuntime {
         variables: Value,
         pipeline_state: Value,
         env: &ExecutionEnv,
+        ctx: &mut crate::executor::RequestContext,
     ) -> Result<Value, WebPipeError> {
         // Parse the GraphQL query to extract operation type and all fields
         let (operation_type, field_args_list) = self.parse_query_fields_with_variables(query, &variables)?;
@@ -85,6 +86,21 @@ impl GraphQLRuntime {
         let mut errors = Vec::new();
 
         for (field_name, field_args) in field_args_list {
+            // 1. Construct target key for logging and mocking
+            let target_key = format!("{}.{}", operation_type, field_name);
+
+            // 2. Log the call (Spying) - record arguments passed to this resolver
+            ctx.call_log.entry(target_key.clone())
+               .or_default()
+               .push(field_args.clone());
+
+            // 3. Check for Mock - if mocked, skip execution and use mock value
+            if let Some(mock_val) = env.invoker.get_mock(&target_key) {
+                data.insert(field_name.clone(), mock_val);
+                continue;
+            }
+
+            // 4. Standard Execution (existing logic)
             // Get the resolver pipeline
             let pipeline = match operation_type.as_str() {
                 "query" => {
@@ -123,9 +139,8 @@ impl GraphQLRuntime {
                 }
             }
 
-            // Execute the resolver pipeline
-            let ctx = crate::executor::RequestContext::new();
-            let result = crate::executor::execute_pipeline(
+            // Execute the resolver pipeline (reuse existing context for call logging)
+            let result = crate::executor::execute_pipeline_internal(
                 env,
                 pipeline,
                 field_state,
@@ -133,7 +148,7 @@ impl GraphQLRuntime {
             ).await;
 
             match result {
-                Ok((field_data, _, _, _)) => {
+                Ok((field_data, _, _)) => {
                     data.insert(field_name.clone(), field_data);
                 }
                 Err(e) => {

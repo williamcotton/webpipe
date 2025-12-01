@@ -80,6 +80,12 @@ pub trait MiddlewareInvoker: Send + Sync {
         env: &ExecutionEnv,
         ctx: &mut RequestContext,
     ) -> Result<(), WebPipeError>;
+
+    /// Look up a mock value for a specific target (e.g. "query.users")
+    /// Returns None for RealInvoker, Some(mock_value) for MockingInvoker in tests
+    fn get_mock(&self, _target: &str) -> Option<Value> {
+        None // Default implementation returns None
+    }
 }
 
 /// Registry for async tasks spawned with @async tag
@@ -185,6 +191,10 @@ pub struct RequestContext {
 
     /// Typed metadata for middleware communication
     pub metadata: RequestMetadata,
+
+    /// Log of calls to resolvers/middleware for assertion (spying)
+    /// Key: "query.users", Value: List of argument objects passed to that resolver
+    pub call_log: HashMap<String, Vec<Value>>,
 }
 
 impl RequestContext {
@@ -195,6 +205,7 @@ impl RequestContext {
             async_registry: AsyncTaskRegistry::new(),
             deferred: Vec::new(),
             metadata: RequestMetadata::default(),
+            call_log: HashMap::new(),
         }
     }
 
@@ -1071,8 +1082,9 @@ async fn execute_regular_step(
 }
 
 /// Internal pipeline execution that accepts a mutable RequestContext
+/// Public to allow GraphQL runtime to reuse the same context for call logging
 #[async_recursion]
-async fn execute_pipeline_internal<'a>(
+pub async fn execute_pipeline_internal<'a>(
     env: &'a ExecutionEnv,
     pipeline: &'a Pipeline,
     input: Value,

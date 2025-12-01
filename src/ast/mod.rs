@@ -217,6 +217,10 @@ pub struct Condition {
     pub jq_expr: Option<String>,
     pub comparison: String,
     pub value: String,
+    /// True if this is a call verification (e.g., "then call query users with ...")
+    pub is_call_assertion: bool,
+    /// Target for call assertions (e.g., "query.users")
+    pub call_target: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -523,14 +527,23 @@ impl Display for When {
 
 impl Display for Condition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let field_part = if let Some(header) = &self.header_name {
-            format!("{} \"{}\"", self.field, header)
-        } else if let Some(expr) = &self.jq_expr {
-            format!("{} `{}`", self.field, expr)
+        if self.is_call_assertion {
+            // Format: "then call query users with `{ "id": 1 }`"
+            if let Some(target) = &self.call_target {
+                write!(f, "{} call {} {} {}", self.condition_type, target.replace('.', " "), self.comparison, self.value)
+            } else {
+                write!(f, "{} call {} {}", self.condition_type, self.comparison, self.value)
+            }
         } else {
-            self.field.clone()
-        };
-        write!(f, "{} {} {} {}", self.condition_type, field_part, self.comparison, self.value)
+            let field_part = if let Some(header) = &self.header_name {
+                format!("{} \"{}\"", self.field, header)
+            } else if let Some(expr) = &self.jq_expr {
+                format!("{} `{}`", self.field, expr)
+            } else {
+                self.field.clone()
+            };
+            write!(f, "{} {} {} {}", self.condition_type, field_part, self.comparison, self.value)
+        }
     }
 }
 
@@ -1189,6 +1202,44 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
     let (input, field) = take_till1(|c| c == ' ')(input)?;
     let (input, _) = multispace0(input)?;
 
+    // Check if this is a call assertion: "then call query users with ..."
+    if field == "call" {
+        // Parse call target: "query users" or "mutation createTodo"
+        let (input, call_type) = alt((tag("query"), tag("mutation"))).parse(input)?;
+        let (input, _) = nom::character::complete::multispace1(input)?;
+        let (input, call_name) = parse_identifier(input)?;
+        let call_target = format!("{}.{}", call_type, call_name);
+        let (input, _) = multispace0(input)?;
+
+        // Parse comparison (typically "with" or "with arguments")
+        let (input, comparison) = alt((
+            tag("with arguments"),
+            tag("with")
+        )).parse(input)?;
+        let (input, _) = multispace0(input)?;
+
+        // Parse value (expected arguments)
+        let (input, value) = alt((
+            map(parse_multiline_string, |s| s.to_string()),
+            map(
+                delimited(char('"'), take_until("\""), char('"')),
+                |s: &str| s.to_string()
+            ),
+            map(take_till1(|c| c == '\n'), |s: &str| s.to_string()),
+        )).parse(input)?;
+
+        return Ok((input, Condition {
+            condition_type,
+            field: "call".to_string(),
+            header_name: None,
+            jq_expr: None,
+            comparison: comparison.to_string(),
+            value,
+            is_call_assertion: true,
+            call_target: Some(call_target),
+        }));
+    }
+
     // Check if field is "header" - if so, parse header name
     let (input, header_name_opt) = if field == "header" {
         let (input, header_val) = alt((
@@ -1233,6 +1284,8 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
         jq_expr: jq_expr_opt,
         comparison: comparison.to_string(),
         value,
+        is_call_assertion: false,
+        call_target: None,
     }))
 }
 
@@ -1242,15 +1295,34 @@ fn parse_mock(input: &str) -> IResult<&str, Mock> {
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("mock")(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, target) = take_till1(|c| c == ' ')(input)?;
+
+    // Parse target - check for "pipeline", "query", "mutation" keywords or single identifier
+    let (input, target) = if let Ok((input2, _)) = tag::<_, _, nom::error::Error<_>>("pipeline")(input) {
+        let (input2, _) = nom::character::complete::multispace1(input2)?;
+        let (input2, name) = parse_identifier(input2)?;
+        (input2, format!("pipeline.{}", name))
+    } else if let Ok((input2, _)) = tag::<_, _, nom::error::Error<_>>("query")(input) {
+        let (input2, _) = nom::character::complete::multispace1(input2)?;
+        let (input2, name) = parse_identifier(input2)?;
+        (input2, format!("query.{}", name))
+    } else if let Ok((input2, _)) = tag::<_, _, nom::error::Error<_>>("mutation")(input) {
+        let (input2, _) = nom::character::complete::multispace1(input2)?;
+        let (input2, name) = parse_identifier(input2)?;
+        (input2, format!("mutation.{}", name))
+    } else {
+        // Handle existing single identifiers like "pg" or "pg.var"
+        let (input2, target) = take_till1(|c: char| c == ' ' || c == '\n')(input)?;
+        (input2, target.to_string())
+    };
+
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("returning")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, return_value) = parse_multiline_string(input)?;
     let (input, _) = multispace0(input)?;
-    Ok((input, Mock { 
-        target: target.to_string(), 
-        return_value 
+    Ok((input, Mock {
+        target,
+        return_value
     }))
 }
 
@@ -1260,14 +1332,33 @@ fn parse_and_mock(input: &str) -> IResult<&str, Mock> {
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("mock")(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, target) = take_till1(|c| c == ' ')(input)?;
+
+    // Parse target - check for "pipeline", "query", "mutation" keywords or single identifier
+    let (input, target) = if let Ok((input2, _)) = tag::<_, _, nom::error::Error<_>>("pipeline")(input) {
+        let (input2, _) = nom::character::complete::multispace1(input2)?;
+        let (input2, name) = parse_identifier(input2)?;
+        (input2, format!("pipeline.{}", name))
+    } else if let Ok((input2, _)) = tag::<_, _, nom::error::Error<_>>("query")(input) {
+        let (input2, _) = nom::character::complete::multispace1(input2)?;
+        let (input2, name) = parse_identifier(input2)?;
+        (input2, format!("query.{}", name))
+    } else if let Ok((input2, _)) = tag::<_, _, nom::error::Error<_>>("mutation")(input) {
+        let (input2, _) = nom::character::complete::multispace1(input2)?;
+        let (input2, name) = parse_identifier(input2)?;
+        (input2, format!("mutation.{}", name))
+    } else {
+        // Handle existing single identifiers like "pg" or "pg.var"
+        let (input2, target) = take_till1(|c: char| c == ' ' || c == '\n')(input)?;
+        (input2, target.to_string())
+    };
+
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("returning")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, return_value) = parse_multiline_string(input)?;
     let (input, _) = multispace0(input)?;
     Ok((input, Mock {
-        target: target.to_string(),
+        target,
         return_value
     }))
 }
@@ -1295,21 +1386,21 @@ fn parse_and_with_clause(input: &str) -> IResult<&str, (String, String)> {
 }
 
 fn parse_it(input: &str) -> IResult<&str, It> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("it")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char('"')(input)?;
     let (input, name) = take_until("\"")(input)?;
     let (input, _) = char('"')(input)?;
-    let (input, _) = multispace0(input)?;
-    
+    let (input, _) = skip_ws_and_comments(input)?;
+
     // Parse optional per-test mocks
     let (input, mocks) = many0(parse_mock).parse(input)?;
-    
+
     let (input, _) = tag("when")(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
     let (input, when) = parse_when(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
     
     // Parse optional with clauses (input, body, headers, cookies)
     // First one uses "with", subsequent use "and with"
@@ -1347,11 +1438,11 @@ fn parse_it(input: &str) -> IResult<&str, It> {
         }
     }
 
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
 
     // Parse optional additional mocks starting with 'and mock'
     let (input, extra_mocks) = many0(parse_and_mock).parse(input)?;
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
 
     // Parse remaining conditions
     let (input, conditions) = many0(parse_condition).parse(input)?;
@@ -1372,24 +1463,50 @@ fn parse_it(input: &str) -> IResult<&str, It> {
 }
 
 fn parse_describe(input: &str) -> IResult<&str, Describe> {
-    let (input, _) = multispace0(input)?;
+    let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("describe")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char('"')(input)?;
     let (input, name) = take_until("\"")(input)?;
     let (input, _) = char('"')(input)?;
-    let (input, _) = multispace0(input)?;
-    
-    // Parse optional describe-level mocks
-    let (input, mocks) = many0(parse_mock).parse(input)?;
-    let (input, _) = multispace0(input)?;
-    
-    let (input, tests) = many0(parse_it).parse(input)?;
-    
-    Ok((input, Describe { 
-        name: name.to_string(), 
-        mocks, 
-        tests 
+    let (input, _) = skip_ws_and_comments(input)?;
+
+    // Parse mocks and tests in any order
+    let mut mocks = Vec::new();
+    let mut tests = Vec::new();
+    let mut remaining = input;
+
+    loop {
+        let (new_remaining, _) = skip_ws_and_comments(remaining)?;
+
+        // Try to parse a mock (with mock or and mock)
+        if let Ok((new_input, mock)) = parse_mock(new_remaining) {
+            mocks.push(mock);
+            remaining = new_input;
+            continue;
+        }
+
+        if let Ok((new_input, mock)) = parse_and_mock(new_remaining) {
+            mocks.push(mock);
+            remaining = new_input;
+            continue;
+        }
+
+        // Try to parse an it block
+        if let Ok((new_input, test)) = parse_it(new_remaining) {
+            tests.push(test);
+            remaining = new_input;
+            continue;
+        }
+
+        // Nothing more to parse
+        break;
+    }
+
+    Ok((remaining, Describe {
+        name: name.to_string(),
+        mocks,
+        tests
     }))
 }
 

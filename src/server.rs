@@ -173,6 +173,7 @@ impl ServerState {
             async_registry: crate::executor::AsyncTaskRegistry::new(),
             deferred: Vec::new(),
             metadata: crate::executor::RequestMetadata::default(),
+            call_log: HashMap::new(),
         }
     }
 

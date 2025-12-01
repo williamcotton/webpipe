@@ -61,15 +61,6 @@ impl Middleware for GraphQLMiddleware {
                 "No GraphQL schema defined in program".into()
             ))?;
 
-        // Get the execution environment from context
-        let env = self.ctx.execution_env
-            .read()
-            .as_ref()
-            .ok_or_else(|| WebPipeError::ConfigError(
-                "No execution environment available".into()
-            ))?
-            .clone();
-
         // Extract GraphQL variables and resultName before mutating state
         let variables = pipeline_ctx.state
             .get("graphqlParams")
@@ -90,7 +81,8 @@ impl Middleware for GraphQLMiddleware {
             query,
             variables,
             pipeline_state,
-            &env
+            _env,  // Use the ExecutionEnv passed to this method
+            _ctx   // Pass RequestContext for call logging and mocking
         ).await?;
 
         // Check for resultName pattern (auto-naming)

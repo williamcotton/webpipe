@@ -1634,6 +1634,7 @@ graphqlSchema = `
   }
 
   type Mutation {
+    createUser(name: String!, email: String!): User!
     createPost(title: String!, body: String!): Post!
     updatePost(id: Int!, title: String, body: String): Post!
     deletePost(id: Int!): Boolean!
@@ -1695,6 +1696,22 @@ query stats =
       5 as "totalUsers",
       100 as "totalPosts",
       3 as "activeUsers"
+  `
+  |> jq: `.data.rows[0]`
+
+# Mutation resolver: create a new user
+mutation createUser =
+  |> validate: `{
+    name: string(1..100),
+    email: string(5..100)
+  }`
+  |> jq: `{ sqlParams: [.name, .email] }`
+  |> pg: `
+    SELECT
+      floor(random() * 1000)::int as id,
+      $1 as name,
+      $2 as email,
+      NOW()::text as "createdAt"
   `
   |> jq: `.data.rows[0]`
 
@@ -2759,3 +2776,77 @@ describe "Combined features"
     and output `.body.name` equals `"Dave"`
     and output `.cookies.session_id` equals `"xyz789"`
     and output `.headers["x-api-version"]` equals `"v2"`
+
+# GraphQL Test Routes
+GET /test-gql-mock-users
+  |> graphql: `query { users(limit: 10) { id name email } }`
+
+GET /test-gql-spy-users
+  |> graphql: `query { users(limit: 10, offset: 0) { id name } }`
+
+GET /test-gql-mock-mutation
+  |> graphql: `mutation { createUser(name: "Test", email: "test@example.com") { id name } }`
+
+GET /test-gql-spy-mutation
+  |> graphql: `mutation { createUser(name: "Alice", email: "alice@example.com") { id } }`
+
+GET /test-gql-multi-query
+  |> graphql: `query { users { id name } posts { id title } }`
+
+GET /test-gql-variables
+  |> jq: `.graphqlParams = { userId: "42" }`
+  |> graphql: `query($userId: ID!) { user(id: $userId) { id name } }`
+
+describe "GraphQL Mocking and Spying"
+  with mock query users returning `[
+    { "id": 1, "name": "Mocked User", "email": "mock@example.com" }
+  ]`
+
+  it "returns mocked query data"
+    when calling GET /test-gql-mock-users
+    then status is 200
+    and output `.data.users[0].name` equals `"Mocked User"`
+    and output `.data.users[0].email` equals `"mock@example.com"`
+
+  it "verifies GraphQL query arguments (spying)"
+    when calling GET /test-gql-spy-users
+    then status is 200
+    and call query users with `{ "limit": 10, "offset": 0 }`
+
+  with mock mutation createUser returning `{
+    "id": 99,
+    "name": "New User",
+    "email": "new@example.com"
+  }`
+
+  it "returns mocked mutation data"
+    when calling GET /test-gql-mock-mutation
+    then status is 200
+    and output `.data.createUser.id` equals `99`
+    and output `.data.createUser.name` equals `"New User"`
+
+  it "verifies mutation arguments"
+    when calling GET /test-gql-spy-mutation
+    then status is 200
+    and call mutation createUser with `{ "name": "Alice", "email": "alice@example.com" }`
+
+describe "Advanced GraphQL Testing"
+  with mock query users returning `[{"id": 1, "name": "User 1"}]`
+  and mock query posts returning `[{"id": 10, "title": "Post 1"}]`
+
+  it "mocks multiple queries independently"
+    when calling GET /test-gql-multi-query
+    then status is 200
+    and output `.data.users[0].name` equals `"User 1"`
+    and output `.data.posts[0].title` equals `"Post 1"`
+    and call query users with `{}`
+    and call query posts with `{}`
+
+describe "GraphQL Variables Testing"
+  with mock query user returning `{ "id": 42, "name": "Variable User" }`
+
+  it "works with GraphQL variables"
+    when calling GET /test-gql-variables
+    then status is 200
+    and output `.data.user.name` equals `"Variable User"`
+    and call query user with `{ "id": "42" }`
