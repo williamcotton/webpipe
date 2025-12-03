@@ -3076,8 +3076,120 @@ pipeline teamTemplate =
 
 describe "Pipeline scraping"
   it "scrapes the pipeline"
+    let teamNumber = 4
     when executing pipeline teamTemplate
-    with input `{ "team": { "name": "Team 2", "description": "Team 2 description" } }`
+    with input `{ "team": { "name": "Team {{teamNumber}}", "description": "Team {{teamNumber}} description" } }`
     then selector `.team` exists
-    and selector `.team h1` text equals "Team 2"
-    and selector `.team p` text equals "Team 2 description"
+    and selector `.team h1` text equals "Team {{teamNumber}}"
+    and selector `.team p` text equals "Team {{teamNumber}} description"
+
+# ===================================================================
+# Let Variables with Handlebars Templating Tests
+# ===================================================================
+
+GET /users/:id
+  |> jq: `{ "id": .params.id | tonumber, "name": ("User " + (.params.id | tostring)), "active": true }`
+
+POST /teams
+  |> jq: `{ "id": 101, "name": .body.name, "members": .body.members, "active": .body.active }`
+
+describe "Let Variables - Basic Usage"
+  it "uses let variables in route path"
+    let userId = 42
+    when calling GET /users/{{userId}}
+    then status is 200
+    and output `.id` equals {{userId}}
+    and output `.name` equals "User {{userId}}"
+
+  it "uses let variables with different types"
+    let stringVar = "test"
+    let numberVar = 123
+    let boolVar = true
+    when calling GET /users/{{numberVar}}
+    then status is 200
+    and output `.id` equals {{numberVar}}
+    and output `.active` equals {{boolVar}}
+
+  it "uses let variables in request body"
+    let teamName = "Alpha Squad"
+    let memberCount = 5
+    let isActive = true
+    when calling POST /teams
+    with body `{
+      "name": "{{teamName}}",
+      "members": {{memberCount}},
+      "active": {{isActive}}
+    }`
+    then status is 200
+    and output `.name` equals "{{teamName}}"
+    and output `.members` equals {{memberCount}}
+    and output `.active` equals {{isActive}}
+
+describe "Let Variables - Complex Scenarios"
+  it "interleaves let bindings with with clauses"
+    let userId = 99
+    let userName = "Alice"
+    let userActive = true
+    when calling POST /teams
+    with body `{
+      "name": "Team for {{userName}}",
+      "members": {{userId}},
+      "active": {{userActive}}
+    }`
+    then status is 200
+    and output `.name` equals "Team for {{userName}}"
+    and output `.members` equals {{userId}}
+
+  it "uses backtick strings in let values"
+    let jsonData = `{"key": "value", "count": 10}`
+    let teamId = 101
+    when calling POST /teams
+    with body `{
+      "name": "Data Team",
+      "members": {{teamId}},
+      "active": true
+    }`
+    then status is 200
+    and output `.id` equals {{teamId}}
+
+  it "uses quoted strings in let values"
+    let description = "Engineering Team"
+    let teamId = 201
+    when calling POST /teams
+    with body `{
+      "name": "{{description}}",
+      "members": {{teamId}},
+      "active": true
+    }`
+    then status is 200
+    and output `.name` equals "{{description}}"
+
+describe "Let Variables - Pipeline Execution"
+  it "uses let variables with pipeline execution"
+    let teamName = "DevOps Squad"
+    let teamCount = 8
+    
+    when executing pipeline teamTemplate
+    with input `{
+      "team": {
+        "name": "{{teamName}}",
+        "description": "Team with {{teamCount}} members"
+      }
+    }`
+    then selector `.team h1` text equals "{{teamName}}"
+    and selector `.team p` text contains "{{teamCount}}"
+
+  it "uses multiple let variables in assertions"
+    let name = "Special Team"
+    let count = 15
+
+    when calling POST /teams
+    with body `{
+      "name": "{{name}}",
+      "members": {{count}},
+      "active": true
+    }`
+    then status is 200
+    and output `.id` equals 101
+    and output `.name` equals "{{name}}"
+    and output `.members` equals {{count}}

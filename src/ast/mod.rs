@@ -195,6 +195,7 @@ pub struct It {
     pub name: String,
     pub mocks: Vec<Mock>,
     pub when: When,
+    pub variables: Vec<(String, String)>,
     pub input: Option<String>,
     pub body: Option<String>,
     pub headers: Option<String>,
@@ -521,6 +522,12 @@ impl Display for It {
             writeln!(f, "    {}", mock)?;
         }
         writeln!(f, "    when {}", self.when)?;
+
+        // Print let bindings
+        for (name, value) in &self.variables {
+            writeln!(f, "    let {} = {}", name, value)?;
+        }
+
         if let Some(input) = &self.input {
             writeln!(f, "    with input `{}`", input)?;
         }
@@ -1563,6 +1570,33 @@ fn parse_and_mock(input: &str) -> IResult<&str, Mock> {
     }))
 }
 
+fn parse_let_binding(input: &str) -> IResult<&str, (String, String)> {
+    let (input, _) = tag("let")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, name) = parse_identifier(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('=')(input)?;
+    let (input, _) = multispace0(input)?;
+
+    // Parse value: supports backtick strings, quoted strings, numbers, and booleans
+    let (input, value) = alt((
+        // Try backtick string first
+        parse_multiline_string,
+        // Try quoted string
+        delimited(
+            char('"'),
+            map(take_until("\""), |s: &str| s.to_string()),
+            char('"')
+        ),
+        // Try boolean
+        map(alt((tag("true"), tag("false"))), |s: &str| s.to_string()),
+        // Try number
+        map(digit1, |s: &str| s.to_string()),
+    )).parse(input)?;
+
+    Ok((input, (name, value)))
+}
+
 fn parse_with_clause(input: &str) -> IResult<&str, (String, String)> {
     let (input, _) = tag("with")(input)?;
     let (input, _) = multispace0(input)?;
@@ -1597,34 +1631,42 @@ fn parse_it(input: &str) -> IResult<&str, It> {
     // Parse optional per-test mocks
     let (input, mocks) = many0(parse_mock).parse(input)?;
 
-    let (input, _) = tag("when")(input)?;
+    // Parse optional let bindings (before when clause)
+    let mut variables: Vec<(String, String)> = Vec::new();
+    let mut current_input = input;
+    loop {
+        if let Ok((new_input, (name, value))) = parse_let_binding(current_input) {
+            variables.push((name, value));
+            let (new_input, _) = skip_ws_and_comments(new_input)?;
+            current_input = new_input;
+        } else {
+            break;
+        }
+    }
+
+    let (input, _) = tag("when")(current_input)?;
     let (input, _) = skip_ws_and_comments(input)?;
     let (input, when) = parse_when(input)?;
     let (input, _) = skip_ws_and_comments(input)?;
-    
-    // Parse optional with clauses (input, body, headers, cookies)
-    // First one uses "with", subsequent use "and with"
-    let (mut input, first_with) = opt(parse_with_clause).parse(input)?;
+
+    // Parse optional with clauses
     let mut input_opt = None;
     let mut body_opt = None;
     let mut headers_opt = None;
     let mut cookies_opt = None;
+    let mut current_input = input;
+    let mut first_with = true;
 
-    if let Some((kind, value)) = first_with {
-        match kind.as_str() {
-            "input" => input_opt = Some(value),
-            "body" => body_opt = Some(value),
-            "headers" => headers_opt = Some(value),
-            "cookies" => cookies_opt = Some(value),
-            _ => {}
-        }
+    loop {
+        // Try parsing a with clause
+        let with_result = if first_with {
+            opt(parse_with_clause).parse(current_input)
+        } else {
+            opt(parse_and_with_clause).parse(current_input)
+        };
 
-        // Parse additional "and with" clauses
-        loop {
-            let (new_input, and_with) = opt(parse_and_with_clause).parse(input)?;
-            input = new_input;
-
-            if let Some((kind, value)) = and_with {
+        match with_result {
+            Ok((new_input, Some((kind, value)))) => {
                 match kind.as_str() {
                     "input" => input_opt = Some(value),
                     "body" => body_opt = Some(value),
@@ -1632,13 +1674,15 @@ fn parse_it(input: &str) -> IResult<&str, It> {
                     "cookies" => cookies_opt = Some(value),
                     _ => {}
                 }
-            } else {
-                break;
+                current_input = new_input;
+                first_with = false;
             }
+            Ok((_, None)) => break,
+            Err(_) => break,
         }
     }
 
-    let (input, _) = skip_ws_and_comments(input)?;
+    let (input, _) = skip_ws_and_comments(current_input)?;
 
     // Parse optional additional mocks starting with 'and mock'
     let (input, extra_mocks) = many0(parse_and_mock).parse(input)?;
@@ -1654,6 +1698,7 @@ fn parse_it(input: &str) -> IResult<&str, It> {
         name: name.to_string(),
         mocks: all_mocks,
         when,
+        variables,
         input: input_opt,
         body: body_opt,
         headers: headers_opt,

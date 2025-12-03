@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::http::request::build_request_for_tests;
 use regex::Regex;
 use scraper::{Html, Selector};
+use handlebars::Handlebars;
 
 #[derive(Debug, Clone)]
 struct MockResolver {
@@ -237,14 +238,36 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
     for describe in &program.describes {
         let describe_mocks = MockResolver::from_mocks(&describe.mocks)?;
         for test in &describe.tests {
+            // Process let variables into Handlebars context
+            let mut variables_ctx = serde_json::Map::new();
+            for (name, raw_val) in &test.variables {
+                // Try parsing as JSON (handles numbers, bools, quoted strings, objects)
+                // If it fails (e.g. bare word), treat as string
+                let val = match serde_json::from_str::<Value>(raw_val) {
+                    Ok(v) => v,
+                    Err(_) => Value::String(raw_val.clone()),
+                };
+                variables_ctx.insert(name.clone(), val);
+            }
+
+            // Helper to render strings with variables
+            let hb = Handlebars::new();
+            let render = |s: &str| -> Result<String, WebPipeError> {
+                hb.render_template(s, &variables_ctx)
+                    .map_err(|e| WebPipeError::BadRequest(format!("Template substitution failed: {}", e)))
+            };
+
             let test_mocks = MockResolver::from_mocks(&test.mocks)?;
             // Test-level mocks override describe-level mocks (overlay describe <- test)
             let mocks = describe_mocks.overlay(&test_mocks);
 
             let (status, output_value, content_type, pass, msg, exec_call_log) = match &test.when {
                 When::CallingRoute { method, path } => {
+                    // Render variables in path (e.g. /teams/{{id}})
+                    let path_rendered = render(path)?;
+
                     // Split query string if present
-                    let mut path_str = path.clone();
+                    let mut path_str = path_rendered;
                     let mut query_map: HashMap<String, String> = HashMap::new();
                     if let Some(qpos) = path_str.find('?') {
                         let qs = path_str[qpos + 1..].to_string();
@@ -282,15 +305,17 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                 .map(|(k, v)| (k.to_string(), v.to_string()))
                                 .collect::<HashMap<_, _>>();
 
-                            // Parse optional test body, headers, and cookies
+                            // Render and parse optional test body, headers, and cookies
                             let test_body = if let Some(body_str) = &test.body {
-                                parse_backticked_json(body_str)?
+                                let rendered = render(body_str)?;
+                                parse_backticked_json(&rendered)?
                             } else {
                                 Value::Object(serde_json::Map::new())
                             };
 
                             let test_headers = if let Some(h_str) = &test.headers {
-                                let parsed = parse_backticked_json(h_str)?;
+                                let rendered = render(h_str)?;
+                                let parsed = parse_backticked_json(&rendered)?;
                                 if let Value::Object(map) = parsed {
                                     Some(map.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect())
                                 } else {
@@ -301,7 +326,8 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             };
 
                             let test_cookies = if let Some(c_str) = &test.cookies {
-                                let parsed = parse_backticked_json(c_str)?;
+                                let rendered = render(c_str)?;
+                                let parsed = parse_backticked_json(&rendered)?;
                                 if let Value::Object(map) = parsed {
                                     Some(map.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect())
                                 } else {
@@ -367,7 +393,9 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                     if let Some(mock) = mocks.get_pipeline_mock(name) {
                         (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
                     } else {
-                        let input = parse_optional_input(&test.input)?;
+                        // Render input string before parsing
+                        let input_str = test.input.as_ref().map(|s| render(s)).transpose()?;
+                        let input = parse_optional_input(&input_str)?;
                         let pipeline = program
                             .pipelines
                             .iter()
@@ -399,7 +427,9 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                 When::ExecutingVariable { var_type, name } => {
                     let var = find_variable(&program.variables, var_type, name)
                         .ok_or_else(|| WebPipeError::BadRequest(format!("Variable not found: {} {}", var_type, name)))?;
-                    let input = parse_optional_input(&test.input)?;
+                    // Render input string before parsing
+                    let input_str = test.input.as_ref().map(|s| render(s)).transpose()?;
+                    let input = parse_optional_input(&input_str)?;
                     // If there's an explicit variable-level mock, return it directly
                     if let Some(mock) = mocks.variable_mocks.get(&(var.var_type.clone(), var.name.clone())) {
                         (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
@@ -439,7 +469,9 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                 // Handle call assertions separately
                 if cond.is_call_assertion {
                     if let Some(target) = &cond.call_target {
-                        let expected_args = parse_backticked_json(&cond.value)?;
+                        // Render variable substitutions in condition value
+                        let val_str_rendered = render(&cond.value)?;
+                        let expected_args = parse_backticked_json(&val_str_rendered)?;
 
                         // Check call log (exec_call_log from execution)
                         if let Some(calls) = exec_call_log.get(target) {
@@ -465,7 +497,9 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
 
                 let field = cond.field.trim();
                 let cmp = cond.comparison.trim();
-                let val_str = cond.value.trim();
+                // Render variable substitutions in condition value
+                let val_str_rendered = render(&cond.value)?;
+                let val_str = val_str_rendered.trim();
 
                 // Helpers
                 fn deep_equals(actual: &Value, expected: &Value) -> bool {
@@ -647,7 +681,8 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                     _ => {
                         // Check for DOM selector assertions
                         if field == "selector" && cond.selector.is_some() {
-                            let selector_str = cond.selector.as_ref().unwrap();
+                            // Render variable substitutions in selector
+                            let selector_str = render(cond.selector.as_ref().unwrap())?;
                             let dom_assert = cond.dom_assert.as_ref().unwrap();
 
                             // Convert output to HTML string
@@ -667,7 +702,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             let document = Html::parse_document(&html_str);
 
                             // Parse CSS selector
-                            let selector = match Selector::parse(selector_str) {
+                            let selector = match Selector::parse(&selector_str) {
                                 Ok(s) => s,
                                 Err(e) => {
                                     cond_pass = false;
