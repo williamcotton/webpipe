@@ -3061,8 +3061,10 @@ describe "DOM Scraping"
     and selector `.user-profile` text contains "Logged in as"
     and selector `ul.items > li` count equals 3
     and selector `ul.items > li` count is greater than 0
-    and selector `a#login` attribute "href" equals "/login"
-    and selector `a#login` attribute "href" contains "/login"
+    and selector `a#login` attribute `href` equals "/login"
+    and selector `a#login` attribute `href` contains "/login"
+    and selector `a#login[href="/login"]` exists
+    and selector `ul.items > li:nth-child(2)` text equals "Item 2"
 
 pipeline teamTemplate =
   |> handlebars: `
