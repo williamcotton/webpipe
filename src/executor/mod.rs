@@ -360,12 +360,13 @@ fn should_execute_step(condition: &Option<crate::ast::TagExpr>, env: &ExecutionE
     }
 }
 
-fn check_tag(tag: &crate::ast::Tag, env: &ExecutionEnv, ctx: &RequestContext, _input: &Value) -> bool {
+fn check_tag(tag: &crate::ast::Tag, env: &ExecutionEnv, ctx: &RequestContext, input: &Value) -> bool {
     match tag.name.as_str() {
         "env" => check_env_tag(tag, env),
         "async" => true, // async doesn't affect execution, just how it runs
         "flag" => check_flag_tag(tag, ctx),
         "when" => check_when_tag(tag, ctx),
+        "guard" => check_guard_tag(tag, input, tag.negated),
         "needs" => true, // @needs is only for static analysis, doesn't affect runtime
         _ => true,       // unknown tags don't prevent execution
     }
@@ -460,6 +461,40 @@ fn check_env_tag(tag: &crate::ast::Tag, env: &ExecutionEnv) -> bool {
         None => {
             // No environment set: execute non-negated tags, skip negated ones
             !tag.negated
+        }
+    }
+}
+
+/// Check @guard tag - evaluates a JQ expression against the pipeline input
+/// Returns true if the step should execute, false otherwise
+///
+/// # Examples
+/// - `@guard(.user.role == "admin")` - execute only if user is admin
+/// - `@!guard(.debug)` - execute only if debug is NOT truthy
+fn check_guard_tag(tag: &crate::ast::Tag, input: &Value, negated: bool) -> bool {
+    // 1. Extract JQ filter from args
+    let filter = match tag.args.first() {
+        Some(f) => f,
+        None => {
+            tracing::warn!("@guard tag without filter argument - defaulting to true");
+            return true; // Guard without arg defaults to true
+        }
+    };
+
+    // 2. Run JQ logic (uses thread-local cache for performance)
+    match crate::middleware::jq_eval_bool(filter, input) {
+        Ok(result) => {
+            // Apply negation if present
+            if negated {
+                !result
+            } else {
+                result
+            }
+        }
+        Err(e) => {
+            // Log error and fail closed (don't execute) for safety
+            tracing::warn!("Guard JQ error: {} - failing closed (skipping step)", e);
+            false
         }
     }
 }

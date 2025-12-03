@@ -337,7 +337,16 @@ impl Display for Tag {
         }
         write!(f, "{}", self.name)?;
         if !self.args.is_empty() {
-            write!(f, "({})", self.args.join(","))?;
+            // Format arguments - wrap in backticks if they contain special characters or spaces
+            let formatted_args: Vec<String> = self.args.iter().map(|arg| {
+                // If arg contains special characters, wrap in backticks
+                if arg.contains(|c: char| !c.is_alphanumeric() && c != '_' && c != '-') {
+                    format!("`{}`", arg)
+                } else {
+                    arg.clone()
+                }
+            }).collect();
+            write!(f, "({})", formatted_args.join(","))?;
         }
         Ok(())
     }
@@ -898,12 +907,22 @@ fn parse_tag(input: &str) -> IResult<&str, Tag> {
     Ok((input, Tag { name, negated, args }))
 }
 
+// Parse a tag argument - can be either an identifier or a backtick string
+fn parse_tag_argument(input: &str) -> IResult<&str, String> {
+    alt((
+        // Allow backtick strings for JQ expressions (like @guard)
+        parse_multiline_string,
+        // Allow standard identifiers (existing behavior)
+        parse_identifier
+    )).parse(input)
+}
+
 fn parse_tag_args(input: &str) -> IResult<&str, Vec<String>> {
     delimited(
         char('('),
         nom::multi::separated_list1(
-            char(','),
-            parse_identifier
+            (char(','), multispace0),
+            preceded(multispace0, parse_tag_argument)
         ),
         char(')')
     ).parse(input)

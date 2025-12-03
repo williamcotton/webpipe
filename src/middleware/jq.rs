@@ -10,6 +10,64 @@ thread_local! {
     );
 }
 
+/// Evaluate a JQ filter and check if the result is truthy.
+///
+/// This function is used by @guard tags for conditional step execution.
+/// It leverages the thread-local JQ_PROGRAM_CACHE for optimal performance.
+///
+/// # Truthiness Rules
+/// - `false` and `null` are falsy
+/// - Everything else (numbers, strings, arrays, objects) is truthy
+///
+/// # Performance
+/// - Cache Hit: O(1) program lookup + O(n) JQ execution
+/// - Cache Miss: O(n) compilation + O(n) execution, then cached for future use
+pub fn eval_bool(filter: &str, input: &serde_json::Value) -> Result<bool, WebPipeError> {
+    // 1. Serialize Input (Serialization Tax)
+    let input_json = serde_json::to_string(input)
+        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Guard input error: {}", e)))?;
+
+    // 2. Use the Thread-Local Cache
+    JQ_PROGRAM_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+
+        // A. Cache Hit
+        if let Some(program) = cache.get_mut(filter) {
+            let output = program.run(&input_json)
+                .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Guard execution error: {}", e)))?;
+            return parse_bool_output(&output);
+        }
+
+        // B. Cache Miss - Compile
+        match jq_rs::compile(filter) {
+            Ok(mut program) => {
+                let output = program.run(&input_json)
+                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Guard execution error: {}", e)))?;
+
+                // Store in cache for future use
+                cache.put(filter.to_string(), program);
+
+                parse_bool_output(&output)
+            }
+            Err(e) => Err(WebPipeError::MiddlewareExecutionError(format!("Guard compilation error: {}", e))),
+        }
+    })
+}
+
+/// Helper to parse JQ output string to boolean
+fn parse_bool_output(output: &str) -> Result<bool, WebPipeError> {
+    // JQ returns a string like "false\n" or "null\n" or "{...}\n"
+    let val: serde_json::Value = serde_json::from_str(output)
+        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Guard result parse error: {}", e)))?;
+
+    // Truthiness logic matching standard JQ
+    Ok(match val {
+        serde_json::Value::Bool(b) => b,
+        serde_json::Value::Null => false,
+        _ => true // objects, arrays, numbers, strings are truthy
+    })
+}
+
 #[derive(Debug)]
 pub struct JqMiddleware;
 

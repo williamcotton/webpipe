@@ -2850,3 +2850,182 @@ describe "GraphQL Variables Testing"
     then status is 200
     and output `.data.user.name` equals `"Variable User"`
     and call query user with `{ "id": "42" }`
+
+## Step-Level Guards Demo (@guard tag)
+# Guards allow conditional step execution using JQ expressions
+# Syntax: @guard(`jq_expression`)
+# The step executes only if the JQ expression evaluates to truthy
+
+# Basic guard: Execute only if user is admin
+GET /admin/dashboard
+  |> jq: `{ user: { role: "admin", name: "Alice" } }`
+  |> jq: `. + { message: "Admin dashboard - restricted access" }` @guard(`.user.role == "admin"`)
+  |> jq: `. + { message: "Access denied" }` @guard(`.user.role != "admin"`)
+
+# Negated guard: Skip for production
+GET /debug/info
+  |> jq: `{ env: "development", debug: true }`
+  |> log: `level: debug` @!guard(`.env == "production"`)
+  |> jq: `{ debugInfo: "Verbose logging enabled" }` @guard(`.debug == true`)
+
+# Guard with complex conditions
+GET /premium/features
+  |> jq: `{
+    user: {
+      premium: true,
+      verified: true,
+      credits: 100
+    }
+  }`
+  |> jq: `. + { premiumData: "loaded" }` @guard(`.user.premium and .user.verified`)
+  |> jq: `. + { bonus: "10 credits" }` @guard(`.user.credits > 50`)
+  |> jq: `. + { message: "Premium features loaded" }`
+
+# Guard checking array length
+GET /process/items
+  |> jq: `{ items: [1, 2, 3, 4, 5], minItems: 3 }`
+  |> jq: `{ processed: .items | map(. * 2) }` @guard(`(.items | length) >= 3`)
+  |> jq: `{ result: .processed, count: (.processed | length) }`
+
+# Guard checking nested properties
+GET /api/user/preferences
+  |> jq: `{
+    user: {
+      settings: {
+        notifications: {
+          email: true,
+          push: false
+        }
+      }
+    }
+  }`
+  |> jq: `. + { sendEmail: true }` @guard(`.user.settings.notifications.email == true`)
+  |> jq: `. + { sendPush: true }` @guard(`.user.settings.notifications.push == true`)
+  |> jq: `. + { status: "Preferences loaded" }`
+
+# Guard with null/missing field checks
+GET /api/optional/feature
+  |> jq: `{ feature: null, fallback: "default" }`
+  |> jq: `{ source: "feature" }` @guard(`.feature != null`)
+  |> jq: `{ source: "fallback" }` @guard(`.feature == null`)
+
+# Multiple guards in a pipeline
+pipeline conditionalProcessing =
+  |> jq: `{ stage: 1 }` @guard(`.enabled != false`)
+  |> jq: `. + { stage: 2 }` @guard(`.stage == 1`)
+  |> jq: `. + { stage: 3 }` @guard(`.stage == 2`)
+  |> jq: `. + { complete: true }`
+
+GET /test/conditional-pipeline
+  |> jq: `{ enabled: true }`
+  |> pipeline: conditionalProcessing
+
+# Guard with role-based access
+GET /content/:id
+  |> jq: `{
+    user: { role: "editor", id: 1 },
+    content: { id: .params.id, draft: true }
+  }`
+  |> jq: `. + { source: "drafts" }` @guard(`.user.role == "editor" or .user.role == "admin"`)
+  |> jq: `. + { source: "published" }` @guard(`.user.role == "reader"`)
+  |> jq: `. + { message: "Content loaded from " + .source }`
+
+# Guard with feature flags
+GET /feature/new-ui
+  |> jq: `{ flags: { newUI: true, beta: true }, user: "test" }`
+  |> jq: `{ ui: "new", version: "2.0" }` @guard(`.flags.newUI == true`)
+  |> jq: `{ ui: "legacy", version: "1.0" }` @guard(`.flags.newUI != true`)
+  |> jq: `{ betaFeatures: ["feature1", "feature2"] }` @guard(`.flags.beta == true`)
+
+# Guard combined with other tags
+GET /advanced/route
+  |> jq: `{ env: "production", admin: true, cache: true }`
+  |> jq: `. + { cacheEnabled: true }` @guard(`.cache == true`)
+  |> jq: `. + { adminAccess: true }` @guard(`.admin == true`)
+  |> jq: `. + { message: "Advanced route with multiple guards" }`
+
+# Guard with dispatch
+GET /dispatch/conditional
+  |> jq: `{ tier: "premium", verified: true }`
+  |> dispatch
+    case @guard(`.tier == "premium"`):
+      |> jq: `{ message: "Premium tier", features: ["all"] }`
+    case @guard(`.tier == "standard"`):
+      |> jq: `{ message: "Standard tier", features: ["basic"] }`
+    default:
+      |> jq: `{ message: "Free tier", features: [] }`
+
+# Test guards with mocks
+describe "Guard Feature Tests"
+  it "executes step when guard condition is true"
+    when calling GET /admin/dashboard
+    then status is 200
+    and output `.message` equals `"Admin dashboard - restricted access"`
+
+  it "skips step when guard condition is false"
+    when calling GET /debug/info
+    then status is 200
+
+  it "handles complex guard expressions"
+    when calling GET /premium/features
+    then status is 200
+    and output `.message` equals `"Premium features loaded"`
+
+  it "checks array lengths in guards"
+    when calling GET /process/items
+    then status is 200
+    and output `.count` equals 5
+
+  it "handles nested property guards"
+    when calling GET /api/user/preferences
+    then status is 200
+    and output `.status` equals `"Preferences loaded"`
+
+  it "handles null checks in guards"
+    when calling GET /api/optional/feature
+    then status is 200
+    and output `.source` equals `"fallback"`
+
+# Real-world example: Data pipeline with conditional steps
+GET /pipeline/etl/:dataset
+  |> jq: `{
+    dataset: .params.dataset,
+    config: {
+      validate: true,
+      transform: true,
+      cache: true,
+      notify: false
+    },
+    rawData: [
+      {id: 1, value: 10},
+      {id: 2, value: 20},
+      {id: 3, value: null},
+      {id: 4, value: 40}
+    ]
+  }`
+  |> jq: `. + { validationErrors: (.rawData | map(select(.value == null)) | length) }` @guard(`.config.validate == true`)
+  |> jq: `. + { transformed: .rawData | map({id: .id, value: ((.value // 0) * 2)}) }` @guard(`.config.transform == true and (.validationErrors // 0) < 2`)
+  |> jq: `. + { cached: true }` @guard(`.config.cache == true`)
+  |> jq: `. + { notificationSent: true }` @guard(`.config.notify == true`)
+  |> jq: `{
+    dataset: .dataset,
+    recordCount: (.transformed // .rawData) | length,
+    validationErrors: .validationErrors,
+    status: "complete"
+  }`
+
+# Guard with rate limiting context
+GET /api/limited/:resource
+  |> jq: `{
+    resource: .params.resource,
+    user: { tier: "free", requestsRemaining: 5 }
+  }`
+  |> jq: `. + { allowed: true, data: "mock data" }` @guard(`.user.requestsRemaining > 0`)
+  |> jq: `. + { error: "Rate limit exceeded" }` @guard(`.user.requestsRemaining <= 0`)
+  |> jq: `{
+    resource: .resource,
+    data: .data,
+    error: .error,
+    requestsRemaining: .user.requestsRemaining
+  }`
+

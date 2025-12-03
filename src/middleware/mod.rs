@@ -18,7 +18,7 @@ mod join;
 mod graphql;
 mod rate_limit;
 
-pub use jq::JqMiddleware;
+pub use jq::{JqMiddleware, eval_bool as jq_eval_bool};
 pub use auth::AuthMiddleware;
 pub use validate::ValidateMiddleware;
 pub use pg::PgMiddleware;
