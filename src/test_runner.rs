@@ -31,10 +31,10 @@ impl MockResolver {
         }
     }
 
-    fn from_mocks(mocks: &[Mock]) -> Result<Self, WebPipeError> {
+    fn from_mocks(mocks: &[Mock], variables_ctx: &serde_json::Map<String, Value>) -> Result<Self, WebPipeError> {
         let mut resolver = Self::empty();
         for m in mocks {
-            let value = parse_backticked_json(&m.return_value)?;
+            let value = evaluate_jq_input(&m.return_value, variables_ctx)?;
             if let Some((left, right)) = m.target.split_once('.') {
                 // Could be pipeline.<name> or <middleware>.<variable>
                 if left == "pipeline" {
@@ -135,7 +135,8 @@ mod tests {
             Mock { target: "fetch.resultA".to_string(), return_value: "`{}`".to_string() },
             Mock { target: "cache".to_string(), return_value: "`{}`".to_string() },
         ];
-        let res = MockResolver::from_mocks(&mocks).unwrap();
+        let empty_ctx = serde_json::Map::new();
+        let res = MockResolver::from_mocks(&mocks, &empty_ctx).unwrap();
         assert!(res.get_pipeline_mock("inner").is_some());
         assert!(res.get_middleware_mock("cache", &json!({})).is_some());
         let with_name = res.get_middleware_mock("fetch", &json!({"resultName":"resultA"}));
@@ -202,15 +203,33 @@ fn parse_backticked_json(s: &str) -> Result<Value, WebPipeError> {
     }
 }
 
-fn parse_optional_input(input: &Option<String>) -> Result<Value, WebPipeError> {
-    if let Some(s) = input {
-        parse_backticked_json(s)
+/// Evaluates a JQ expression using the let variables as input context
+fn evaluate_jq_input(expr: &str, variables_ctx: &serde_json::Map<String, Value>) -> Result<Value, WebPipeError> {
+    let trimmed = expr.trim();
+    let content = if let (Some(start), Some(end)) = (trimmed.find('`'), trimmed.rfind('`')) {
+        if end > start { &trimmed[start + 1..end] } else { trimmed }
     } else {
-        Ok(Value::Object(serde_json::Map::new()))
-    }
+        trimmed
+    };
+
+    // Create input JSON from variables context
+    let input = Value::Object(variables_ctx.clone());
+    let input_json = serde_json::to_string(&input)
+        .map_err(|e| WebPipeError::BadRequest(format!("Variable context serialization error: {}", e)))?;
+
+    // Compile and run JQ expression
+    let mut program = jq_rs::compile(content)
+        .map_err(|e| WebPipeError::BadRequest(format!("JQ compilation error in test input: {}", e)))?;
+    let result_json = program
+        .run(&input_json)
+        .map_err(|e| WebPipeError::BadRequest(format!("JQ execution error in test input: {}", e)))?;
+
+    // Parse result
+    serde_json::from_str(&result_json)
+        .map_err(|e| WebPipeError::BadRequest(format!("JQ result parse error: {}", e)))
 }
 
- 
+
 
 // Removed local helper functions in favor of shared executor
 
@@ -236,7 +255,9 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
     let mut outcomes: Vec<TestOutcome> = Vec::new();
 
     for describe in &program.describes {
-        let describe_mocks = MockResolver::from_mocks(&describe.mocks)?;
+        // Describe-level mocks use empty context (no test variables available yet)
+        let empty_ctx = serde_json::Map::new();
+        let describe_mocks = MockResolver::from_mocks(&describe.mocks, &empty_ctx)?;
         for test in &describe.tests {
             // Process let variables into Handlebars context
             let mut variables_ctx = serde_json::Map::new();
@@ -257,7 +278,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                     .map_err(|e| WebPipeError::BadRequest(format!("Template substitution failed: {}", e)))
             };
 
-            let test_mocks = MockResolver::from_mocks(&test.mocks)?;
+            let test_mocks = MockResolver::from_mocks(&test.mocks, &variables_ctx)?;
             // Test-level mocks override describe-level mocks (overlay describe <- test)
             let mocks = describe_mocks.overlay(&test_mocks);
 
@@ -305,17 +326,15 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                 .map(|(k, v)| (k.to_string(), v.to_string()))
                                 .collect::<HashMap<_, _>>();
 
-                            // Render and parse optional test body, headers, and cookies
+                            // Evaluate JQ expressions for test body, headers, and cookies using let variables
                             let test_body = if let Some(body_str) = &test.body {
-                                let rendered = render(body_str)?;
-                                parse_backticked_json(&rendered)?
+                                evaluate_jq_input(body_str, &variables_ctx)?
                             } else {
                                 Value::Object(serde_json::Map::new())
                             };
 
                             let test_headers = if let Some(h_str) = &test.headers {
-                                let rendered = render(h_str)?;
-                                let parsed = parse_backticked_json(&rendered)?;
+                                let parsed = evaluate_jq_input(h_str, &variables_ctx)?;
                                 if let Value::Object(map) = parsed {
                                     Some(map.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect())
                                 } else {
@@ -326,8 +345,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             };
 
                             let test_cookies = if let Some(c_str) = &test.cookies {
-                                let rendered = render(c_str)?;
-                                let parsed = parse_backticked_json(&rendered)?;
+                                let parsed = evaluate_jq_input(c_str, &variables_ctx)?;
                                 if let Value::Object(map) = parsed {
                                     Some(map.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect())
                                 } else {
@@ -393,9 +411,12 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                     if let Some(mock) = mocks.get_pipeline_mock(name) {
                         (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
                     } else {
-                        // Render input string before parsing
-                        let input_str = test.input.as_ref().map(|s| render(s)).transpose()?;
-                        let input = parse_optional_input(&input_str)?;
+                        // Evaluate JQ input expression with test variables
+                        let input = if let Some(input_str) = &test.input {
+                            evaluate_jq_input(input_str, &variables_ctx)?
+                        } else {
+                            Value::Object(serde_json::Map::new())
+                        };
                         let pipeline = program
                             .pipelines
                             .iter()
@@ -427,9 +448,12 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                 When::ExecutingVariable { var_type, name } => {
                     let var = find_variable(&program.variables, var_type, name)
                         .ok_or_else(|| WebPipeError::BadRequest(format!("Variable not found: {} {}", var_type, name)))?;
-                    // Render input string before parsing
-                    let input_str = test.input.as_ref().map(|s| render(s)).transpose()?;
-                    let input = parse_optional_input(&input_str)?;
+                    // Evaluate JQ input expression with test variables
+                    let input = if let Some(input_str) = &test.input {
+                        evaluate_jq_input(input_str, &variables_ctx)?
+                    } else {
+                        Value::Object(serde_json::Map::new())
+                    };
                     // If there's an explicit variable-level mock, return it directly
                     if let Some(mock) = mocks.variable_mocks.get(&(var.var_type.clone(), var.name.clone())) {
                         (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())

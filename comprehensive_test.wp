@@ -3078,7 +3078,7 @@ describe "Pipeline scraping"
   it "scrapes the pipeline"
     let teamNumber = 4
     when executing pipeline teamTemplate
-    with input `{ "team": { "name": "Team {{teamNumber}}", "description": "Team {{teamNumber}} description" } }`
+    with input `{ team: { name: ("Team " + (.teamNumber | tostring)), description: ("Team " + (.teamNumber | tostring) + " description") } }`
     then selector `.team` exists
     and selector `.team h1` text equals "Team {{teamNumber}}"
     and selector `.team p` text equals "Team {{teamNumber}} description"
@@ -3116,9 +3116,9 @@ describe "Let Variables - Basic Usage"
     let isActive = true
     when calling POST /teams
     with body `{
-      "name": "{{teamName}}",
-      "members": {{memberCount}},
-      "active": {{isActive}}
+      name: .teamName,
+      members: .memberCount,
+      active: .isActive
     }`
     then status is 200
     and output `.name` equals "{{teamName}}"
@@ -3132,9 +3132,9 @@ describe "Let Variables - Complex Scenarios"
     let userActive = true
     when calling POST /teams
     with body `{
-      "name": "Team for {{userName}}",
-      "members": {{userId}},
-      "active": {{userActive}}
+      name: ("Team for " + .userName),
+      members: .userId,
+      active: .userActive
     }`
     then status is 200
     and output `.name` equals "Team for {{userName}}"
@@ -3145,9 +3145,9 @@ describe "Let Variables - Complex Scenarios"
     let teamId = 101
     when calling POST /teams
     with body `{
-      "name": "Data Team",
-      "members": {{teamId}},
-      "active": true
+      name: "Data Team",
+      members: .teamId,
+      active: true
     }`
     then status is 200
     and output `.id` equals {{teamId}}
@@ -3157,9 +3157,9 @@ describe "Let Variables - Complex Scenarios"
     let teamId = 201
     when calling POST /teams
     with body `{
-      "name": "{{description}}",
-      "members": {{teamId}},
-      "active": true
+      name: .description,
+      members: .teamId,
+      active: true
     }`
     then status is 200
     and output `.name` equals "{{description}}"
@@ -3168,12 +3168,12 @@ describe "Let Variables - Pipeline Execution"
   it "uses let variables with pipeline execution"
     let teamName = "DevOps Squad"
     let teamCount = 8
-    
+
     when executing pipeline teamTemplate
     with input `{
-      "team": {
-        "name": "{{teamName}}",
-        "description": "Team with {{teamCount}} members"
+      team: {
+        name: .teamName,
+        description: ("Team with " + (.teamCount | tostring) + " members")
       }
     }`
     then selector `.team h1` text equals "{{teamName}}"
@@ -3185,9 +3185,9 @@ describe "Let Variables - Pipeline Execution"
 
     when calling POST /teams
     with body `{
-      "name": "{{name}}",
-      "members": {{count}},
-      "active": true
+      name: .name,
+      members: .count,
+      active: true
     }`
     then status is 200
     and output `.id` equals 101
