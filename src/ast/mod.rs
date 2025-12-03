@@ -221,12 +221,28 @@ pub struct Condition {
     pub is_call_assertion: bool,
     /// Target for call assertions (e.g., "query.users")
     pub call_target: Option<String>,
+    /// CSS selector for DOM assertions (e.g., "h1.title", "#login")
+    pub selector: Option<String>,
+    /// Type of DOM assertion being performed
+    pub dom_assert: Option<DomAssertType>,
 }
 
 #[derive(Debug, Clone)]
 pub enum ConditionType {
     Then,
     And,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DomAssertType {
+    /// Check if element(s) exist
+    Exists,
+    /// Check element inner text
+    Text,
+    /// Check count of matched elements
+    Count,
+    /// Check a specific attribute value (e.g., "href")
+    Attribute(String),
 }
 
 impl Display for Program {
@@ -536,6 +552,32 @@ impl Display for When {
 
 impl Display for Condition {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Handle selector assertions
+        if let Some(selector) = &self.selector {
+            if let Some(dom_assert) = &self.dom_assert {
+                return match dom_assert {
+                    DomAssertType::Exists => {
+                        let operation = if self.comparison == "exists" {
+                            "exists"
+                        } else {
+                            "does not exist"
+                        };
+                        write!(f, "{} selector \"{}\" {}", self.condition_type, selector, operation)
+                    }
+                    DomAssertType::Text => {
+                        write!(f, "{} selector \"{}\" text {} {}", self.condition_type, selector, self.comparison, self.value)
+                    }
+                    DomAssertType::Count => {
+                        write!(f, "{} selector \"{}\" count {} {}", self.condition_type, selector, self.comparison, self.value)
+                    }
+                    DomAssertType::Attribute(attr_name) => {
+                        write!(f, "{} selector \"{}\" attribute \"{}\" {} {}",
+                            self.condition_type, selector, attr_name, self.comparison, self.value)
+                    }
+                };
+            }
+        }
+
         if self.is_call_assertion {
             // Format: "then call query users with `{ "id": 1 }`"
             if let Some(target) = &self.call_target {
@@ -1256,7 +1298,144 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
             value,
             is_call_assertion: true,
             call_target: Some(call_target),
+            selector: None,
+            dom_assert: None,
         }));
+    }
+
+    // Check if field is "selector" - if so, parse CSS selector and DOM assertion
+    if field == "selector" {
+        let (input, selector_val) = alt((
+            map(parse_multiline_string, |s| s.to_string()),
+            map(
+                delimited(char('"'), take_until("\""), char('"')),
+                |s: &str| s.to_string()
+            ),
+        )).parse(input)?;
+        let (input, _) = multispace0(input)?;
+
+        // Parse operation: exists | does | text | count | attribute
+        let (input, operation) = take_till1(|c| c == ' ' || c == '\n')(input)?;
+        let (input, _) = multispace0(input)?;
+
+        match operation {
+            "exists" => {
+                return Ok((input, Condition {
+                    condition_type,
+                    field: "selector".to_string(),
+                    header_name: None,
+                    jq_expr: None,
+                    comparison: "exists".to_string(),
+                    value: "true".to_string(),
+                    is_call_assertion: false,
+                    call_target: None,
+                    selector: Some(selector_val),
+                    dom_assert: Some(DomAssertType::Exists),
+                }));
+            }
+            "does" => {
+                // Parse "does not exist"
+                let (input, _) = tag("not")(input)?;
+                let (input, _) = multispace0(input)?;
+                let (input, _) = tag("exist")(input)?;
+                return Ok((input, Condition {
+                    condition_type,
+                    field: "selector".to_string(),
+                    header_name: None,
+                    jq_expr: None,
+                    comparison: "does_not_exist".to_string(),
+                    value: "false".to_string(),
+                    is_call_assertion: false,
+                    call_target: None,
+                    selector: Some(selector_val),
+                    dom_assert: Some(DomAssertType::Exists),
+                }));
+            }
+            "text" => {
+                // Parse comparison and value
+                let (input, comparison) = take_till1(|c| c == ' ')(input)?;
+                let (input, _) = multispace0(input)?;
+                let (input, value) = alt((
+                    map(parse_multiline_string, |s| s.to_string()),
+                    map(
+                        delimited(char('"'), take_until("\""), char('"')),
+                        |s: &str| s.to_string()
+                    ),
+                    map(take_till1(|c| c == '\n'), |s: &str| s.to_string()),
+                )).parse(input)?;
+                return Ok((input, Condition {
+                    condition_type,
+                    field: "selector".to_string(),
+                    header_name: None,
+                    jq_expr: None,
+                    comparison: comparison.to_string(),
+                    value,
+                    is_call_assertion: false,
+                    call_target: None,
+                    selector: Some(selector_val),
+                    dom_assert: Some(DomAssertType::Text),
+                }));
+            }
+            "count" => {
+                // Parse comparison (equals | is | is greater than | is less than)
+                // Read until we hit a number
+                let (input, comp_text) = take_till1(|c: char| c.is_ascii_digit())(input)?;
+                let comparison = comp_text.trim().to_string();
+                let (input, value) = take_till1(|c| c == '\n')(input)?;
+                return Ok((input, Condition {
+                    condition_type,
+                    field: "selector".to_string(),
+                    header_name: None,
+                    jq_expr: None,
+                    comparison,
+                    value: value.trim().to_string(),
+                    is_call_assertion: false,
+                    call_target: None,
+                    selector: Some(selector_val),
+                    dom_assert: Some(DomAssertType::Count),
+                }));
+            }
+            "attribute" => {
+                // Parse attribute name
+                let (input, attr_name) = alt((
+                    map(parse_multiline_string, |s| s.to_string()),
+                    map(
+                        delimited(char('"'), take_until("\""), char('"')),
+                        |s: &str| s.to_string()
+                    ),
+                )).parse(input)?;
+                let (input, _) = multispace0(input)?;
+                // Parse comparison - read until we hit a quote or backtick (start of value)
+                let (input, comparison) = take_till1(|c| c == '"' || c == '`')(input)?;
+                let comparison = comparison.trim();
+                let (input, value) = alt((
+                    map(parse_multiline_string, |s| s.to_string()),
+                    map(
+                        delimited(char('"'), take_until("\""), char('"')),
+                        |s: &str| s.to_string()
+                    ),
+                    map(take_till1(|c| c == '\n'), |s: &str| s.to_string()),
+                )).parse(input)?;
+                return Ok((input, Condition {
+                    condition_type,
+                    field: "selector".to_string(),
+                    header_name: None,
+                    jq_expr: None,
+                    comparison: comparison.to_string(),
+                    value,
+                    is_call_assertion: false,
+                    call_target: None,
+                    selector: Some(selector_val),
+                    dom_assert: Some(DomAssertType::Attribute(attr_name)),
+                }));
+            }
+            _ => {
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    input,
+                    nom::error::ErrorKind::Tag
+                )));
+            }
+        }
     }
 
     // Check if field is "header" - if so, parse header name
@@ -1305,6 +1484,8 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
         value,
         is_call_assertion: false,
         call_target: None,
+        selector: None,
+        dom_assert: None,
     }))
 }
 

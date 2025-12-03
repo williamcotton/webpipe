@@ -1,4 +1,4 @@
-use crate::ast::{Mock, Pipeline, PipelineRef, PipelineStep, Program, Variable, When};
+use crate::ast::{Mock, Pipeline, PipelineRef, PipelineStep, Program, Variable, When, DomAssertType};
 use crate::error::WebPipeError;
 use crate::middleware::MiddlewareRegistry;
 use crate::executor::{ExecutionEnv, MiddlewareInvoker};
@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use crate::http::request::build_request_for_tests;
 use regex::Regex;
+use scraper::{Html, Selector};
 
 #[derive(Debug, Clone)]
 struct MockResolver {
@@ -644,9 +645,179 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                         }
                     }
                     _ => {
-                        // Unsupported condition -> mark failure to surface quickly
-                        cond_pass = false;
-                        failure_msgs.push(format!("unsupported condition: {} {} {}", field, cmp, val_str));
+                        // Check for DOM selector assertions
+                        if field == "selector" && cond.selector.is_some() {
+                            let selector_str = cond.selector.as_ref().unwrap();
+                            let dom_assert = cond.dom_assert.as_ref().unwrap();
+
+                            // Convert output to HTML string
+                            let html_str = match &output_value {
+                                Value::String(s) => s.clone(),
+                                _ => {
+                                    cond_pass = false;
+                                    failure_msgs.push(format!(
+                                        "Selector assertion requires HTML string output, got: {}",
+                                        output_value
+                                    ));
+                                    continue;
+                                }
+                            };
+
+                            // Parse HTML
+                            let document = Html::parse_document(&html_str);
+
+                            // Parse CSS selector
+                            let selector = match Selector::parse(selector_str) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    cond_pass = false;
+                                    failure_msgs.push(format!("Invalid CSS selector '{}': {:?}", selector_str, e));
+                                    continue;
+                                }
+                            };
+
+                            // Evaluate based on assertion type
+                            match dom_assert {
+                                DomAssertType::Exists => {
+                                    let exists = document.select(&selector).next().is_some();
+                                    let expected = cmp == "exists";
+                                    if exists != expected {
+                                        cond_pass = false;
+                                        failure_msgs.push(format!(
+                                            "Selector '{}' {} (expected: {})",
+                                            selector_str,
+                                            if exists { "exists" } else { "does not exist" },
+                                            if expected { "exists" } else { "does not exist" }
+                                        ));
+                                    }
+                                }
+
+                                DomAssertType::Count => {
+                                    let count = document.select(&selector).count();
+                                    let expected: usize = val_str.trim().parse().unwrap_or(0);
+
+                                    let matches = match cmp {
+                                        "equals" | "is" => count == expected,
+                                        "is greater than" | "greater than" => count > expected,
+                                        "is less than" | "less than" => count < expected,
+                                        _ => false,
+                                    };
+
+                                    if !matches {
+                                        cond_pass = false;
+                                        failure_msgs.push(format!(
+                                            "Selector '{}' count is {} (expected {} {})",
+                                            selector_str, count, cmp, expected
+                                        ));
+                                    }
+                                }
+
+                                DomAssertType::Text => {
+                                    let element = document.select(&selector).next();
+
+                                    match element {
+                                        Some(el) => {
+                                            let text: String = el.text().collect::<Vec<_>>().join("");
+                                            let text = text.trim();
+
+                                            let matches = match cmp {
+                                                "equals" | "is" => text == val_str,
+                                                "contains" => text.contains(val_str),
+                                                "matches" => {
+                                                    match Regex::new(val_str) {
+                                                        Ok(re) => re.is_match(text),
+                                                        Err(_) => false,
+                                                    }
+                                                }
+                                                _ => false,
+                                            };
+
+                                            if !matches {
+                                                cond_pass = false;
+                                                failure_msgs.push(format!(
+                                                    "Selector '{}' text '{}' does not {} '{}'",
+                                                    selector_str, text, cmp, val_str
+                                                ));
+                                            }
+                                        }
+                                        None => {
+                                            cond_pass = false;
+                                            failure_msgs.push(format!(
+                                                "Selector '{}' not found in HTML",
+                                                selector_str
+                                            ));
+                                        }
+                                    }
+                                }
+
+                                DomAssertType::Attribute(attr_name) => {
+                                    let element = document.select(&selector).next();
+
+                                    match element {
+                                        Some(el) => {
+                                            match el.value().attr(attr_name) {
+                                                Some(attr_value) => {
+                                                    let (matches, is_negated) = match cmp {
+                                                        "equals" | "is" => (attr_value == val_str, false),
+                                                        "contains" => (attr_value.contains(val_str), false),
+                                                        "matches" => {
+                                                            let m = match Regex::new(val_str) {
+                                                                Ok(re) => re.is_match(attr_value),
+                                                                Err(_) => false,
+                                                            };
+                                                            (m, false)
+                                                        }
+                                                        "does not equal" => (attr_value == val_str, true),
+                                                        "does not contain" => (attr_value.contains(val_str), true),
+                                                        "does not match" => {
+                                                            let m = match Regex::new(val_str) {
+                                                                Ok(re) => re.is_match(attr_value),
+                                                                Err(_) => false,
+                                                            };
+                                                            (m, true)
+                                                        }
+                                                        _ => (false, false),
+                                                    };
+
+                                                    let should_fail = if is_negated { matches } else { !matches };
+
+                                                    if should_fail {
+                                                        cond_pass = false;
+                                                        let op_desc = if is_negated {
+                                                            if matches { "matches" } else { "doesn't match" }
+                                                        } else {
+                                                            "doesn't match"
+                                                        };
+                                                        failure_msgs.push(format!(
+                                                            "Selector '{}' attribute '{}' = '{}' {} expected condition '{} {}'",
+                                                            selector_str, attr_name, attr_value, op_desc, cmp, val_str
+                                                        ));
+                                                    }
+                                                }
+                                                None => {
+                                                    cond_pass = false;
+                                                    failure_msgs.push(format!(
+                                                        "Selector '{}' found but attribute '{}' not present",
+                                                        selector_str, attr_name
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            cond_pass = false;
+                                            failure_msgs.push(format!(
+                                                "Selector '{}' not found in HTML",
+                                                selector_str
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Unsupported condition -> mark failure to surface quickly
+                            cond_pass = false;
+                            failure_msgs.push(format!("unsupported condition: {} {} {}", field, cmp, val_str));
+                        }
                     }
                 }
             }

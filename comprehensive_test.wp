@@ -3029,3 +3029,53 @@ GET /api/limited/:resource
     requestsRemaining: .user.requestsRemaining
   }`
 
+# DOM Scraping Tests
+
+pipeline htmlPage =
+  |> handlebars: `
+    <!DOCTYPE html>
+    <html>
+      <body>
+        <h1 class="title">Welcome Home</h1>
+        <div class="user-profile">Logged in as <b>Admin</b></div>
+        <ul class="items">
+          <li>Item 1</li>
+          <li>Item 2</li>
+          <li>Item 3</li>
+        </ul>
+        <a id="login" href="/login">Sign In</a>
+      </body>
+    </html>
+  `
+
+GET /dom-test
+  |> pipeline: htmlPage
+
+describe "DOM Scraping"
+  it "verifies elements"
+    when calling GET /dom-test
+    then status is 200
+    and selector "h1.title" exists
+    and selector "#non-existent" does not exist
+    and selector "h1.title" text equals "Welcome Home"
+    and selector ".user-profile" text contains "Logged in as"
+    and selector "ul.items > li" count equals 3
+    and selector "ul.items > li" count is greater than 0
+    and selector "a#login" attribute "href" equals "/login"
+    and selector "a#login" attribute "href" contains "/login"
+
+pipeline teamTemplate =
+  |> handlebars: `
+    <div class="team">
+      <h1>{{team.name}}</h1>
+      <p>{{team.description}}</p>
+    </div>
+  `
+
+describe "Pipeline scraping"
+  it "scrapes the pipeline"
+    when executing pipeline teamTemplate
+    with input `{ "team": { "name": "Team 2", "description": "Team 2 description" } }`
+    then selector ".team" exists
+    and selector ".team h1" text equals "Team 2"
+    and selector ".team p" text equals "Team 2 description"
