@@ -1578,7 +1578,7 @@ fn parse_let_binding(input: &str) -> IResult<&str, (String, String)> {
     let (input, _) = char('=')(input)?;
     let (input, _) = multispace0(input)?;
 
-    // Parse value: supports backtick strings, quoted strings, numbers, and booleans
+    // Parse value: supports backtick strings, quoted strings, numbers (int/float), booleans, and null
     let (input, value) = alt((
         // Try backtick string first
         parse_multiline_string,
@@ -1588,9 +1588,20 @@ fn parse_let_binding(input: &str) -> IResult<&str, (String, String)> {
             map(take_until("\""), |s: &str| s.to_string()),
             char('"')
         ),
+        // Try null
+        map(tag("null"), |s: &str| s.to_string()),
         // Try boolean
         map(alt((tag("true"), tag("false"))), |s: &str| s.to_string()),
-        // Try number
+        // Try float (must come before integer to match decimal point)
+        map(
+            recognize((
+                digit1,
+                char('.'),
+                digit1,
+            )),
+            |s: &str| s.to_string()
+        ),
+        // Try integer
         map(digit1, |s: &str| s.to_string()),
     )).parse(input)?;
 

@@ -203,7 +203,7 @@ fn parse_backticked_json(s: &str) -> Result<Value, WebPipeError> {
     }
 }
 
-/// Evaluates a JQ expression using the let variables as input context
+/// Evaluates a JQ expression using the let variables as JQ variables ($name syntax)
 fn evaluate_jq_input(expr: &str, variables_ctx: &serde_json::Map<String, Value>) -> Result<Value, WebPipeError> {
     let trimmed = expr.trim();
     let content = if let (Some(start), Some(end)) = (trimmed.find('`'), trimmed.rfind('`')) {
@@ -217,8 +217,16 @@ fn evaluate_jq_input(expr: &str, variables_ctx: &serde_json::Map<String, Value>)
     let input_json = serde_json::to_string(&input)
         .map_err(|e| WebPipeError::BadRequest(format!("Variable context serialization error: {}", e)))?;
 
+    // Build JQ program that binds each variable as a JQ variable ($varname)
+    // Example: .name as $name | .count as $count | <user_expression>
+    let mut jq_program = String::new();
+    for (var_name, _) in variables_ctx.iter() {
+        jq_program.push_str(&format!(".{} as ${} | ", var_name, var_name));
+    }
+    jq_program.push_str(content);
+
     // Compile and run JQ expression
-    let mut program = jq_rs::compile(content)
+    let mut program = jq_rs::compile(&jq_program)
         .map_err(|e| WebPipeError::BadRequest(format!("JQ compilation error in test input: {}", e)))?;
     let result_json = program
         .run(&input_json)
