@@ -263,12 +263,23 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
     let mut outcomes: Vec<TestOutcome> = Vec::new();
 
     for describe in &program.describes {
-        // Describe-level mocks use empty context (no test variables available yet)
-        let empty_ctx = serde_json::Map::new();
-        let describe_mocks = MockResolver::from_mocks(&describe.mocks, &empty_ctx)?;
+        // Process describe-level variables first
+        let mut describe_ctx = serde_json::Map::new();
+        for (name, raw_val) in &describe.variables {
+            // Try parsing as JSON (handles numbers, bools, quoted strings, objects)
+            // If it fails (e.g. bare word), treat as string
+            let val = match serde_json::from_str::<Value>(raw_val) {
+                Ok(v) => v,
+                Err(_) => Value::String(raw_val.clone()),
+            };
+            describe_ctx.insert(name.clone(), val);
+        }
+
+        // Describe-level mocks now have access to describe-level variables
+        let describe_mocks = MockResolver::from_mocks(&describe.mocks, &describe_ctx)?;
         for test in &describe.tests {
-            // Process let variables into Handlebars context
-            let mut variables_ctx = serde_json::Map::new();
+            // Process let variables into context, starting with describe-level vars
+            let mut variables_ctx = describe_ctx.clone();
             for (name, raw_val) in &test.variables {
                 // Try parsing as JSON (handles numbers, bools, quoted strings, objects)
                 // If it fails (e.g. bare word), treat as string
@@ -276,6 +287,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                     Ok(v) => v,
                     Err(_) => Value::String(raw_val.clone()),
                 };
+                // Test-level variables override describe-level variables
                 variables_ctx.insert(name.clone(), val);
             }
 
@@ -501,9 +513,8 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                 // Handle call assertions separately
                 if cond.is_call_assertion {
                     if let Some(target) = &cond.call_target {
-                        // Render variable substitutions in condition value
-                        let val_str_rendered = render(&cond.value)?;
-                        let expected_args = parse_backticked_json(&val_str_rendered)?;
+                        // Use JQ to evaluate variable substitutions in condition value
+                        let expected_args = evaluate_jq_input(&cond.value, &variables_ctx)?;
 
                         // Check call log (exec_call_log from execution)
                         if let Some(calls) = exec_call_log.get(target) {

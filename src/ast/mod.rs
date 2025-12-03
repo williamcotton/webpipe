@@ -180,6 +180,7 @@ pub enum ResultBranchType {
 #[derive(Debug, Clone)]
 pub struct Describe {
     pub name: String,
+    pub variables: Vec<(String, String)>,
     pub mocks: Vec<Mock>,
     pub tests: Vec<It>,
 }
@@ -1727,13 +1728,21 @@ fn parse_describe(input: &str) -> IResult<&str, Describe> {
     let (input, _) = char('"')(input)?;
     let (input, _) = skip_ws_and_comments(input)?;
 
-    // Parse mocks and tests in any order
+    // Parse let bindings, mocks, and tests in any order
+    let mut variables = Vec::new();
     let mut mocks = Vec::new();
     let mut tests = Vec::new();
     let mut remaining = input;
 
     loop {
         let (new_remaining, _) = skip_ws_and_comments(remaining)?;
+
+        // Try to parse a let binding
+        if let Ok((new_input, binding)) = parse_let_binding(new_remaining) {
+            variables.push(binding);
+            remaining = new_input;
+            continue;
+        }
 
         // Try to parse a mock (with mock or and mock)
         if let Ok((new_input, mock)) = parse_mock(new_remaining) {
@@ -1761,6 +1770,7 @@ fn parse_describe(input: &str) -> IResult<&str, Describe> {
 
     Ok((remaining, Describe {
         name: name.to_string(),
+        variables,
         mocks,
         tests
     }))

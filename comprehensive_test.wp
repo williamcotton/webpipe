@@ -1755,9 +1755,9 @@ mutation deletePost =
   |> jq: `(.data.rows | length > 0)`
 
 # GraphQL endpoint: execute GraphQL queries
-POST /graphql
-  |> jq: `{ graphqlParams: .variables }`
-  |> graphql: `.query`
+# POST /graphql
+#   |> jq: `{ graphqlParams: .variables }`
+#   |> graphql: `.query`
 
 # Test route: simple query
 GET /test-graphql-simple
@@ -3497,7 +3497,7 @@ describe "JQ Inputs - Real World Scenarios"
     let taxRate = 0.15
     let quantity = 3
     let discount = 10
-    
+
     when calling POST /teams
     with body `{
       order: {
@@ -3511,3 +3511,36 @@ describe "JQ Inputs - Real World Scenarios"
       }
     }`
     then status is 200
+
+# ============================================================================
+# Spec 001: Test DSL Enhancements - Describe-Level let Bindings & JQ Support
+# ============================================================================
+
+describe "Describe-Level Variables"
+  # Describe-level variables are shared across all tests
+  let defaultRole = "user"
+  let activeStatus = true
+  let testUserId = 42
+
+  it "uses describe-level variables in test body"
+    when calling POST /teams
+    with body `{
+      "userId": .testUserId,
+      "role": .defaultRole,
+      "active": .activeStatus
+    }`
+    then status is 200
+
+  it "overrides describe-level variables with test-level variables"
+    let defaultRole = "admin"
+
+    when calling POST /teams
+    with body `{
+      "userId": .testUserId,
+      "role": .defaultRole,
+      "active": .activeStatus
+    }`
+    then status is 200
+
+# Note: Additional examples for JQ in describe-level mocks and call assertions
+# can be found throughout the test suite above.
