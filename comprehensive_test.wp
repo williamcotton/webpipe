@@ -3542,5 +3542,64 @@ describe "Describe-Level Variables"
     }`
     then status is 200
 
-# Note: Additional examples for JQ in describe-level mocks and call assertions
-# can be found throughout the test suite above.
+# ============================================================================
+# Spec 001: GraphQL Mocking with Describe-Level Variables
+# ============================================================================
+
+describe "GraphQL Mocking with Describe-Level Variables"
+  # Describe-level variables for consistent test data
+  let mockUserId = 99999
+  let mockUserName = "Test User"
+  let mockUserEmail = "test@example.com"
+  let expectedLimit = 10
+  let expectedOffset = 0
+
+  # Mock GraphQL query using JQ to reference describe-level variables
+  with mock query users returning `[
+    {
+      "id": .mockUserId,
+      "name": .mockUserName,
+      "email": .mockUserEmail
+    }
+  ]`
+
+  # Mock GraphQL mutation using JQ to reference describe-level variables
+  with mock mutation createUser returning `{
+    "id": .mockUserId,
+    "name": .mockUserName,
+    "email": .mockUserEmail
+  }`
+
+  it "returns mocked query data with describe-level variables"
+    when calling GET /test-gql-mock-users
+    then status is 200
+    and output `.data.users[0].id` equals {{mockUserId}}
+    and output `.data.users[0].name` equals "{{mockUserName}}"
+    and output `.data.users[0].email` equals "{{mockUserEmail}}"
+
+  it "verifies GraphQL query arguments with JQ in call assertions"
+    when calling GET /test-gql-spy-users
+    then status is 200
+    # Call assertions now use JQ instead of Handlebars
+    and call query users with `{
+      "limit": .expectedLimit,
+      "offset": .expectedOffset
+    }`
+
+  it "returns mocked mutation data with describe-level variables"
+    when calling GET /test-gql-mock-mutation
+    then status is 200
+    and output `.data.createUser.id` equals {{mockUserId}}
+    and output `.data.createUser.name` equals "{{mockUserName}}"
+
+  it "verifies mutation arguments with JQ in call assertions"
+    let testName = "Alice"
+    let testEmail = "alice@example.com"
+
+    when calling GET /test-gql-spy-mutation
+    then status is 200
+    # Call assertions use JQ to reference both describe and test-level variables
+    and call mutation createUser with `{
+      "name": .testName,
+      "email": .testEmail
+    }`
