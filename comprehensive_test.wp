@@ -3281,8 +3281,8 @@ describe "JQ Inputs - Body with Complex Expressions"
     when calling POST /teams
     with body `{
       name: "Development Team",
-      tags: [.tag1, .tag2, "webpipe"],
-      priorities: [.priority, (.priority + 1), (.priority + 2)],
+      tags: [$tag1, $tag2, "webpipe"],
+      priorities: [$priority, ($priority + 1), ($priority + 2)],
       active: true
     }`
     then status is 200
@@ -3308,9 +3308,9 @@ describe "JQ Inputs - Headers and Cookies"
     
     when calling POST /teams
     with headers `{
-      "x-api-key": .apiKey,
-      "x-user-id": (.userId | tostring),
-      "x-request-id": (.requestId + "-" + (.userId | tostring)),
+      "x-api-key": $apiKey,
+      "x-user-id": $userId | tostring,
+      "x-request-id": $requestId + "-" + ($userId | tostring),
       "content-type": "application/json"
     }`
     and with body `{
@@ -3326,9 +3326,9 @@ describe "JQ Inputs - Headers and Cookies"
     
     when calling POST /teams
     with cookies `{
-      session: .sessionId,
-      user: ("user-" + (.userId | tostring)),
-      preferences: (.theme + "-mode")
+      session: $sessionId,
+      user: ("user-" + ($userId | tostring)),
+      preferences: $theme + "-mode"
     }`
     and with body `{
       name: "Cookie Team",
