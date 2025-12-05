@@ -480,7 +480,8 @@ async fn respond_with_pipeline(
                 StatusCode::OK
             };
             
-            let response = if content_type.starts_with("text/html") {
+            // Create the base response
+            let mut response = if content_type.starts_with("text/html") {
                 match result.as_str() {
                     Some(html) => (http_status, Html(html.to_string())).into_response(),
                     None => {
@@ -492,23 +493,37 @@ async fn respond_with_pipeline(
                     }
                 }
             } else {
-                // If setCookies present, include Set-Cookie headers
-                if let Some(cookies) = result.get("setCookies").and_then(|v| v.as_array()) {
-                    use axum::response::Response as AxumResponse;
-                    use axum::http::header::SET_COOKIE;
-                    use axum::http::HeaderValue;
-                    let mut response: AxumResponse = (http_status, Json(result.clone())).into_response();
-                    let headers = response.headers_mut();
-                    for cookie in cookies.iter().filter_map(|v| v.as_str()) {
-                        if let Ok(val) = HeaderValue::from_str(cookie) {
-                            headers.append(SET_COOKIE, val);
+                (http_status, Json(result.clone())).into_response()
+            };
+
+            // Apply custom headers from setHeaders field
+            use axum::http::header::{HeaderName, HeaderValue};
+            use axum::http::header::SET_COOKIE;
+
+            let headers = response.headers_mut();
+
+            // If setCookies present, include Set-Cookie headers
+            if let Some(cookies) = result.get("setCookies").and_then(|v| v.as_array()) {
+                for cookie in cookies.iter().filter_map(|v| v.as_str()) {
+                    if let Ok(val) = HeaderValue::from_str(cookie) {
+                        headers.append(SET_COOKIE, val);
+                    }
+                }
+            }
+
+            // If setHeaders present, include custom headers
+            if let Some(custom_headers) = result.get("setHeaders").and_then(|v| v.as_object()) {
+                for (header_name, header_value) in custom_headers {
+                    if let Some(value_str) = header_value.as_str() {
+                        if let (Ok(name), Ok(val)) = (
+                            HeaderName::from_bytes(header_name.as_bytes()),
+                            HeaderValue::from_str(value_str)
+                        ) {
+                            headers.insert(name, val);
                         }
                     }
-                    response
-                } else {
-                    (http_status, Json(result.clone())).into_response()
                 }
-            };
+            }
 
             // Note: post_execute hooks are no longer needed - logging uses ctx.defer()
             // and rate limit info is in ctx.metadata.rate_limit_status
