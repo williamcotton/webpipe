@@ -99,6 +99,13 @@ pub enum ConfigType {
 }
 
 #[derive(Debug, Clone)]
+pub enum LetValueFormat {
+    Quoted,
+    Backtick,
+    Bare,
+}
+
+#[derive(Debug, Clone)]
 pub struct Tag {
     /// Tag name, e.g. "prod", "dev", "async", "flag"
     pub name: String,
@@ -180,7 +187,7 @@ pub enum ResultBranchType {
 #[derive(Debug, Clone)]
 pub struct Describe {
     pub name: String,
-    pub variables: Vec<(String, String)>,
+    pub variables: Vec<(String, String, LetValueFormat)>,
     pub mocks: Vec<Mock>,
     pub tests: Vec<It>,
 }
@@ -196,7 +203,7 @@ pub struct It {
     pub name: String,
     pub mocks: Vec<Mock>,
     pub when: When,
-    pub variables: Vec<(String, String)>,
+    pub variables: Vec<(String, String, LetValueFormat)>,
     pub input: Option<String>,
     pub body: Option<String>,
     pub headers: Option<String>,
@@ -525,8 +532,13 @@ impl Display for It {
         writeln!(f, "    when {}", self.when)?;
 
         // Print let bindings
-        for (name, value) in &self.variables {
-            writeln!(f, "    let {} = {}", name, value)?;
+        for (name, value, format) in &self.variables {
+            let formatted_value = match format {
+                LetValueFormat::Quoted => format!("\"{}\"", value),
+                LetValueFormat::Backtick => format!("`{}`", value),
+                LetValueFormat::Bare => value.clone(),
+            };
+            writeln!(f, "    let {} = {}", name, formatted_value)?;
         }
 
         if let Some(input) = &self.input {
@@ -1571,7 +1583,7 @@ fn parse_and_mock(input: &str) -> IResult<&str, Mock> {
     }))
 }
 
-fn parse_let_binding(input: &str) -> IResult<&str, (String, String)> {
+fn parse_let_binding(input: &str) -> IResult<&str, (String, String, LetValueFormat)> {
     let (input, _) = tag("let")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, name) = parse_identifier(input)?;
@@ -1580,19 +1592,23 @@ fn parse_let_binding(input: &str) -> IResult<&str, (String, String)> {
     let (input, _) = multispace0(input)?;
 
     // Parse value: supports backtick strings, quoted strings, numbers (int/float), booleans, and null
-    let (input, value) = alt((
+    // Try each parser and track which format was used
+    let (input, (value, format)) = alt((
         // Try backtick string first
-        parse_multiline_string,
+        map(parse_multiline_string, |v| (v, LetValueFormat::Backtick)),
         // Try quoted string
-        delimited(
-            char('"'),
-            map(take_until("\""), |s: &str| s.to_string()),
-            char('"')
+        map(
+            delimited(
+                char('"'),
+                map(take_until("\""), |s: &str| s.to_string()),
+                char('"')
+            ),
+            |v| (v, LetValueFormat::Quoted)
         ),
         // Try null
-        map(tag("null"), |s: &str| s.to_string()),
+        map(tag("null"), |s: &str| (s.to_string(), LetValueFormat::Bare)),
         // Try boolean
-        map(alt((tag("true"), tag("false"))), |s: &str| s.to_string()),
+        map(alt((tag("true"), tag("false"))), |s: &str| (s.to_string(), LetValueFormat::Bare)),
         // Try float (must come before integer to match decimal point)
         map(
             recognize((
@@ -1600,13 +1616,13 @@ fn parse_let_binding(input: &str) -> IResult<&str, (String, String)> {
                 char('.'),
                 digit1,
             )),
-            |s: &str| s.to_string()
+            |s: &str| (s.to_string(), LetValueFormat::Bare)
         ),
         // Try integer
-        map(digit1, |s: &str| s.to_string()),
+        map(digit1, |s: &str| (s.to_string(), LetValueFormat::Bare)),
     )).parse(input)?;
 
-    Ok((input, (name, value)))
+    Ok((input, (name, value, format)))
 }
 
 fn parse_with_clause(input: &str) -> IResult<&str, (String, String)> {
@@ -1644,11 +1660,11 @@ fn parse_it(input: &str) -> IResult<&str, It> {
     let (input, mocks) = many0(parse_mock).parse(input)?;
 
     // Parse optional let bindings (before when clause)
-    let mut variables: Vec<(String, String)> = Vec::new();
+    let mut variables: Vec<(String, String, LetValueFormat)> = Vec::new();
     let mut current_input = input;
     loop {
-        if let Ok((new_input, (name, value))) = parse_let_binding(current_input) {
-            variables.push((name, value));
+        if let Ok((new_input, (name, value, format))) = parse_let_binding(current_input) {
+            variables.push((name, value, format));
             let (new_input, _) = skip_ws_and_comments(new_input)?;
             current_input = new_input;
         } else {

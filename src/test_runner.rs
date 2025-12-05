@@ -265,7 +265,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
     for describe in &program.describes {
         // Process describe-level variables first
         let mut describe_ctx = serde_json::Map::new();
-        for (name, raw_val) in &describe.variables {
+        for (name, raw_val, _format) in &describe.variables {
             // Try parsing as JSON (handles numbers, bools, quoted strings, objects)
             // If it fails (e.g. bare word), treat as string
             let val = match serde_json::from_str::<Value>(raw_val) {
@@ -280,7 +280,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
         for test in &describe.tests {
             // Process let variables into context, starting with describe-level vars
             let mut variables_ctx = describe_ctx.clone();
-            for (name, raw_val) in &test.variables {
+            for (name, raw_val, _format) in &test.variables {
                 // Try parsing as JSON (handles numbers, bools, quoted strings, objects)
                 // If it fails (e.g. bare word), treat as string
                 let val = match serde_json::from_str::<Value>(raw_val) {
