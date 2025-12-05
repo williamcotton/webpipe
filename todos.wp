@@ -311,7 +311,7 @@ describe "todoPageTemplate pipeline"
     when executing pipeline todoPageTemplate
     with input `{
       todos: [
-        { id: 1, title: .todoTitle, completed: false }
+        { id: 1, title: $todoTitle, completed: false }
       ]
     }`
     then selector `.todo-list` exists
@@ -332,7 +332,7 @@ describe "Simple Todo App - HTML list"
       "id": 1,
       "title": "First todo",
       "completed": false,
-      "userId": .userId,
+      "userId": $userId,
       "createdAt": "2024-01-01T00:00:00Z",
       "updatedAt": "2024-01-01T00:00:00Z"
     },
@@ -340,7 +340,7 @@ describe "Simple Todo App - HTML list"
       "id": 2,
       "title": "Second todo",
       "completed": true,
-      "userId": .userId,
+      "userId": $userId,
       "createdAt": "2024-01-02T00:00:00Z",
       "updatedAt": "2024-01-02T00:00:00Z"
     }
@@ -349,7 +349,7 @@ describe "Simple Todo App - HTML list"
   it "renders todos with forms using GraphQL behind the scenes"
     when calling GET /todos
     with headers `{
-      "x-user-id": (.userId | tostring)
+      "x-user-id": ($userId | tostring)
     }`
     then status is 200
     and selector `form[action="/todos"]` exists
@@ -361,7 +361,7 @@ describe "Simple Todo App - HTML list"
     and selector `.todo-list > .todo-item:nth-child(2)` exists
     and selector `.todo-list > .todo-item:nth-child(2) .title` text equals "Second todo"
     and call query todos with `{
-      "userId": .userId
+      "userId": $userId
     }`
 
 # ------------------------------------------------
@@ -375,18 +375,18 @@ describe "Simple Todo App - HTML mutations via forms"
 
   with mock mutation createTodo returning `{
     "id": 10,
-    "title": .title,
+    "title": $newTitle,
     "completed": false,
-    "userId": .userId,
+    "userId": $userId,
     "createdAt": "2024-01-02T00:00:00Z",
     "updatedAt": "2024-01-02T00:00:00Z"
   }`
 
   with mock mutation toggleTodo returning `{
-    "id": .id,
+    "id": 10,
     "title": "Example toggled",
     "completed": true,
-    "userId": .userId,
+    "userId": $userId,
     "createdAt": "2024-01-01T00:00:00Z",
     "updatedAt": "2024-01-03T00:00:00Z"
   }`
@@ -396,10 +396,10 @@ describe "Simple Todo App - HTML mutations via forms"
   # When createTodo completes, the app re-fetches todos via query todos
   with mock query todos returning `[
     {
-      "id": .todoId,
+      "id": $todoId,
       "title": "Example toggled",
       "completed": true,
-      "userId": .userId,
+      "userId": $userId,
       "createdAt": "2024-01-01T00:00:00Z",
       "updatedAt": "2024-01-03T00:00:00Z"
     }
@@ -408,38 +408,38 @@ describe "Simple Todo App - HTML mutations via forms"
   it "creates a todo using POST /todos and re-renders page"
     when calling POST /todos
     with headers `{
-      "x-user-id": (.userId | tostring),
+      "x-user-id": ($userId | tostring),
       "content-type": "application/json"
     }`
     and with body `{
-      "title": .newTitle
+      "title": $newTitle
     }`
     then status is 303
     and call mutation createTodo with `{
-      "userId": .userId,
-      "title": .newTitle
+      "userId": $userId,
+      "title": $newTitle
     }`
 
   it "toggles a todo using POST /todos/:id/toggle and redirects to /todos"
     when calling POST /todos/{{todoId}}/toggle
     with headers `{
-      "x-user-id": (.userId | tostring),
+      "x-user-id": ($userId | tostring),
       "content-type": "application/json"
     }`
     then status is 303
     and call mutation toggleTodo with `{
-      "userId": .userId,
-      "id": .todoId
+      "userId": $userId,
+      "id": $todoId
     }`
 
   it "deletes a todo using POST /todos/:id/delete and redirects to /todos"
     when calling POST /todos/{{todoId}}/delete
     with headers `{
-      "x-user-id": (.userId | tostring),
+      "x-user-id": ($userId | tostring),
       "content-type": "application/json"
     }`
     then status is 303
     and call mutation deleteTodo with `{
-      "userId": .userId,
-      "id": .todoId
+      "userId": $userId,
+      "id": $todoId
     }`
