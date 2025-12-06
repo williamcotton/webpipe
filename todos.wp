@@ -241,8 +241,6 @@ POST /todos
       }
     }
   `
-  |> jq: `{ todos: .data.todos }`
-  |> pipeline: todoPageTemplate
   |> result
     ok(303):
       |> jq: `{ setHeaders: { "Location": "/todos" } }`
