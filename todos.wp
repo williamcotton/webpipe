@@ -329,20 +329,20 @@ describe "Simple Todo App - HTML list"
 
   with mock query todos returning `[
     {
-      "id": 1,
-      "title": "First todo",
-      "completed": false,
-      "userId": $userId,
-      "createdAt": "2024-01-01T00:00:00Z",
-      "updatedAt": "2024-01-01T00:00:00Z"
+      id: 1,
+      title: "First todo",
+      completed: false,
+      userId: $userId,
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-01T00:00:00Z"
     },
     {
-      "id": 2,
-      "title": "Second todo",
-      "completed": true,
-      "userId": $userId,
-      "createdAt": "2024-01-02T00:00:00Z",
-      "updatedAt": "2024-01-02T00:00:00Z"
+      id: 2,
+      title: "Second todo",
+      completed: true,
+      userId: $userId,
+      createdAt: "2024-01-02T00:00:00Z",
+      updatedAt: "2024-01-02T00:00:00Z"
     }
   ]`
 
@@ -361,7 +361,7 @@ describe "Simple Todo App - HTML list"
     and selector `.todo-list > .todo-item:nth-child(2)` exists
     and selector `.todo-list > .todo-item:nth-child(2) .title` text equals "Second todo"
     and call query todos with `{
-      "userId": $userId
+      userId: $userId
     }`
 
 # ------------------------------------------------
@@ -374,21 +374,21 @@ describe "Simple Todo App - HTML mutations via forms"
   let todoId = 5
 
   with mock mutation createTodo returning `{
-    "id": 10,
-    "title": $newTitle,
-    "completed": false,
-    "userId": $userId,
-    "createdAt": "2024-01-02T00:00:00Z",
-    "updatedAt": "2024-01-02T00:00:00Z"
+    id: 10,
+    title: $newTitle,
+    completed: false,
+    userId: $userId,
+    createdAt: "2024-01-02T00:00:00Z",
+    updatedAt: "2024-01-02T00:00:00Z"
   }`
 
   with mock mutation toggleTodo returning `{
-    "id": 10,
-    "title": "Example toggled",
-    "completed": true,
-    "userId": $userId,
-    "createdAt": "2024-01-01T00:00:00Z",
-    "updatedAt": "2024-01-03T00:00:00Z"
+    id: 10,
+    title: "Example toggled",
+    completed: true,
+    userId: $userId,
+    createdAt: "2024-01-01T00:00:00Z",
+    updatedAt: "2024-01-03T00:00:00Z"
   }`
 
   with mock mutation deleteTodo returning `true`
@@ -396,12 +396,12 @@ describe "Simple Todo App - HTML mutations via forms"
   # When createTodo completes, the app re-fetches todos via query todos
   with mock query todos returning `[
     {
-      "id": $todoId,
-      "title": "Example toggled",
-      "completed": true,
-      "userId": $userId,
-      "createdAt": "2024-01-01T00:00:00Z",
-      "updatedAt": "2024-01-03T00:00:00Z"
+      id: $todoId,
+      title: "Example toggled",
+      completed: true,
+      userId: $userId,
+      createdAt: "2024-01-01T00:00:00Z",
+      updatedAt: "2024-01-03T00:00:00Z"
     }
   ]`
 
@@ -412,12 +412,12 @@ describe "Simple Todo App - HTML mutations via forms"
       "content-type": "application/json"
     }`
     and with body `{
-      "title": $newTitle
+      title: $newTitle
     }`
     then status is 303
     and call mutation createTodo with `{
-      "userId": $userId,
-      "title": $newTitle
+      userId: $userId,
+      title: $newTitle
     }`
 
   it "toggles a todo using POST /todos/:id/toggle and redirects to /todos"
@@ -428,8 +428,8 @@ describe "Simple Todo App - HTML mutations via forms"
     }`
     then status is 303
     and call mutation toggleTodo with `{
-      "userId": $userId,
-      "id": $todoId
+      userId: $userId,
+      id: $todoId
     }`
 
   it "deletes a todo using POST /todos/:id/delete and redirects to /todos"
@@ -440,6 +440,6 @@ describe "Simple Todo App - HTML mutations via forms"
     }`
     then status is 303
     and call mutation deleteTodo with `{
-      "userId": $userId,
-      "id": $todoId
+      userId: $userId,
+      id: $todoId
     }`
