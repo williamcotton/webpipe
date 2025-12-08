@@ -1,420 +1,227 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use serde_json::Value;
 
-use serde_json::{json, Value};
+use async_graphql::{Request, Variables};
+use async_graphql::dynamic::{
+    Field, FieldFuture, FieldValue, InputValue, Object, Scalar, Schema, TypeRef
+};
+use async_graphql_parser::{parse_schema, types as ast};
+use tokio::sync::Mutex;
 
-use crate::ast::{Pipeline, Program};
+use crate::ast::Program;
 use crate::executor::ExecutionEnv;
 use crate::error::WebPipeError;
-use async_graphql_parser::{parse_query, types::*};
-use async_graphql_value::Value as GraphQLValue;
 
-/// Compiled GraphQL runtime - created ONCE at server startup
-#[derive(Clone)]
 pub struct GraphQLRuntime {
-    /// The SDL schema definition (stored for reference/validation)
-    pub schema_sdl: String,
-    /// Registry mapping query field names to their pipeline implementations
-    pub query_resolvers: Arc<HashMap<String, Arc<Pipeline>>>,
-    /// Registry mapping mutation field names to their pipeline implementations
-    pub mutation_resolvers: Arc<HashMap<String, Arc<Pipeline>>>,
+    pub schema: Schema,
 }
 
 impl GraphQLRuntime {
-    /// Create a new GraphQL runtime from a WebPipe program
-    /// This is called ONCE at server startup to compile the schema
     pub fn from_program(program: &Program) -> Result<Self, anyhow::Error> {
-        // Get SDL schema
-        let schema_sdl = program
-            .graphql_schema
-            .as_ref()
-            .map(|s| s.sdl.clone())
-            .ok_or_else(|| anyhow::anyhow!("No GraphQL schema defined"))?;
+        let sdl = program.graphql_schema.as_ref()
+            .map(|s| s.sdl.as_str())
+            .unwrap_or("");
 
-        // Build resolver registry for queries
-        let mut query_resolvers_map = HashMap::new();
-        for query in &program.queries {
-            query_resolvers_map.insert(
-                query.name.clone(),
-                Arc::new(query.pipeline.clone())
-            );
+        let doc = parse_schema(sdl)?;
+
+        let mut pipelines = HashMap::new();
+        for q in &program.queries { pipelines.insert(format!("Query.{}", q.name), q.pipeline.clone()); }
+        for m in &program.mutations { pipelines.insert(format!("Mutation.{}", m.name), m.pipeline.clone()); }
+        let pipeline_registry = Arc::new(pipelines);
+
+        let mut schema_builder = Schema::build("Query", Some("Mutation"), None)
+            .register(Scalar::new("JSON"));
+
+        fn convert_type(ty: &ast::Type) -> TypeRef {
+            match &ty.base {
+                ast::BaseType::Named(name) => {
+                    let type_name = name.as_str();
+                    let t = match type_name {
+                        "ID" => TypeRef::named(TypeRef::ID),
+                        "String" => TypeRef::named(TypeRef::STRING),
+                        "Int" => TypeRef::named(TypeRef::INT),
+                        "Float" => TypeRef::named(TypeRef::FLOAT),
+                        "Boolean" => TypeRef::named(TypeRef::BOOLEAN),
+                        other => TypeRef::named(other),
+                    };
+                    if !ty.nullable { TypeRef::NonNull(Box::new(t)) } else { t }
+                },
+                ast::BaseType::List(inner) => {
+                    let inner_ref = convert_type(inner);
+                    let t = TypeRef::List(Box::new(inner_ref));
+                    if !ty.nullable { TypeRef::NonNull(Box::new(t)) } else { t }
+                }
+            }
         }
 
-        // Build resolver registry for mutations
-        let mut mutation_resolvers_map = HashMap::new();
-        for mutation in &program.mutations {
-            mutation_resolvers_map.insert(
-                mutation.name.clone(),
-                Arc::new(mutation.pipeline.clone())
-            );
+        for def in &doc.definitions {
+            if let ast::TypeSystemDefinition::Type(type_def) = def {
+                if let ast::TypeKind::Object(obj_def) = &type_def.node.kind {
+                    let type_name = type_def.node.name.node.as_str();
+                    let mut obj = Object::new(type_name);
+
+                    for field_def in &obj_def.fields {
+                        let field_name = field_def.node.name.node.as_str().to_string();
+                        let field_name_clone = field_name.clone(); 
+                        let type_name_clone = type_name.to_string();
+                        let p_reg = pipeline_registry.clone();
+                        let field_type = convert_type(&field_def.node.ty.node);
+
+                        let mut field = Field::new(field_name.clone(), field_type, move |ctx| {
+                            let p_reg = p_reg.clone();
+                            let field_name = field_name_clone.clone();
+                            let type_name = type_name_clone.clone();
+
+                            FieldFuture::new(async move {
+                                let key = format!("{}.{}", type_name, field_name);
+                                
+                                if let Some(pipeline) = p_reg.get(&key) {
+                                    // === PIPELINE RESOLVER (Root Fields) ===
+                                    let env = ctx.data::<ExecutionEnv>().unwrap();
+                                    let req_ctx_mutex = ctx.data::<Arc<Mutex<crate::executor::RequestContext>>>().unwrap();
+
+                                    let mut input = serde_json::Map::new();
+                                    for (name, accessor) in ctx.args.iter() {
+                                        // Directly extract Value ref
+                                        let val_ref = accessor.as_value();
+                                        input.insert(name.to_string(), async_graphql_value_to_json(val_ref));
+                                    }
+
+                                    let result_json = {
+                                        let mut req_ctx = req_ctx_mutex.lock().await;
+                                        
+                                        req_ctx.call_log.entry(key.clone())
+                                            .or_default()
+                                            .push(Value::Object(input.clone()));
+
+                                        if let Some(mock_val) = env.invoker.get_mock(&key) {
+                                            mock_val
+                                        } else {
+                                            let (result, _, _) = crate::executor::execute_pipeline_internal(
+                                                env,
+                                                pipeline,
+                                                Value::Object(input),
+                                                &mut *req_ctx
+                                            ).await.map_err(|e| e.to_string())?;
+                                            result
+                                        }
+                                    };
+
+                                    // Propagate errors from pipeline
+                                    if let Some(obj) = result_json.as_object() {
+                                        if let Some(errors) = obj.get("errors") {
+                                            if let Some(err_array) = errors.as_array() {
+                                                if let Some(first_err) = err_array.first() {
+                                                    let msg = first_err.get("message")
+                                                        .and_then(|v| v.as_str())
+                                                        .unwrap_or("Unknown pipeline error");
+                                                    return Err(async_graphql::Error::new(msg));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Convert to async_graphql::Value
+                                    let result_val = json_to_async_graphql_value(result_json);
+                                    
+                                    // Wrap correctly based on type
+                                    match result_val {
+                                        async_graphql::Value::List(items) => {
+                                            let iter = items.into_iter().map(|item| {
+                                                FieldValue::value(item)
+                                            });
+                                            Ok(Some(FieldValue::list(iter)))
+                                        }
+                                        async_graphql::Value::Null => Ok(None),
+                                        other => Ok(Some(FieldValue::value(other)))
+                                    }
+
+                                } else {
+                                    // === DEFAULT PROPERTY RESOLVER (Nested Fields) ===
+                                    // Use as_value() to read the parent without needing downcast
+                                    let parent = ctx.parent_value.as_value()
+                                        .ok_or_else(|| async_graphql::Error::new("Parent is not a Value"))?;
+                                    
+                                    match parent {
+                                        async_graphql::Value::Object(map) => {
+                                            let name = async_graphql::Name::new(&field_name);
+                                            if let Some(val) = map.get(&name) {
+                                                match val {
+                                                    async_graphql::Value::List(items) => {
+                                                        let iter = items.iter().map(|item| {
+                                                            FieldValue::value(item.clone())
+                                                        });
+                                                        Ok(Some(FieldValue::list(iter)))
+                                                    },
+                                                    _ => Ok(Some(FieldValue::value(val.clone())))
+                                                }
+                                            } else {
+                                                Ok(None)
+                                            }
+                                        }
+                                        _ => Ok(None)
+                                    }
+                                }
+                            })
+                        });
+
+                        for arg_def in &field_def.node.arguments {
+                            let arg_name = arg_def.node.name.node.as_str();
+                            let arg_type = convert_type(&arg_def.node.ty.node);
+                            field = field.argument(InputValue::new(arg_name, arg_type));
+                        }
+
+                        obj = obj.field(field);
+                    }
+                    
+                    schema_builder = schema_builder.register(obj);
+                }
+            }
         }
 
-        tracing::info!(
-            "GraphQL runtime initialized with {} queries, {} mutations",
-            query_resolvers_map.len(),
-            mutation_resolvers_map.len()
-        );
-
-        Ok(Self {
-            schema_sdl,
-            query_resolvers: Arc::new(query_resolvers_map),
-            mutation_resolvers: Arc::new(mutation_resolvers_map),
-        })
+        let schema = schema_builder.finish().map_err(|e| anyhow::anyhow!("Schema build error: {}", e))?;
+        Ok(Self { schema })
     }
 
-    /// Execute a GraphQL query or mutation
-    ///
-    /// For WebPipe 2.0, this is a simplified implementation that:
-    /// - Parses the GraphQL query to extract the operation type and field name
-    /// - Executes the corresponding resolver pipeline
-    /// - Returns the result in GraphQL response format
-    ///
-    /// Full async-graphql integration with nested resolvers will be added in 2.1
     pub async fn execute(
         &self,
         query: &str,
         variables: Value,
-        pipeline_state: Value,
+        _pipeline_state: Value,
         env: &ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
     ) -> Result<Value, WebPipeError> {
-        // Parse the GraphQL query to extract operation type and all fields
-        let (operation_type, field_args_list) = self.parse_query_fields_with_variables(query, &variables)?;
+        let request = Request::new(query)
+            .variables(Variables::from_json(variables));
 
-        // Execute each field resolver and collect results
-        let mut data = serde_json::Map::new();
-        let mut errors = Vec::new();
+        let ctx_arc = Arc::new(Mutex::new(std::mem::take(ctx)));
+        
+        let request = request
+            .data(env.clone())
+            .data(ctx_arc.clone());
 
-        for (field_name, field_args) in field_args_list {
-            // 1. Construct target key for logging and mocking
-            let target_key = format!("{}.{}", operation_type, field_name);
+        let response = self.schema.execute(request).await;
 
-            // 2. Log the call (Spying) - record arguments passed to this resolver
-            ctx.call_log.entry(target_key.clone())
-               .or_default()
-               .push(field_args.clone());
+        let mut inner = ctx_arc.lock().await;
+        *ctx = std::mem::take(&mut *inner);
 
-            // 3. Check for Mock - if mocked, skip execution and use mock value
-            if let Some(mock_val) = env.invoker.get_mock(&target_key) {
-                data.insert(field_name.clone(), mock_val);
-                continue;
-            }
-
-            // 4. Standard Execution (existing logic)
-            // Get the resolver pipeline
-            let pipeline = match operation_type.as_str() {
-                "query" => {
-                    self.query_resolvers.get(&field_name)
-                }
-                "mutation" => {
-                    self.mutation_resolvers.get(&field_name)
-                }
-                _ => None
-            };
-
-            let Some(pipeline) = pipeline else {
-                errors.push(json!({
-                    "message": format!("No {} resolver found for field '{}'", operation_type, field_name),
-                    "path": [field_name.clone()]
-                }));
-                continue;
-            };
-
-            // Clone pipeline state for each field execution
-            let mut field_state = pipeline_state.clone();
-
-            // Merge GraphQL variables and field arguments into pipeline state
-            if let Some(state_obj) = field_state.as_object_mut() {
-                // Add variables at root level
-                if let Some(vars_obj) = variables.as_object() {
-                    for (k, v) in vars_obj {
-                        state_obj.insert(k.clone(), v.clone());
-                    }
-                }
-                // Add field arguments at root level
-                if let Some(args_obj) = field_args.as_object() {
-                    for (k, v) in args_obj {
-                        state_obj.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-
-            // Execute the resolver pipeline (reuse existing context for call logging)
-            let result = crate::executor::execute_pipeline_internal(
-                env,
-                pipeline,
-                field_state,
-                ctx
-            ).await;
-
-            match result {
-                Ok((field_data, _, _)) => {
-                    data.insert(field_name.clone(), field_data);
-                }
-                Err(e) => {
-                    errors.push(json!({
-                        "message": e.to_string(),
-                        "path": [field_name.clone()]
-                    }));
-                    data.insert(field_name.clone(), Value::Null);
-                }
-            }
-        }
-
-        // Return GraphQL response format
-        let mut response = json!({
-            "data": data
-        });
-
-        if !errors.is_empty() {
-            response["errors"] = json!(errors);
-        }
-
-        Ok(response)
+        Ok(serde_json::to_value(response).unwrap())
     }
+}
 
-    /// Parse a GraphQL query and extract all root fields with variable resolution
-    ///
-    /// Returns (operation_type, vec![(field_name, field_args)])
-    fn parse_query_fields_with_variables(&self, query: &str, variables: &Value) -> Result<(String, Vec<(String, Value)>), WebPipeError> {
-        let (op_type, fields_with_var_refs) = self.parse_query_fields(query)?;
+fn async_graphql_value_to_json(v: &async_graphql::Value) -> Value {
+    serde_json::to_value(v).unwrap_or(Value::Null)
+}
 
-        // Resolve variable references in field arguments
-        let resolved_fields = fields_with_var_refs
-            .into_iter()
-            .map(|(field_name, args)| {
-                let resolved_args = self.resolve_variables_in_value(&args, variables);
-                (field_name, resolved_args)
-            })
-            .collect();
-
-        Ok((op_type, resolved_fields))
-    }
-
-    /// Resolve variable references in a JSON value
-    /// Replaces {"__variable__": "varName"} with the actual value from variables
-    fn resolve_variables_in_value(&self, value: &Value, variables: &Value) -> Value {
-        match value {
-            Value::Object(obj) => {
-                // Check if this is a variable marker
-                if obj.len() == 1 {
-                    if let Some(var_name) = obj.get("__variable__") {
-                        if let Some(var_name_str) = var_name.as_str() {
-                            // Look up the variable value
-                            return variables.get(var_name_str).cloned().unwrap_or(Value::Null);
-                        }
-                    }
-                }
-
-                // Otherwise, recursively resolve nested objects
-                Value::Object(
-                    obj.iter()
-                        .map(|(k, v)| (k.clone(), self.resolve_variables_in_value(v, variables)))
-                        .collect()
-                )
-            }
-            Value::Array(arr) => {
-                Value::Array(
-                    arr.iter()
-                        .map(|v| self.resolve_variables_in_value(v, variables))
-                        .collect()
-                )
-            }
-            _ => value.clone()
-        }
-    }
-
-    /// Parse a GraphQL query and extract all root fields using async-graphql-parser
-    ///
-    /// Returns (operation_type, vec![(field_name, field_args)])
-    fn parse_query_fields(&self, query: &str) -> Result<(String, Vec<(String, Value)>), WebPipeError> {
-        // Use the proper GraphQL parser from async-graphql-parser
-        let doc = parse_query(query)
-            .map_err(|e| WebPipeError::ConfigError(format!("Invalid GraphQL query: {}", e)))?;
-
-        // Get the first operation definition
-        let operation = doc
-            .operations
-            .iter()
-            .next()
-            .ok_or_else(|| WebPipeError::ConfigError("No operation found in GraphQL query".into()))?;
-
-        let (operation_type, selection_set) = match &operation.1.node.ty {
-            OperationType::Query => ("query", &operation.1.node.selection_set),
-            OperationType::Mutation => ("mutation", &operation.1.node.selection_set),
-            OperationType::Subscription => {
-                return Err(WebPipeError::ConfigError(
-                    "Subscriptions are not supported in WebPipe 2.0".into()
-                ));
-            }
-        };
-
-        // Extract all root-level fields
-        let mut fields = Vec::new();
-        for selection in &selection_set.node.items {
-            match &selection.node {
-                Selection::Field(field) => {
-                    let field_name = field.node.name.node.to_string();
-
-                    // Store arguments as-is (including Variable references)
-                    // We'll resolve them at execution time against the variables parameter
-                    let args = Value::Object(
-                        field.node.arguments
-                            .iter()
-                            .map(|(name, value)| {
-                                (name.node.to_string(), self.graphql_value_to_json(&value.node).unwrap_or(Value::Null))
-                            })
-                            .collect()
-                    );
-
-                    fields.push((field_name, args));
-                }
-                Selection::FragmentSpread(_) | Selection::InlineFragment(_) => {
-                    return Err(WebPipeError::ConfigError(
-                        "Fragments are not supported in WebPipe 2.0".into()
-                    ));
-                }
-            }
-        }
-
-        if fields.is_empty() {
-            return Err(WebPipeError::ConfigError(
-                "No fields found in GraphQL query".into()
-            ));
-        }
-
-        Ok((operation_type.to_string(), fields))
-    }
-
-    /// Convert async-graphql Value to serde_json Value
-    fn graphql_value_to_json(&self, value: &GraphQLValue) -> Result<Value, WebPipeError> {
-        match value {
-            GraphQLValue::Null => Ok(Value::Null),
-            GraphQLValue::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Ok(json!(i))
-                } else if let Some(f) = n.as_f64() {
-                    Ok(json!(f))
-                } else {
-                    Ok(json!(n.to_string()))
-                }
-            }
-            GraphQLValue::String(s) => Ok(json!(s)),
-            GraphQLValue::Boolean(b) => Ok(json!(b)),
-            GraphQLValue::Enum(e) => Ok(json!(e.to_string())),
-            GraphQLValue::List(list) => {
-                let mut arr = Vec::new();
-                for item in list {
-                    arr.push(self.graphql_value_to_json(item)?);
-                }
-                Ok(Value::Array(arr))
-            }
-            GraphQLValue::Object(obj) => {
-                let mut map = serde_json::Map::new();
-                for (key, val) in obj {
-                    map.insert(key.to_string(), self.graphql_value_to_json(val)?);
-                }
-                Ok(Value::Object(map))
-            }
-            GraphQLValue::Variable(var_name) => {
-                // Return a special marker that we'll resolve later
-                // Format: {"__variable__": "varName"}
-                Ok(json!({"__variable__": var_name.to_string()}))
-            }
-            GraphQLValue::Binary(_) => {
-                Err(WebPipeError::ConfigError("Binary values not supported".into()))
-            }
-        }
-    }
-
+fn json_to_async_graphql_value(v: Value) -> async_graphql::Value {
+    async_graphql::Value::from_json(v).unwrap()
 }
 
 impl std::fmt::Debug for GraphQLRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GraphQLRuntime")
-            .field("queries", &self.query_resolvers.len())
-            .field("mutations", &self.mutation_resolvers.len())
+            .field("schema", &"DynamicSchema")
             .finish()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_simple_query_without_args() {
-        let runtime = GraphQLRuntime {
-            schema_sdl: String::new(),
-            query_resolvers: Arc::new(HashMap::new()),
-            mutation_resolvers: Arc::new(HashMap::new()),
-        };
-
-        let (op, fields) = runtime.parse_query_fields("query { todos { id title } }").unwrap();
-        assert_eq!(op, "query");
-        assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].0, "todos");
-        assert_eq!(fields[0].1, json!({}));
-    }
-
-    #[test]
-    fn parse_simple_query_with_args() {
-        let runtime = GraphQLRuntime {
-            schema_sdl: String::new(),
-            query_resolvers: Arc::new(HashMap::new()),
-            mutation_resolvers: Arc::new(HashMap::new()),
-        };
-
-        let (op, fields) = runtime.parse_query_fields(
-            "query { todos(limit: 10, completed: true) { id } }"
-        ).unwrap();
-        assert_eq!(op, "query");
-        assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].0, "todos");
-        assert_eq!(fields[0].1["limit"], 10);
-        assert_eq!(fields[0].1["completed"], true);
-    }
-
-    #[test]
-    fn parse_mutation() {
-        let runtime = GraphQLRuntime {
-            schema_sdl: String::new(),
-            query_resolvers: Arc::new(HashMap::new()),
-            mutation_resolvers: Arc::new(HashMap::new()),
-        };
-
-        let (op, fields) = runtime.parse_query_fields(
-            r#"mutation { createTodo(title: "test") { id } }"#
-        ).unwrap();
-        assert_eq!(op, "mutation");
-        assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].0, "createTodo");
-        assert_eq!(fields[0].1["title"], "test");
-    }
-
-    #[test]
-    fn parse_query_with_variables() {
-        let runtime = GraphQLRuntime {
-            schema_sdl: String::new(),
-            query_resolvers: Arc::new(HashMap::new()),
-            mutation_resolvers: Arc::new(HashMap::new()),
-        };
-
-        let (op, fields) = runtime.parse_query_fields(
-            "query($limit: Int) { todos(limit: $limit) { id } }"
-        ).unwrap();
-        assert_eq!(op, "query");
-        assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].0, "todos");
-        // Variable references are marked for resolution
-        assert_eq!(fields[0].1["limit"], json!({"__variable__": "limit"}));
-
-        // Test variable resolution
-        let variables = json!({"limit": 5});
-        let (_, resolved_fields) = runtime.parse_query_fields_with_variables(
-            "query($limit: Int) { todos(limit: $limit) { id } }",
-            &variables
-        ).unwrap();
-        assert_eq!(resolved_fields[0].1["limit"], 5);
     }
 }

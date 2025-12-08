@@ -270,6 +270,12 @@ impl RequestContext {
     }
 }
 
+impl Default for RequestContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Global execution environment (The Toolbelt)
 /// Immutable, shared across all requests
 #[derive(Clone)]

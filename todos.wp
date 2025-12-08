@@ -198,7 +198,7 @@ handlebars todoItemPartial = `
 
 # GET /todos - render HTML page with current user's todos
 GET /todos
-  |> log: `level: debug`
+  # |> log: `level: debug`
   |> pipeline: withUserIdFromHeader
   |> jq: `.graphqlParams = { userId: .userId }`
   |> graphql: `

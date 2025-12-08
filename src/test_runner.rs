@@ -84,9 +84,20 @@ impl MockResolver {
             if prefix == "pipeline" {
                 return self.pipeline_mocks.get(name);
             }
+            
             // Check if it's a variable mock (middleware.varname)
+            // 1. Try exact match
             if let Some(v) = self.variable_mocks.get(&(prefix.to_string(), name.to_string())) {
                 return Some(v);
+            }
+
+            // 2. Try lowercased prefix (Fix for GraphQL Type vs Keyword mismatch)
+            // Runtime asks for "Query.todos", Mock stores "query.todos"
+            let lower_prefix = prefix.to_lowercase();
+            if lower_prefix != prefix {
+                if let Some(v) = self.variable_mocks.get(&(lower_prefix, name.to_string())) {
+                    return Some(v);
+                }
             }
         }
         // Check middleware-level mock
@@ -516,8 +527,27 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                         // Use JQ to evaluate variable substitutions in condition value
                         let expected_args = evaluate_jq_input(&cond.value, &variables_ctx)?;
 
-                        // Check call log (exec_call_log from execution)
-                        if let Some(calls) = exec_call_log.get(target) {
+                        // Helper to find calls with flexible naming (query.todo vs Query.todo)
+                        let find_calls = |target_key: &str| -> Option<&Vec<Value>> {
+                            if let Some(calls) = exec_call_log.get(target_key) {
+                                return Some(calls);
+                            }
+                            // Try capitalized prefix (query.todos -> Query.todos)
+                            if let Some((prefix, suffix)) = target_key.split_once('.') {
+                                let mut c = prefix.chars();
+                                if let Some(first) = c.next() {
+                                    let cap_prefix = first.to_uppercase().collect::<String>() + c.as_str();
+                                    let cap_key = format!("{}.{}", cap_prefix, suffix);
+                                    if let Some(calls) = exec_call_log.get(&cap_key) {
+                                        return Some(calls);
+                                    }
+                                }
+                            }
+                            None
+                        };
+
+                        // Check call log using flexible lookup
+                        if let Some(calls) = find_calls(target) {
                             // Check if ANY call matches the expected arguments
                             let match_found = calls.iter().any(|call_args| {
                                 deep_equals(call_args, &expected_args)
@@ -915,5 +945,3 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
 
     Ok(TestSummary { total, passed, failed, outcomes })
 }
-
-
