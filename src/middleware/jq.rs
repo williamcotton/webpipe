@@ -74,49 +74,30 @@ pub struct JqMiddleware;
 impl JqMiddleware {
     pub fn new() -> Self { Self }
 
-    fn execute_jq(&self, filter: &str, input_json: &str, context_json: Option<&str>) -> Result<String, WebPipeError> {
-        if let Some(ctx_str) = context_json {
-            // JQ approach: inject context as a variable using the pattern: <context> as $context | <filter>
-            // This makes $context available as a read-only variable in the filter
-            let final_filter = format!(
-                r#"{} as $context | {}"#,
-                ctx_str,
-                filter
-            );
+    // Helper that always uses the cache
+    fn execute_cached(&self, filter: &str, input_json: &str) -> Result<String, WebPipeError> {
+        JQ_PROGRAM_CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
 
-            match jq_rs::compile(&final_filter) {
+            if let Some(program) = cache.get_mut(filter) {
+                return program
+                    .run(input_json)
+                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
+            }
+
+            match jq_rs::compile(filter) {
                 Ok(mut program) => {
-                    program
+                    let result = program
                         .run(input_json)
-                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)))
+                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
+                    if result.is_ok() {
+                        cache.put(filter.to_string(), program);
+                    }
+                    result
                 }
                 Err(e) => Err(WebPipeError::MiddlewareExecutionError(format!("JQ compilation error: {}", e))),
             }
-        } else {
-            // Original behavior when no context
-            JQ_PROGRAM_CACHE.with(|cache| {
-                let mut cache = cache.borrow_mut();
-
-                if let Some(program) = cache.get_mut(filter) {
-                    return program
-                        .run(input_json)
-                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
-                }
-
-                match jq_rs::compile(filter) {
-                    Ok(mut program) => {
-                        let result = program
-                            .run(input_json)
-                            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
-                        if result.is_ok() {
-                            cache.put(filter.to_string(), program);
-                        }
-                        result
-                    }
-                    Err(e) => Err(WebPipeError::MiddlewareExecutionError(format!("JQ compilation error: {}", e))),
-                }
-            })
-        }
+        })
     }
 }
 
@@ -133,15 +114,24 @@ impl super::Middleware for JqMiddleware {
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
     ) -> Result<(), WebPipeError> {
-        let input_json = serde_json::to_string(&pipeline_ctx.state)
+        // 1. Create a combined input object containing both state and context
+        // This keeps the data separate from the code (filter)
+        let combined_input = serde_json::json!({
+            "state": pipeline_ctx.state,
+            "context": ctx.to_value(env)
+        });
+
+        // 2. Serialize the combined input
+        let input_json = serde_json::to_string(&combined_input)
             .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Input serialization error: {}", e)))?;
 
-        // Inject context as a read-only variable
-        let context_value = ctx.to_value(env);
-        let context_json = serde_json::to_string(&context_value)
-            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Context serialization error: {}", e)))?;
+        // 3. Create a static wrapper filter
+        // This string depends ONLY on the config, not the request data, so it can be cached!
+        let final_filter = format!(".context as $context | .state | {}", config);
 
-        let result_json = self.execute_jq(config, &input_json, Some(&context_json))?;
+        // 4. Execute using the cache
+        let result_json = self.execute_cached(&final_filter, &input_json)?;
+        
         pipeline_ctx.state = serde_json::from_str(&result_json)
             .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ result parse error: {}", e)))?;
         Ok(())
@@ -151,7 +141,6 @@ impl super::Middleware for JqMiddleware {
         super::StateBehavior::Transform
     }
 }
-
 
 #[cfg(test)]
 mod tests {
