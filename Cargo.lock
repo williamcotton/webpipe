@@ -1495,10 +1495,10 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 [[package]]
 name = "jq-rs"
 version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9cfaeae42ef96b227ab787558cc7bbd5f1dfe96b4df7c63f92853017751b0e4"
+source = "git+https://github.com/williamcotton/jq-rs.git?branch=main#7b9e43be2f73b3ef67d78e8621233b32c7b04fbd"
 dependencies = [
  "jq-sys",
+ "serde_json",
 ]
 
 [[package]]

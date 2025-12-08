@@ -75,21 +75,25 @@ impl JqMiddleware {
     pub fn new() -> Self { Self }
 
     // Helper that always uses the cache
-    fn execute_cached(&self, filter: &str, input_json: &str) -> Result<String, WebPipeError> {
+    // REFACTORED: Now takes &Value and returns Result<Value>
+    fn execute_cached(&self, filter: &str, input: &serde_json::Value) -> Result<serde_json::Value, WebPipeError> {
         JQ_PROGRAM_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
 
             if let Some(program) = cache.get_mut(filter) {
+                // Optimization: Use run_json to bypass string serialization
                 return program
-                    .run(input_json)
+                    .run_json(input)
                     .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
             }
 
             match jq_rs::compile(filter) {
                 Ok(mut program) => {
+                    // Optimization: Use run_json to bypass string serialization
                     let result = program
-                        .run(input_json)
+                        .run_json(input)
                         .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
+
                     if result.is_ok() {
                         cache.put(filter.to_string(), program);
                     }
@@ -121,19 +125,19 @@ impl super::Middleware for JqMiddleware {
             "context": ctx.to_value(env)
         });
 
-        // 2. Serialize the combined input
-        let input_json = serde_json::to_string(&combined_input)
-            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Input serialization error: {}", e)))?;
+        // REMOVED: Step 2 (Serialization) is no longer necessary.
+        // We now pass the 'combined_input' Value struct directly to the method.
 
         // 3. Create a static wrapper filter
         // This string depends ONLY on the config, not the request data, so it can be cached!
         let final_filter = format!(".context as $context | .state | {}", config);
 
         // 4. Execute using the cache
-        let result_json = self.execute_cached(&final_filter, &input_json)?;
+        // We pass &combined_input (Value) and get back a Value directly
+        let result_value = self.execute_cached(&final_filter, &combined_input)?;
         
-        pipeline_ctx.state = serde_json::from_str(&result_json)
-            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ result parse error: {}", e)))?;
+        // REMOVED: Step 5 (Deserialization) is no longer necessary.
+        pipeline_ctx.state = result_value;
         Ok(())
     }
 
