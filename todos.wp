@@ -167,22 +167,30 @@ pipeline todoPageTemplate =
 
         <ul class="todo-list">
           {{#each todos}}
-            <li class="todo-item {{#if completed}}completed{{/if}}">
-              <span class="title">{{title}}</span>
-              <form method="POST" action="/todos/{{id}}/toggle">
-                <button type="submit">
-                  {{#if completed}}Mark incomplete{{else}}Mark complete{{/if}}
-                </button>
-              </form>
-              <form method="POST" action="/todos/{{id}}/delete">
-                <button type="submit">Delete</button>
-              </form>
-            </li>
+            {{> todoItemPartial}}
           {{/each}}
         </ul>
       </body>
     </html>
   `
+
+# ------------------------------------------------
+# Handlebars Partials
+# ------------------------------------------------
+
+handlebars todoItemPartial = `
+<li class="todo-item {{#if completed}}completed{{/if}}">
+  <span class="title">{{title}}</span>
+  <form method="POST" action="/todos/{{id}}/toggle">
+    <button type="submit">
+      {{#if completed}}Mark incomplete{{else}}Mark complete{{/if}}
+    </button>
+  </form>
+  <form method="POST" action="/todos/{{id}}/delete">
+    <button type="submit">Delete</button>
+  </form>
+</li>
+`
 
 # ================================================================
 # Public HTTP Endpoints (HTML + Forms, backed by GraphQL)
