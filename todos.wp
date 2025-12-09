@@ -67,8 +67,7 @@ graphqlSchema = `
 
 # Query: fetch all todos for a user
 query todos =
-  |> jq: `{ sqlParams: [ .userId ] }`
-  |> pg: `
+  |> pg([.userId]): `
     SELECT
       id,
       title,
@@ -84,8 +83,7 @@ query todos =
 
 # Mutation: create a todo
 mutation createTodo =
-  |> jq: `{ sqlParams: [ .title, .userId ] }`
-  |> pg: `
+  |> pg([.title, .userId]): `
     INSERT INTO todos (title, completed, user_id)
     VALUES ($1, false, $2)
     RETURNING
@@ -100,8 +98,7 @@ mutation createTodo =
 
 # Mutation: toggle completion flag
 mutation toggleTodo =
-  |> jq: `{ sqlParams: [ .id, .userId ] }`
-  |> pg: `
+  |> pg([.id, .userId]): `
     UPDATE todos
     SET completed = NOT completed,
         updated_at = CURRENT_TIMESTAMP
@@ -118,9 +115,11 @@ mutation toggleTodo =
 
 # Mutation: delete a todo
 mutation deleteTodo =
-  |> jq: `{ sqlParams: [ .id, .userId ] }`
-  |> pg: `DELETE FROM todos WHERE id = $1 AND user_id = $2`
-  |> jq: `true`
+  |> pg([.id, .userId]): `
+    DELETE FROM todos WHERE id = $1 AND user_id = $2
+    RETURNING true
+  `
+  |> jq: `.data.rows[0]`
 
 # ------------------------------------------------
 # Helper Pipelines
@@ -200,8 +199,7 @@ handlebars todoItemPartial = `
 GET /todos
   # |> log: `level: debug`
   |> pipeline: withUserIdFromHeader
-  |> jq: `.graphqlParams = { userId: .userId }`
-  |> graphql: `
+  |> graphql({ userId: .userId }): `
     query($userId: Int!) {
       todos(userId: $userId) {
         id
@@ -224,11 +222,7 @@ POST /todos
   |> validate: `
     title: string(1..100)
   `
-  |> jq: `.graphqlParams = {
-    userId: .userId,
-    title: .body.title
-  }`
-  |> graphql: `
+  |> graphql({ userId: .userId, title: .body.title }): `
     mutation($userId: Int!, $title: String!) {
       createTodo(userId: $userId, title: $title) {
         id
@@ -243,11 +237,7 @@ POST /todos
 POST /todos/:id/toggle
   |> log: `level: debug`
   |> pipeline: withUserIdFromHeader
-  |> jq: `.graphqlParams = {
-    userId: .userId,
-    id: (.params.id | tonumber)
-  }`
-  |> graphql: `
+  |> graphql({ userId: .userId, id: (.params.id | tonumber) }): `
     mutation($userId: Int!, $id: ID!) {
       toggleTodo(userId: $userId, id: $id) {
         id
@@ -262,11 +252,7 @@ POST /todos/:id/toggle
 POST /todos/:id/delete
   |> log: `level: debug`
   |> pipeline: withUserIdFromHeader
-  |> jq: `.graphqlParams = {
-    userId: .userId,
-    id: (.params.id | tonumber)
-  }`
-  |> graphql: `
+  |> graphql({ userId: .userId, id: (.params.id | tonumber) }): `
     mutation($userId: Int!, $id: ID!) {
       deleteTodo(userId: $userId, id: $id)
     }
