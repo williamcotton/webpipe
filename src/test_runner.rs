@@ -116,6 +116,7 @@ impl MiddlewareInvoker for MockingInvoker {
     async fn call(
         &self,
         name: &str,
+        args: &[String],
         cfg: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
@@ -125,7 +126,7 @@ impl MiddlewareInvoker for MockingInvoker {
             pipeline_ctx.state = mock_val.clone();
             return Ok(());
         }
-        self.registry.execute(name, cfg, pipeline_ctx, _env, _ctx).await
+        self.registry.execute(name, args, cfg, pipeline_ctx, _env, _ctx).await
     }
 
     fn get_mock(&self, target: &str) -> Option<Value> {
@@ -490,7 +491,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                         (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
                     } else {
                         // Single-step pipeline invoking the variable's middleware
-                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None }] };
+                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), args: Vec::new(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None }] };
                         let named: HashMap<String, Arc<Pipeline>> = program
                             .pipelines
                             .iter()

@@ -8,6 +8,7 @@ pub struct DebugMiddleware;
 impl super::Middleware for DebugMiddleware {
     async fn execute(
         &self,
+        _args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
@@ -34,6 +35,7 @@ mod tests {
         async fn call(
             &self,
             _name: &str,
+            _args: &[String],
             _cfg: &str,
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
@@ -67,10 +69,10 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute("", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], "", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx.state["a"], serde_json::json!(1));
         let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute("mylabel", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], "mylabel", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx2.state["a"], serde_json::json!(1));
     }
 }

@@ -58,6 +58,7 @@ fn render_key_template(template: &str, input: &Value) -> String {
 impl super::Middleware for CacheMiddleware {
     async fn execute(
         &self,
+        _args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &crate::executor::ExecutionEnv,
@@ -222,6 +223,7 @@ mod tests {
         async fn call(
             &self,
             _name: &str,
+            _args: &[String],
             _cfg: &str,
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
@@ -257,7 +259,7 @@ mod tests {
 
         // Execute with cache miss
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute("ttl: 5, keyTemplate: test-key-123", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
+        mw.execute(&[], "ttl: 5, keyTemplate: test-key-123", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
 
         // Should return input unchanged (no metadata)
         assert_eq!(pipeline_ctx.state, input);
@@ -296,7 +298,7 @@ mod tests {
 
         let mut req_ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute("keyTemplate: test-key", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
+        mw.execute(&[], "keyTemplate: test-key", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
 
         // Should return stop signal with cached value and content_type
         assert_eq!(pipeline_ctx.state["_control"]["stop"], serde_json::json!(true));
@@ -313,7 +315,7 @@ mod tests {
         let env = dummy_env();
         let mut req_ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute("enabled: false", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
+        mw.execute(&[], "enabled: false", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
 
         // Should pass through original data unchanged
         assert_eq!(pipeline_ctx.state["original"], serde_json::json!("data"));

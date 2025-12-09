@@ -9,6 +9,7 @@ pub struct JoinMiddleware;
 impl Middleware for JoinMiddleware {
     async fn execute(
         &self,
+        _args: &[String],
         config: &str,
         _pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,

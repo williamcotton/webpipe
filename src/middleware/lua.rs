@@ -287,6 +287,7 @@ impl LuaMiddleware {
 impl super::Middleware for LuaMiddleware {
     async fn execute(
         &self,
+        _args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &crate::executor::ExecutionEnv,
@@ -360,6 +361,7 @@ mod tests {
         async fn call(
             &self,
             _name: &str,
+            _args: &[String],
             _cfg: &str,
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
@@ -391,7 +393,7 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute("return { x = request.x, arr = request.arr, obj = request.obj }", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], "return { x = request.x, arr = request.arr, obj = request.obj }", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx.state["x"], serde_json::json!(1));
         assert_eq!(pipeline_ctx.state["arr"].as_array().unwrap().len(), 2);
         assert_eq!(pipeline_ctx.state["obj"]["a"], serde_json::json!(true));
@@ -404,10 +406,10 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        mw.execute("local c = requireScript('dateFormatter'); return type(c) ~= 'nil'", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], "local c = requireScript('dateFormatter'); return type(c) ~= 'nil'", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
         assert!(pipeline_ctx.state.as_bool().unwrap() || pipeline_ctx.state.is_string());
         let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        mw.execute("return getEnv('PATH') ~= nil", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], "return getEnv('PATH') ~= nil", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
         assert!(pipeline_ctx2.state.as_bool().unwrap());
     }
 
@@ -420,18 +422,18 @@ mod tests {
         // First request: accidentally write to global (missing 'local')
         let script1 = "counter = (counter or 0) + 1; return { count = counter }";
         let mut pipeline_ctx1 = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        mw.execute(script1, &mut pipeline_ctx1, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], script1, &mut pipeline_ctx1, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx1.state["count"], serde_json::json!(1));
 
         // Second request: same script should return 1 again (not 2)
         let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        mw.execute(script1, &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], script1, &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx2.state["count"], serde_json::json!(1), "Sandbox should prevent global pollution - counter should not persist");
 
         // Third request: verify the global doesn't exist
         let script2 = "return { exists = counter ~= nil }";
         let mut pipeline_ctx3 = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        mw.execute(script2, &mut pipeline_ctx3, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], script2, &mut pipeline_ctx3, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx3.state["exists"], serde_json::json!(false), "Global 'counter' should not exist in fresh sandbox");
     }
 
@@ -454,7 +456,7 @@ mod tests {
             }
         "#;
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        mw.execute(script, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], script, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx.state["beta"], serde_json::json!(true));
         assert_eq!(pipeline_ctx.state["legacy"], serde_json::json!(false));
         assert_eq!(pipeline_ctx.state["unknown"], serde_json::json!(false)); // defaults to false

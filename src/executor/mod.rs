@@ -75,6 +75,7 @@ pub trait MiddlewareInvoker: Send + Sync {
     async fn call(
         &self,
         name: &str,
+        args: &[String],
         cfg: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &ExecutionEnv,
@@ -316,12 +317,13 @@ impl MiddlewareInvoker for RealInvoker {
     async fn call(
         &self,
         name: &str,
+        args: &[String],
         cfg: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &ExecutionEnv,
         ctx: &mut RequestContext,
     ) -> Result<(), WebPipeError> {
-        self.registry.execute(name, cfg, pipeline_ctx, env, ctx).await
+        self.registry.execute(name, args, cfg, pipeline_ctx, env, ctx).await
     }
 }
 
@@ -742,12 +744,14 @@ fn spawn_async_step(
     env: &ExecutionEnv,
     ctx: &mut RequestContext,
     name: &str,
+    args: &[String],
     config: &str,
     input: Value,
     async_name: String,
 ) {
     let env_clone = env.clone();
     let name_clone = name.to_string();
+    let args_clone = args.to_vec();
     let config_clone = config.to_string();
     let input_snapshot = input;
 
@@ -769,7 +773,7 @@ fn spawn_async_step(
         } else {
             // Create a PipelineContext for the async task
             let mut pipeline_ctx = crate::runtime::PipelineContext::new(effective_input);
-            env_clone.invoker.call(&name_clone, &effective_config, &mut pipeline_ctx, &env_clone, &mut async_ctx).await?;
+            env_clone.invoker.call(&name_clone, &args_clone, &effective_config, &mut pipeline_ctx, &env_clone, &mut async_ctx).await?;
             Ok(pipeline_ctx.state)
         }
     });
@@ -805,10 +809,11 @@ async fn handle_standard_execution(
     env: &ExecutionEnv,
     ctx: &mut RequestContext,
     name: &str,
+    args: &[String],
     config: &str,
     pipeline_ctx: &mut crate::runtime::PipelineContext,
 ) -> Result<StepResult, WebPipeError> {
-    env.invoker.call(name, config, pipeline_ctx, env, ctx).await?;
+    env.invoker.call(name, args, config, pipeline_ctx, env, ctx).await?;
 
     // Special case: handlebars sets HTML content type
     let content_type = if name == "handlebars" {
@@ -835,9 +840,10 @@ async fn execute_step<'a>(
     current_output: &mut PipelineOutput,
 ) -> Result<StepOutcome, WebPipeError> {
     match step {
-        PipelineStep::Regular { name, config, condition, parsed_join_targets, .. } => {
+        PipelineStep::Regular { name, args, config, condition, parsed_join_targets, .. } => {
             execute_regular_step(
                 name,
+                args,
                 config,
                 condition,
                 parsed_join_targets.as_ref(),
@@ -1030,6 +1036,7 @@ async fn execute_step<'a>(
 /// Execute a regular pipeline step
 async fn execute_regular_step(
     name: &str,
+    args: &[String],
     config: &str,
     condition: &Option<crate::ast::TagExpr>,
     parsed_join_targets: Option<&Vec<String>>,
@@ -1053,7 +1060,7 @@ async fn execute_regular_step(
 
     // Handle async execution separately (no state merge needed)
     if let ExecutionMode::Async(async_name) = mode {
-        spawn_async_step(env, ctx, name, config, pipeline_ctx.state.clone(), async_name);
+        spawn_async_step(env, ctx, name, args, config, pipeline_ctx.state.clone(), async_name);
         return Ok(StepOutcome::Continue);
     }
 
@@ -1078,7 +1085,7 @@ async fn execute_regular_step(
         ExecutionMode::Standard => {
             // Standard execution - pass mutable context
             let mut temp_ctx = crate::runtime::PipelineContext::new(pipeline_ctx.state.clone());
-            handle_standard_execution(env, ctx, name, &effective_config, &mut temp_ctx).await?;
+            handle_standard_execution(env, ctx, name, args, &effective_config, &mut temp_ctx).await?;
             StepResult {
                 value: temp_ctx.state,
                 content_type: if name == "handlebars" { "text/html".to_string() } else { "application/json".to_string() },
@@ -1208,6 +1215,7 @@ mod tests {
         async fn call(
             &self,
             name: &str,
+            args: &[String],
             cfg: &str,
             pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &ExecutionEnv,
@@ -1260,7 +1268,7 @@ mod tests {
     async fn result_branch_selection_and_status() {
         let env = env_with_vars(vec![]);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "echo".to_string(), config: "{}".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None },
+            PipelineStep::Regular { name: "echo".to_string(), args: Vec::new(), config: "{}".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None },
             PipelineStep::Result { branches: vec![
                 crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Ok, status_code: 201, pipeline: Pipeline { steps: vec![] } },
                 crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 200, pipeline: Pipeline { steps: vec![] } },
@@ -1289,7 +1297,7 @@ mod tests {
     async fn handlebars_sets_html_content_type() {
         let env = env_with_vars(vec![]);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "handlebars".to_string(), config: "Hello".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
+            PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "Hello".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
         ]};
         let (_out, ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert_eq!(ct, "text/html");
@@ -1300,7 +1308,7 @@ mod tests {
         let vars = vec![Variable { var_type: "echo".to_string(), name: "myVar".to_string(), value: "{}".to_string() }];
         let env = env_with_vars(vars);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "echo".to_string(), config: "myVar".to_string(), config_type: crate::ast::ConfigType::Identifier, condition: None, parsed_join_targets: None }
+            PipelineStep::Regular { name: "echo".to_string(), args: Vec::new(), config: "myVar".to_string(), config_type: crate::ast::ConfigType::Identifier, condition: None, parsed_join_targets: None }
         ]};
         let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert!(out.get("resultName").is_none());
@@ -1316,7 +1324,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "test".to_string(),
+                args: Vec::new(), config: "test".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("env", false, vec!["production"]),
                 parsed_join_targets: None,
@@ -1336,7 +1344,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"message": "production only"}"#.to_string(),
+                args: Vec::new(), config: r#"{"message": "production only"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("env", false, vec!["production"]),
                 parsed_join_targets: None,
@@ -1357,7 +1365,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"debug": true}"#.to_string(),
+                args: Vec::new(), config: r#"{"debug": true}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("env", true, vec!["production"]),
                 parsed_join_targets: None,
@@ -1378,7 +1386,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "dev".to_string(),
+                args: Vec::new(), config: "dev".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("env", true, vec!["production"]),
                 parsed_join_targets: None,
@@ -1398,7 +1406,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "executed".to_string(),
+                args: Vec::new(), config: "executed".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: and_tags(
                     TagExpr::Tag(Tag { name: "env".to_string(), negated: false, args: vec!["production".to_string()] }),
@@ -1421,7 +1429,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "noenv".to_string(),
+                args: Vec::new(), config: "noenv".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("env", false, vec!["production"]),
                 parsed_join_targets: None,
@@ -1440,7 +1448,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "tagged".to_string(),
+                args: Vec::new(), config: "tagged".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("flag", false, vec!["beta"]),
                 parsed_join_targets: None,
@@ -1465,7 +1473,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "tagged".to_string(),
+                args: Vec::new(), config: "tagged".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("needs", false, vec!["flags"]),
                 parsed_join_targets: None,
@@ -1485,14 +1493,14 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"async": "data"}"#.to_string(),
+                args: Vec::new(), config: r#"{"async": "data"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["task1"]),
                 parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"sync": "data"}"#.to_string(),
+                args: Vec::new(), config: r#"{"sync": "data"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: None,
@@ -1515,14 +1523,14 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"result": "from-async"}"#.to_string(),
+                args: Vec::new(), config: r#"{"result": "from-async"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["task1"]),
                 parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
-                config: "task1".to_string(),
+                args: Vec::new(), config: "task1".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: Some(vec!["task1".to_string()]),
@@ -1547,21 +1555,21 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"data": "task1"}"#.to_string(),
+                args: Vec::new(), config: r#"{"data": "task1"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["task1"]),
                 parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"data": "task2"}"#.to_string(),
+                args: Vec::new(), config: r#"{"data": "task2"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["task2"]),
                 parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
-                config: "task1,task2".to_string(),
+                args: Vec::new(), config: "task1,task2".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: Some(vec!["task1".to_string(), "task2".to_string()]),
@@ -1584,14 +1592,14 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"data": "a"}"#.to_string(),
+                args: Vec::new(), config: r#"{"data": "a"}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["a"]),
                 parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
-                config: r#"["a"]"#.to_string(),
+                args: Vec::new(), config: r#"["a"]"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: Some(vec!["a".to_string()]),
@@ -1612,7 +1620,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"counter": 1}"#.to_string(),
+                args: Vec::new(), config: r#"{"counter": 1}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: None,
@@ -1620,7 +1628,7 @@ mod tests {
             // Async task should see counter: 1
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"asyncSaw": 0}"#.to_string(), // Will be replaced with actual counter value
+                args: Vec::new(), config: r#"{"asyncSaw": 0}"#.to_string(), // Will be replaced with actual counter value
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["snapshot"]),
                 parsed_join_targets: None,
@@ -1628,14 +1636,14 @@ mod tests {
             // Modify state after async spawn
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: r#"{"counter": 2}"#.to_string(),
+                args: Vec::new(), config: r#"{"counter": 2}"#.to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: None,
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
-                config: "snapshot".to_string(),
+                args: Vec::new(), config: "snapshot".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: Some(vec!["snapshot".to_string()]),
@@ -1661,7 +1669,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "admin_only".to_string(),
+                args: Vec::new(), config: "admin_only".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("when", false, vec!["is_admin"]),
                 parsed_join_targets: None,
@@ -1680,7 +1688,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "admin_only".to_string(),
+                args: Vec::new(), config: "admin_only".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("when", false, vec!["is_admin"]),
                 parsed_join_targets: None,
@@ -1701,7 +1709,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "non_admin".to_string(),
+                args: Vec::new(), config: "non_admin".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("when", true, vec!["is_admin"]),
                 parsed_join_targets: None,
@@ -1720,7 +1728,7 @@ mod tests {
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "admin_and_premium".to_string(),
+                args: Vec::new(), config: "admin_and_premium".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("when", false, vec!["is_admin", "is_premium"]),
                 parsed_join_targets: None,
@@ -1749,7 +1757,7 @@ mod tests {
         let flag_pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "flag_beta".to_string(),
+                args: Vec::new(), config: "flag_beta".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("flag", false, vec!["beta"]),
                 parsed_join_targets: None,
@@ -1760,7 +1768,7 @@ mod tests {
         let when_pipeline = Pipeline { steps: vec![
             PipelineStep::Regular {
                 name: "echo".to_string(),
-                config: "when_beta".to_string(),
+                args: Vec::new(), config: "when_beta".to_string(),
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("when", false, vec!["beta"]),
                 parsed_join_targets: None,

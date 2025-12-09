@@ -1,4 +1,5 @@
 pub mod context;
+pub mod jq;
 pub mod json_path;
 pub mod pipeline_context;
 

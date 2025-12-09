@@ -12,6 +12,7 @@ pub struct PgMiddleware { pub(crate) ctx: Arc<Context> }
 impl super::Middleware for PgMiddleware {
     async fn execute(
         &self,
+        args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
@@ -25,8 +26,21 @@ impl super::Middleware for PgMiddleware {
             WebPipeError::DatabaseError("Database not configured. Please add a 'config pg {}' block with connection settings.".to_string())
         )?;
 
-        // Clone the values we need from state before mutating
-        let params: Vec<Value> = pipeline_ctx.state.get("sqlParams").and_then(|v| v.as_array()).map(|arr| arr.to_vec()).unwrap_or_default();
+        // Determine parameters based on inline args vs fallback state
+        let params: Vec<Value> = if !args.is_empty() {
+            // New syntax: pg(params_expr)
+            // Evaluate arg[0] for parameters array
+            let params_value = crate::runtime::jq::evaluate(&args[0], &pipeline_ctx.state)?;
+            params_value.as_array()
+                .ok_or_else(|| WebPipeError::MiddlewareExecutionError(
+                    format!("pg argument 0 must evaluate to an array, got: {:?}", params_value)
+                ))?
+                .to_vec()
+        } else {
+            // Old syntax: fallback to sqlParams from state
+            pipeline_ctx.state.get("sqlParams").and_then(|v| v.as_array()).map(|arr| arr.to_vec()).unwrap_or_default()
+        };
+
         let result_name = pipeline_ctx.state.get("resultName").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         let lowered = sql.to_lowercase();

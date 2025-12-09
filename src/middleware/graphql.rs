@@ -49,6 +49,7 @@ impl GraphQLMiddleware {
 impl Middleware for GraphQLMiddleware {
     async fn execute(
         &self,
+        args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
@@ -61,11 +62,25 @@ impl Middleware for GraphQLMiddleware {
                 "No GraphQL schema defined in program".into()
             ))?;
 
-        // Extract GraphQL variables and resultName before mutating state
-        let variables = pipeline_ctx.state
-            .get("graphqlParams")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
+        // Determine variables based on inline args vs fallback state
+        let variables = if !args.is_empty() {
+            // New syntax: graphql(variables_expr)
+            // Evaluate arg[0] for variables object
+            let variables_value = crate::runtime::jq::evaluate(&args[0], &pipeline_ctx.state)?;
+            if !variables_value.is_object() {
+                return Err(WebPipeError::MiddlewareExecutionError(
+                    format!("graphql argument 0 must evaluate to an object, got: {:?}", variables_value)
+                ));
+            }
+            variables_value
+        } else {
+            // Old syntax: fallback to graphqlParams from state
+            pipeline_ctx.state
+                .get("graphqlParams")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}))
+        };
+
         let result_name = pipeline_ctx.state.get("resultName").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         // Pass the pipeline state to GraphQL, but remove resultName
@@ -181,7 +196,7 @@ mod tests {
         };
         let mut req_ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        let result = rt.block_on(middleware.execute("query { test }", &mut pipeline_ctx, &env, &mut req_ctx));
+        let result = rt.block_on(middleware.execute(&[], "query { test }", &mut pipeline_ctx, &env, &mut req_ctx));
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No GraphQL schema"));

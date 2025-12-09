@@ -823,7 +823,7 @@ mod tests {
         };
         // Craft a tiny pipeline that sets cookies via jq
         let p_set_cookie = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "jq".to_string(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
+            crate::ast::PipelineStep::Regular { name: "jq".to_string(), args: Vec::new(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
         ]});
         let resp = respond_with_pipeline(
             state.clone(),
@@ -842,7 +842,7 @@ mod tests {
 
         // Pipeline that renders HTML
         let p_html = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
+            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
         ]});
         let resp2 = respond_with_pipeline(
             state,

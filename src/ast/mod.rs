@@ -135,6 +135,9 @@ pub enum TagExpr {
 pub enum PipelineStep {
     Regular {
         name: String,
+        /// Inline arguments for the middleware (e.g., fetch(url, options) -> ["url", "options"])
+        /// These are raw JQ expression strings that will be evaluated at runtime
+        args: Vec<String>,
         config: String,
         config_type: ConfigType,
         /// Optional tag expression for conditional execution
@@ -401,13 +404,20 @@ impl Display for TagExpr {
 impl Display for PipelineStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PipelineStep::Regular { name, config, config_type, condition, .. } => {
+            PipelineStep::Regular { name, args, config, config_type, condition, .. } => {
+                // Format arguments if present
+                let args_str = if !args.is_empty() {
+                    format!("({})", args.join(", "))
+                } else {
+                    String::new()
+                };
+
                 let formatted_config = match config_type {
                     ConfigType::Backtick => format!("`{}`", config),
                     ConfigType::Quoted => format!("\"{}\"", config),
                     ConfigType::Identifier => config.clone(),
                 };
-                write!(f, "  |> {}: {}", name, formatted_config)?;
+                write!(f, "  |> {}{}: {}", name, args_str, formatted_config)?;
 
                 // Append condition if present
                 if let Some(cond) = condition {
@@ -1060,11 +1070,124 @@ fn parse_step_condition(input: &str) -> IResult<&str, Option<TagExpr>> {
     Ok((input, Some(expr)))
 }
 
+/// Parse inline arguments for middleware (e.g., fetch(url, options))
+/// Returns a vector of argument strings
+fn parse_inline_args(input: &str) -> IResult<&str, Vec<String>> {
+    // Check if we have arguments starting with ( or [
+    let trimmed_input = input.trim_start();
+    if !trimmed_input.starts_with('(') && !trimmed_input.starts_with('[') {
+        return Ok((input, Vec::new()));
+    }
+
+    let open_char = if trimmed_input.starts_with('(') { '(' } else { '[' };
+    let close_char = if open_char == '(' { ')' } else { ']' };
+
+    // Consume the opening bracket
+    let (input, _) = nom::character::complete::char(open_char)(input)?;
+
+    // Find the balanced closing bracket and extract the content
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+    let mut end_pos = None;
+
+    for (idx, ch) in input.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if in_string => escape_next = true,
+            '"' => in_string = !in_string,
+            c if c == open_char && !in_string => depth += 1,
+            c if c == close_char && !in_string => {
+                if depth == 0 {
+                    end_pos = Some(idx);
+                    break;
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+
+    let end_pos = end_pos.ok_or_else(|| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Eof))
+    })?;
+
+    let args_content = &input[..end_pos];
+    let remaining = &input[end_pos + 1..]; // Skip the closing bracket
+
+    // Split by commas, respecting nesting and strings
+    let args = split_balanced_args(args_content);
+
+    Ok((remaining, args))
+}
+
+/// Split argument string by commas while respecting nesting and strings
+fn split_balanced_args(content: &str) -> Vec<String> {
+    if content.trim().is_empty() {
+        return Vec::new();
+    }
+
+    let mut args = Vec::new();
+    let mut current_arg = String::new();
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for ch in content.chars() {
+        if escape_next {
+            current_arg.push(ch);
+            escape_next = false;
+            continue;
+        }
+
+        match ch {
+            '\\' if in_string => {
+                current_arg.push(ch);
+                escape_next = true;
+            }
+            '"' => {
+                current_arg.push(ch);
+                in_string = !in_string;
+            }
+            '(' | '[' | '{' if !in_string => {
+                current_arg.push(ch);
+                depth += 1;
+            }
+            ')' | ']' | '}' if !in_string => {
+                current_arg.push(ch);
+                depth -= 1;
+            }
+            ',' if depth == 0 && !in_string => {
+                // This comma is a separator
+                args.push(current_arg.trim().to_string());
+                current_arg.clear();
+            }
+            _ => current_arg.push(ch),
+        }
+    }
+
+    // Push the last argument
+    if !current_arg.trim().is_empty() {
+        args.push(current_arg.trim().to_string());
+    }
+
+    args
+}
+
 fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("|>")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, name) = parse_identifier(input)?;
+
+    // Parse optional inline arguments (e.g., fetch(url, options))
+    let (input, args) = parse_inline_args(input)?;
+
+    let (input, _) = multispace0(input)?;
     let (input, _) = char(':')(input)?;
     let (input, _) = multispace0(input)?;
     let (input, (config, config_type)) = parse_step_config(input)?;
@@ -1080,7 +1203,7 @@ fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     };
 
     let (input, _) = multispace0(input)?;
-    Ok((input, PipelineStep::Regular { name, config, config_type, condition, parsed_join_targets }))
+    Ok((input, PipelineStep::Regular { name, args, config, config_type, condition, parsed_join_targets }))
 }
 
 fn parse_result_step(input: &str) -> IResult<&str, PipelineStep> {

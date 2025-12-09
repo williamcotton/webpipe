@@ -14,6 +14,7 @@ pub struct LogMiddleware;
 impl super::Middleware for LogMiddleware {
     async fn execute(
         &self,
+        _args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
@@ -133,6 +134,7 @@ mod tests {
         async fn call(
             &self,
             _name: &str,
+            _args: &[String],
             _cfg: &str,
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
@@ -172,7 +174,7 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute("level: info, includeHeaders: true, includeBody: false, enabled: true", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], "level: info, includeHeaders: true, includeBody: false, enabled: true", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
 
         // State should be unchanged (read-only middleware)
         assert_eq!(pipeline_ctx.state, input);

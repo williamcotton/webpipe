@@ -85,6 +85,7 @@ impl HandlebarsMiddleware {
 impl super::Middleware for HandlebarsMiddleware {
     async fn execute(
         &self,
+        _args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &crate::executor::ExecutionEnv,
@@ -140,6 +141,7 @@ mod tests {
         async fn call(
             &self,
             _name: &str,
+            _args: &[String],
             _cfg: &str,
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
@@ -173,10 +175,10 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(data.clone());
-        hb.execute("Hello {{name}}", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        hb.execute(&[], "Hello {{name}}", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx.state, serde_json::json!("Hello Ada"));
         let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(data.clone());
-        hb.execute("Hello {{name}}", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
+        hb.execute(&[], "Hello {{name}}", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx2.state, serde_json::json!("Hello Ada"));
     }
 

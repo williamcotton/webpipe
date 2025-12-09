@@ -1,19 +1,10 @@
 use crate::error::WebPipeError;
 use async_trait::async_trait;
-use std::cell::RefCell;
-use lru::LruCache;
-
-// Thread-local cache for JQ programs since jq_rs::JqProgram is not Send + Sync
-thread_local! {
-    static JQ_PROGRAM_CACHE: RefCell<LruCache<String, jq_rs::JqProgram>> = RefCell::new(
-        LruCache::new(std::num::NonZeroUsize::new(100).unwrap())
-    );
-}
 
 /// Evaluate a JQ filter and check if the result is truthy.
 ///
 /// This function is used by @guard tags for conditional step execution.
-/// It leverages the thread-local JQ_PROGRAM_CACHE for optimal performance.
+/// It leverages the shared runtime JQ cache for optimal performance.
 ///
 /// # Truthiness Rules
 /// - `false` and `null` are falsy
@@ -23,45 +14,11 @@ thread_local! {
 /// - Cache Hit: O(1) program lookup + O(n) JQ execution
 /// - Cache Miss: O(n) compilation + O(n) execution, then cached for future use
 pub fn eval_bool(filter: &str, input: &serde_json::Value) -> Result<bool, WebPipeError> {
-    // 1. Serialize Input (Serialization Tax)
-    let input_json = serde_json::to_string(input)
-        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Guard input error: {}", e)))?;
+    // Use the shared runtime to evaluate the expression
+    let result = crate::runtime::jq::evaluate(filter, input)?;
 
-    // 2. Use the Thread-Local Cache
-    JQ_PROGRAM_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-
-        // A. Cache Hit
-        if let Some(program) = cache.get_mut(filter) {
-            let output = program.run(&input_json)
-                .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Guard execution error: {}", e)))?;
-            return parse_bool_output(&output);
-        }
-
-        // B. Cache Miss - Compile
-        match jq_rs::compile(filter) {
-            Ok(mut program) => {
-                let output = program.run(&input_json)
-                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Guard execution error: {}", e)))?;
-
-                // Store in cache for future use
-                cache.put(filter.to_string(), program);
-
-                parse_bool_output(&output)
-            }
-            Err(e) => Err(WebPipeError::MiddlewareExecutionError(format!("Guard compilation error: {}", e))),
-        }
-    })
-}
-
-/// Helper to parse JQ output string to boolean
-fn parse_bool_output(output: &str) -> Result<bool, WebPipeError> {
-    // JQ returns a string like "false\n" or "null\n" or "{...}\n"
-    let val: serde_json::Value = serde_json::from_str(output)
-        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Guard result parse error: {}", e)))?;
-
-    // Truthiness logic matching standard JQ
-    Ok(match val {
+    // Apply truthiness logic matching standard JQ
+    Ok(match result {
         serde_json::Value::Bool(b) => b,
         serde_json::Value::Null => false,
         _ => true // objects, arrays, numbers, strings are truthy
@@ -73,36 +30,6 @@ pub struct JqMiddleware;
 
 impl JqMiddleware {
     pub fn new() -> Self { Self }
-
-    // Helper that always uses the cache
-    // REFACTORED: Now takes &Value and returns Result<Value>
-    fn execute_cached(&self, filter: &str, input: &serde_json::Value) -> Result<serde_json::Value, WebPipeError> {
-        JQ_PROGRAM_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-
-            if let Some(program) = cache.get_mut(filter) {
-                // Optimization: Use run_json to bypass string serialization
-                return program
-                    .run_json(input)
-                    .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
-            }
-
-            match jq_rs::compile(filter) {
-                Ok(mut program) => {
-                    // Optimization: Use run_json to bypass string serialization
-                    let result = program
-                        .run_json(input)
-                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)));
-
-                    if result.is_ok() {
-                        cache.put(filter.to_string(), program);
-                    }
-                    result
-                }
-                Err(e) => Err(WebPipeError::MiddlewareExecutionError(format!("JQ compilation error: {}", e))),
-            }
-        })
-    }
 }
 
 impl Default for JqMiddleware {
@@ -113,6 +40,7 @@ impl Default for JqMiddleware {
 impl super::Middleware for JqMiddleware {
     async fn execute(
         &self,
+        _args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &crate::executor::ExecutionEnv,
@@ -126,16 +54,16 @@ impl super::Middleware for JqMiddleware {
         });
 
         // REMOVED: Step 2 (Serialization) is no longer necessary.
-        // We now pass the 'combined_input' Value struct directly to the method.
+        // We now pass the 'combined_input' Value struct directly to the shared runtime.
 
         // 3. Create a static wrapper filter
         // This string depends ONLY on the config, not the request data, so it can be cached!
         let final_filter = format!(".context as $context | .state | {}", config);
 
-        // 4. Execute using the cache
+        // 4. Execute using the shared runtime cache
         // We pass &combined_input (Value) and get back a Value directly
-        let result_value = self.execute_cached(&final_filter, &combined_input)?;
-        
+        let result_value = crate::runtime::jq::evaluate(&final_filter, &combined_input)?;
+
         // REMOVED: Step 5 (Deserialization) is no longer necessary.
         pipeline_ctx.state = result_value;
         Ok(())
@@ -157,6 +85,7 @@ mod tests {
         async fn call(
             &self,
             _name: &str,
+            _args: &[String],
             _cfg: &str,
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
@@ -190,11 +119,11 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        jq.execute(".a", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        jq.execute(&[], ".a", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx.state, serde_json::json!(1));
         // second run should hit cache path implicitly; just ensure same result
         let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(input.clone());
-        jq.execute(".a", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
+        jq.execute(&[], ".a", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx2.state, serde_json::json!(1));
     }
 
@@ -205,7 +134,7 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        let err = jq.execute(".[] | ", &mut pipeline_ctx, &env, &mut ctx).await.err().unwrap();
+        let err = jq.execute(&[], ".[] | ", &mut pipeline_ctx, &env, &mut ctx).await.err().unwrap();
         // Ensure it's wrapped as MiddlewareExecutionError string
         assert!(format!("{}", err).contains("JQ"));
     }

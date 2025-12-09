@@ -326,6 +326,7 @@ async fn lookup_session_user(pool: &PgPool, token: &str) -> Result<Option<(i32, 
 impl super::Middleware for AuthMiddleware {
     async fn execute(
         &self,
+        _args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,

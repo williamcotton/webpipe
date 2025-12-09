@@ -25,29 +25,69 @@ fn build_fetch_error_object(error_type: &str, mut details: Value) -> Value {
 impl super::Middleware for FetchMiddleware {
     async fn execute(
         &self,
+        args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
     ) -> Result<(), WebPipeError> {
-        // Extract values we need from state before mutating
-        let url = pipeline_ctx.state.get("fetchUrl").and_then(|v| v.as_str()).unwrap_or(config).trim().to_string();
+        // Determine URL and options based on inline args vs fallback state
+        let (url, method_str, headers_obj, body_obj, timeout_secs) = if !args.is_empty() {
+            // New syntax: fetch(url_expr, options_expr?)
+            // Evaluate arg[0] for URL
+            let url_value = crate::runtime::jq::evaluate(&args[0], &pipeline_ctx.state)?;
+            let url = url_value.as_str()
+                .ok_or_else(|| WebPipeError::MiddlewareExecutionError(
+                    format!("fetch argument 0 must evaluate to a string, got: {:?}", url_value)
+                ))?
+                .trim()
+                .to_string();
+
+            // Evaluate arg[1] for options (if present)
+            let (method, headers, body, timeout) = if args.len() > 1 {
+                let options_value = crate::runtime::jq::evaluate(&args[1], &pipeline_ctx.state)?;
+                let options = options_value.as_object()
+                    .ok_or_else(|| WebPipeError::MiddlewareExecutionError(
+                        format!("fetch argument 1 must evaluate to an object, got: {:?}", options_value)
+                    ))?;
+
+                let method = options.get("method").and_then(|v| v.as_str()).unwrap_or("GET").to_string();
+                let headers = options.get("headers").and_then(|v| v.as_object()).cloned();
+                let body = options.get("body").cloned();
+                let timeout = options.get("timeout").and_then(|v| v.as_u64());
+
+                (method, headers, body, timeout)
+            } else {
+                ("GET".to_string(), None, None, None)
+            };
+
+            (url, method, headers, body, timeout)
+        } else {
+            // Old syntax: fallback to state variables
+            let url = pipeline_ctx.state.get("fetchUrl").and_then(|v| v.as_str()).unwrap_or(config).trim().to_string();
+            let method = pipeline_ctx.state.get("fetchMethod").and_then(|v| v.as_str()).unwrap_or("GET").to_string();
+            let headers = pipeline_ctx.state.get("fetchHeaders").and_then(|v| v.as_object()).cloned();
+            let body = pipeline_ctx.state.get("fetchBody").cloned();
+            let timeout = pipeline_ctx.state.get("fetchTimeout").and_then(|v| v.as_u64());
+
+            (url, method, headers, body, timeout)
+        };
+
         if url.is_empty() {
             pipeline_ctx.state = build_fetch_error_object("networkError", serde_json::json!({ "message": "Missing URL for fetch middleware" }));
             return Ok(());
         }
 
-        let method_str = pipeline_ctx.state.get("fetchMethod").and_then(|v| v.as_str()).unwrap_or("GET");
         let method = Method::from_bytes(method_str.as_bytes()).unwrap_or(Method::GET);
 
         let mut req_builder = self.ctx.http.request(method, &url);
-        if let Some(timeout_secs) = pipeline_ctx.state.get("fetchTimeout").and_then(|v| v.as_u64()) {
-            req_builder = req_builder.timeout(Duration::from_secs(timeout_secs));
+        if let Some(timeout) = timeout_secs {
+            req_builder = req_builder.timeout(Duration::from_secs(timeout));
         }
 
         let mut headers = ReqwestHeaderMap::new();
-        if let Some(headers_obj) = pipeline_ctx.state.get("fetchHeaders").and_then(|v| v.as_object()) {
-            for (k, v) in headers_obj {
+        if let Some(headers_map) = headers_obj {
+            for (k, v) in headers_map {
                 if let Some(val_str) = v.as_str() {
                     if let (Ok(name), Ok(value)) = (HeaderName::from_bytes(k.as_bytes()), HeaderValue::from_str(val_str)) {
                         headers.insert(name, value);
@@ -58,7 +98,7 @@ impl super::Middleware for FetchMiddleware {
         if !headers.contains_key(USER_AGENT) { headers.insert(USER_AGENT, HeaderValue::from_static("WebPipe/1.0")); }
         req_builder = req_builder.headers(headers);
 
-        if let Some(body) = pipeline_ctx.state.get("fetchBody") { req_builder = req_builder.json(body); }
+        if let Some(body) = body_obj { req_builder = req_builder.json(&body); }
 
         let result_name = pipeline_ctx.state.get("resultName").and_then(|v| v.as_str()).map(|s| s.to_string());
 
@@ -141,6 +181,7 @@ mod tests {
         async fn call(
             &self,
             _name: &str,
+            _args: &[String],
             _cfg: &str,
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
@@ -173,7 +214,7 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        mw.execute("", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], "", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
         assert_eq!(pipeline_ctx.state["errors"][0]["type"], serde_json::json!("networkError"));
     }
 }

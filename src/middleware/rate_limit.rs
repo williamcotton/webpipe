@@ -158,6 +158,7 @@ fn resolve_path<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
 impl super::Middleware for RateLimitMiddleware {
     async fn execute(
         &self,
+        _args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &crate::executor::ExecutionEnv,
@@ -225,6 +226,7 @@ mod tests {
         async fn call(
             &self,
             _name: &str,
+            _args: &[String],
             _cfg: &str,
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
@@ -363,7 +365,7 @@ mod tests {
         let mut req_ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
         let result = mw
-            .execute("keyTemplate: test-{ip}, limit: 5, window: 60s", &mut pipeline_ctx, &dummy_env(), &mut req_ctx)
+            .execute(&[], "keyTemplate: test-{ip}, limit: 5, window: 60s", &mut pipeline_ctx, &dummy_env(), &mut req_ctx)
             .await;
         assert!(result.is_ok());
 
@@ -391,7 +393,7 @@ mod tests {
         for _ in 0..3 {
             let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
             let result = mw
-                .execute("keyTemplate: block-test-{ip}, limit: 3, window: 60s", &mut pipeline_ctx, &env, &mut req_ctx)
+                .execute(&[], "keyTemplate: block-test-{ip}, limit: 3, window: 60s", &mut pipeline_ctx, &env, &mut req_ctx)
                 .await;
             assert!(result.is_ok());
         }
@@ -399,7 +401,7 @@ mod tests {
         // Next request should be blocked
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
         let result = mw
-            .execute("keyTemplate: block-test-{ip}, limit: 3, window: 60s", &mut pipeline_ctx, &env, &mut req_ctx)
+            .execute(&[], "keyTemplate: block-test-{ip}, limit: 3, window: 60s", &mut pipeline_ctx, &env, &mut req_ctx)
             .await;
         assert!(result.is_err());
 
@@ -427,7 +429,7 @@ mod tests {
             let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
             let result = mw
                 .execute(
-                    "keyTemplate: burst-test-{ip}, limit: 2, window: 60s, burst: 2",
+                    &[], "keyTemplate: burst-test-{ip}, limit: 2, window: 60s, burst: 2",
                     &mut pipeline_ctx,
                     &env,
                     &mut req_ctx,
@@ -440,7 +442,7 @@ mod tests {
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
         let result = mw
             .execute(
-                "keyTemplate: burst-test-{ip}, limit: 2, window: 60s, burst: 2",
+                &[], "keyTemplate: burst-test-{ip}, limit: 2, window: 60s, burst: 2",
                 &mut pipeline_ctx,
                 &env,
                 &mut req_ctx,
@@ -461,7 +463,7 @@ mod tests {
         // Even without valid config, disabled should pass through
         let mut req_ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        let result = mw.execute("enabled: false", &mut pipeline_ctx, &dummy_env(), &mut req_ctx).await;
+        let result = mw.execute(&[], "enabled: false", &mut pipeline_ctx, &dummy_env(), &mut req_ctx).await;
         assert!(result.is_ok());
         assert_eq!(pipeline_ctx.state, input);
     }
@@ -479,7 +481,7 @@ mod tests {
 
         // Missing keyTemplate
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        let result = mw.execute("limit: 10, window: 60s", &mut pipeline_ctx, &env, &mut req_ctx).await;
+        let result = mw.execute(&[], "limit: 10, window: 60s", &mut pipeline_ctx, &env, &mut req_ctx).await;
         assert!(result.is_err());
         match result {
             Err(WebPipeError::ConfigError(msg)) => {
@@ -490,12 +492,12 @@ mod tests {
 
         // Missing limit
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        let result = mw.execute("keyTemplate: test, window: 60s", &mut pipeline_ctx, &env, &mut req_ctx).await;
+        let result = mw.execute(&[], "keyTemplate: test, window: 60s", &mut pipeline_ctx, &env, &mut req_ctx).await;
         assert!(result.is_err());
 
         // Missing window
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        let result = mw.execute("keyTemplate: test, limit: 10", &mut pipeline_ctx, &env, &mut req_ctx).await;
+        let result = mw.execute(&[], "keyTemplate: test, limit: 10", &mut pipeline_ctx, &env, &mut req_ctx).await;
         assert!(result.is_err());
     }
 
@@ -512,7 +514,7 @@ mod tests {
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
         let result = mw
             .execute(
-                "keyTemplate: scope-test-{ip}, limit: 10, window: 60s, scope: route",
+                &[], "keyTemplate: scope-test-{ip}, limit: 10, window: 60s, scope: route",
                 &mut pipeline_ctx,
                 &dummy_env(),
                 &mut req_ctx,

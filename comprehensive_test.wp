@@ -3603,3 +3603,73 @@ describe "GraphQL Mocking with Describe-Level Variables"
       "name": .testName,
       "email": .testEmail
     }`
+
+# ============================================================================
+# Spec: Inline Argument Evaluation - Real-World Examples
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# 1. Fetch Middleware - JSONPlaceholder Examples
+# ----------------------------------------------------------------------------
+
+# Simple GET with dynamic URL construction
+GET /users-fetch/:id
+  |> jq: `{ id: (.params.id | tonumber) }`
+  # New syntax: Inline URL expression
+  |> fetch("https://jsonplaceholder.typicode.com/users/" + (.id | tostring)): `_`
+  |> jq: `{ user: .data.response, test: "test" }`
+
+# POST with dynamic body and options
+POST /posts
+  |> jq: `{
+    title: .body.title,
+    body: .body.content,
+    userId: 1
+  }`
+  # New syntax: Inline URL and Options object
+  |> fetch(
+    "https://jsonplaceholder.typicode.com/posts",
+    {
+      method: "POST",
+      headers: {
+        "Content-type": "application/json; charset=UTF-8"
+      },
+      body: {
+        title: .title,
+        body: .body,
+        userId: .userId
+      }
+    }
+  ): `_`
+  |> jq: `{ newPost: .data.response }`
+
+# ----------------------------------------------------------------------------
+# 2. Postgres Middleware - User Database Examples
+# ----------------------------------------------------------------------------
+
+# Select with inline parameter array
+GET /db/users/:id
+  |> jq: `{ id: (.params.id | tonumber) }`
+  # New syntax: Inline parameters array [param1, param2]
+  |> pg([.id]): `
+    SELECT * 
+    FROM users 
+    WHERE id = $1
+  `
+  |> jq: `.`
+
+# ----------------------------------------------------------------------------
+# 3. GraphQL Middleware - Internal Schema Examples
+# ----------------------------------------------------------------------------
+
+# Endpoint using inline variables
+GET /gql/user/:id/todos
+  |> jq: `{ targetId: (.params.id | tonumber) }`
+  # New syntax: Inline variables object { var: value }
+  |> graphql({ userId: .targetId }): `
+    query($userId: ID!) {
+      user(id: $userId) { name email }
+      posts(limit: 10) { id title body }
+    }
+  `
+  |> jq: `.`
