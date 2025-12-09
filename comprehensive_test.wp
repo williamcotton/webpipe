@@ -3616,7 +3616,7 @@ describe "GraphQL Mocking with Describe-Level Variables"
 GET /users-fetch/:id
   |> jq: `{ id: (.params.id | tonumber) }`
   # New syntax: Inline URL expression
-  |> fetch("https://jsonplaceholder.typicode.com/users/" + (.id | tostring)): `_`
+  |> fetch("https://jsonplaceholder.typicode.com/users/" + (.id | tostring))
   |> jq: `{ user: .data.response, test: "test" }`
 
 # POST with dynamic body and options
@@ -3640,7 +3640,7 @@ POST /posts
         userId: .userId
       }
     }
-  ): `_`
+  )
   |> jq: `{ newPost: .data.response }`
 
 # ----------------------------------------------------------------------------

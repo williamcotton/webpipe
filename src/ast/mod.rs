@@ -1188,9 +1188,15 @@ fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     let (input, args) = parse_inline_args(input)?;
 
     let (input, _) = multispace0(input)?;
-    let (input, _) = char(':')(input)?;
-    let (input, _) = multispace0(input)?;
-    let (input, (config, config_type)) = parse_step_config(input)?;
+
+    // Parse optional config (colon followed by config)
+    let (input, config_pair) = opt(|i| {
+        let (i, _) = char(':')(i)?;
+        let (i, _) = multispace0(i)?;
+        parse_step_config(i)
+    }).parse(input)?;
+
+    let (config, config_type) = config_pair.unwrap_or((String::new(), ConfigType::Quoted));
 
     // Parse optional condition (tag expression)
     let (input, condition) = parse_step_condition(input)?;
