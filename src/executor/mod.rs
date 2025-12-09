@@ -80,6 +80,7 @@ pub trait MiddlewareInvoker: Send + Sync {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &ExecutionEnv,
         ctx: &mut RequestContext,
+        target_name: Option<&str>,
     ) -> Result<(), WebPipeError>;
 
     /// Look up a mock value for a specific target (e.g. "query.users")
@@ -322,8 +323,9 @@ impl MiddlewareInvoker for RealInvoker {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &ExecutionEnv,
         ctx: &mut RequestContext,
+        target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
-        self.registry.execute(name, args, cfg, pipeline_ctx, env, ctx).await
+        self.registry.execute(name, args, cfg, pipeline_ctx, env, ctx, target_name).await
     }
 }
 
@@ -521,6 +523,48 @@ fn get_async_from_tag_expr(expr: &crate::ast::TagExpr) -> Option<String> {
             get_async_from_tag_expr(left).or_else(|| get_async_from_tag_expr(right))
         }
     }
+}
+
+/// Extract @result(name) from a TagExpr, walking the expression tree
+/// Returns the first @result tag found with a single argument
+fn get_result_from_tag_expr(expr: &crate::ast::TagExpr) -> Option<String> {
+    match expr {
+        crate::ast::TagExpr::Tag(tag) => {
+            if tag.name == "result" && !tag.negated && tag.args.len() == 1 {
+                Some(tag.args[0].clone())
+            } else {
+                None
+            }
+        }
+        crate::ast::TagExpr::And(left, right) | crate::ast::TagExpr::Or(left, right) => {
+            get_result_from_tag_expr(left).or_else(|| get_result_from_tag_expr(right))
+        }
+    }
+}
+
+/// Determine the target name for result wrapping with correct precedence:
+/// 1. @result(name) tag (highest priority)
+/// 2. resultName from state (legacy explicit + auto-named)
+///
+/// Returns (target_name, should_cleanup_result_name)
+fn determine_target_name(
+    condition: &Option<crate::ast::TagExpr>,
+    state: &Value,
+    auto_named: bool,
+) -> (Option<String>, bool) {
+    // Priority 1: @result(name) tag
+    if let Some(ref expr) = condition {
+        if let Some(result_name) = get_result_from_tag_expr(expr) {
+            return (Some(result_name), false);
+        }
+    }
+
+    // Priority 2 & 3: resultName from state (covers both explicit and auto-named)
+    if let Some(result_name) = state.get("resultName").and_then(|v| v.as_str()) {
+        return (Some(result_name.to_string()), auto_named);
+    }
+
+    (None, false)
 }
 
 /// Check for cache control signal from cache middleware.
@@ -773,7 +817,7 @@ fn spawn_async_step(
         } else {
             // Create a PipelineContext for the async task
             let mut pipeline_ctx = crate::runtime::PipelineContext::new(effective_input);
-            env_clone.invoker.call(&name_clone, &args_clone, &effective_config, &mut pipeline_ctx, &env_clone, &mut async_ctx).await?;
+            env_clone.invoker.call(&name_clone, &args_clone, &effective_config, &mut pipeline_ctx, &env_clone, &mut async_ctx, None).await?;
             Ok(pipeline_ctx.state)
         }
     });
@@ -812,8 +856,9 @@ async fn handle_standard_execution(
     args: &[String],
     config: &str,
     pipeline_ctx: &mut crate::runtime::PipelineContext,
+    target_name: Option<&str>,
 ) -> Result<StepResult, WebPipeError> {
-    env.invoker.call(name, args, config, pipeline_ctx, env, ctx).await?;
+    env.invoker.call(name, args, config, pipeline_ctx, env, ctx, target_name).await?;
 
     // Special case: handlebars sets HTML content type
     let content_type = if name == "handlebars" {
@@ -1073,6 +1118,13 @@ async fn execute_regular_step(
         pipeline_ctx.state = effective_input.clone();
     }
 
+    // NEW: Determine target name with precedence (@result tag > resultName variable > auto-naming)
+    let (target_name, should_cleanup) = determine_target_name(
+        condition,
+        &pipeline_ctx.state,
+        auto_named
+    );
+
     // 4. Execution Mode: Switch on Standard, Join, Recursive
     let step_result = match mode {
         ExecutionMode::Join => {
@@ -1085,7 +1137,7 @@ async fn execute_regular_step(
         ExecutionMode::Standard => {
             // Standard execution - pass mutable context
             let mut temp_ctx = crate::runtime::PipelineContext::new(pipeline_ctx.state.clone());
-            handle_standard_execution(env, ctx, name, args, &effective_config, &mut temp_ctx).await?;
+            handle_standard_execution(env, ctx, name, args, &effective_config, &mut temp_ctx, target_name.as_deref()).await?;
             StepResult {
                 value: temp_ctx.state,
                 content_type: if name == "handlebars" { "text/html".to_string() } else { "application/json".to_string() },
@@ -1095,9 +1147,35 @@ async fn execute_regular_step(
         ExecutionMode::Async(_) => unreachable!("Async handled above"),
     };
 
-    // 5. State Update: Call update_pipeline_state with behavior from registry
-    let behavior = env.registry.get_behavior(name).unwrap_or(crate::middleware::StateBehavior::Merge);
-    update_pipeline_state(pipeline_ctx, step_result.value, behavior, is_last_step);
+    // NEW: Wrap result if target_name is present AND middleware supports it
+    // Only data-fetching middleware (pg, fetch, graphql) support result wrapping
+    let should_wrap = target_name.is_some() && matches!(name, "pg" | "fetch" | "graphql");
+
+    if should_wrap {
+        // In-place mutation to accumulate results under .data.<target_name>
+        // This ensures deep merging - multiple results accumulate rather than replace
+        let target = target_name.as_ref().unwrap();
+        if let Some(obj) = pipeline_ctx.state.as_object_mut() {
+            let data_entry = obj.entry("data").or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if !data_entry.is_object() {
+                *data_entry = Value::Object(serde_json::Map::new());
+            }
+            if let Some(data_obj) = data_entry.as_object_mut() {
+                data_obj.insert(target.to_string(), step_result.value);
+            }
+        } else {
+            // State is not an object, replace it entirely
+            pipeline_ctx.state = serde_json::json!({
+                "data": {
+                    target: step_result.value
+                }
+            });
+        }
+    } else {
+        // 5. State Update: Use middleware behavior for non-wrapped results
+        let behavior = env.registry.get_behavior(name).unwrap_or(crate::middleware::StateBehavior::Merge);
+        update_pipeline_state(pipeline_ctx, step_result.value, behavior, is_last_step);
+    }
 
     // 6. Metadata Update: Update content_type and status_code in current_output
     if step_result.content_type != "application/json" || is_last_step {
@@ -1119,8 +1197,8 @@ async fn execute_regular_step(
         }));
     }
 
-    // 8. Cleanup: Remove resultName if auto-named
-    if auto_named {
+    // 8. Cleanup: Remove resultName only if it should be cleaned up (auto-named case)
+    if should_cleanup {
         if let Some(obj) = pipeline_ctx.state.as_object_mut() {
             obj.remove("resultName");
         }
@@ -1220,6 +1298,7 @@ mod tests {
             pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &ExecutionEnv,
             _ctx: &mut RequestContext,
+            _target_name: Option<&str>,
         ) -> Result<(), WebPipeError> {
             let input = &pipeline_ctx.state;
             match name {

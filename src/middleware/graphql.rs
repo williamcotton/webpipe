@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use serde_json::Value;
 use std::sync::Arc;
 
 use crate::error::WebPipeError;
@@ -54,6 +53,7 @@ impl Middleware for GraphQLMiddleware {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
+        target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         // Get the pre-compiled GraphQL runtime
         let runtime = self.ctx.graphql
@@ -81,76 +81,33 @@ impl Middleware for GraphQLMiddleware {
                 .unwrap_or_else(|| serde_json::json!({}))
         };
 
-        let result_name = pipeline_ctx.state.get("resultName").and_then(|v| v.as_str()).map(|s| s.to_string());
-
-        // Pass the pipeline state to GraphQL, but remove resultName
-        // resultName is only for the GraphQL middleware, not for resolvers
-        let mut pipeline_state = pipeline_ctx.state.clone();
-        if let Some(obj) = pipeline_state.as_object_mut() {
-            obj.remove("resultName");
-        }
-
         // Execute the GraphQL query
         let query = config;
         let response = runtime.execute(
             query,
             variables,
-            pipeline_state,
-            _env,  // Use the ExecutionEnv passed to this method
-            _ctx   // Pass RequestContext for call logging and mocking
+            pipeline_ctx.state.clone(),
+            _env,
+            _ctx
         ).await?;
 
-        // Check for resultName pattern (auto-naming)
-        if let Some(result_name_str) = result_name.as_deref() {
-            // Extract the data from GraphQL response and store under .data.<resultName>
-            // Mutate state in place
-            if let Some(obj) = pipeline_ctx.state.as_object_mut() {
-                let data_obj = obj.entry("data")
-                    .or_insert_with(|| Value::Object(serde_json::Map::new()))
-                    .as_object_mut()
-                    .unwrap();
-
-                // Extract just the data portion from the GraphQL response
-                // GraphQL response format is: { data: { fieldName: value }, errors?: [...] }
-                //
-                // Special handling: If the GraphQL response has a single top-level field
-                // that matches the result name, unwrap it to avoid double nesting.
-                // This is common when using graphql variables like:
-                //   graphql slowQuery1 = `query { slowQuery1 { result } }`
-                //   |> graphql: slowQuery1  # auto-names as "slowQuery1"
-                // Without unwrapping, we'd get: .data.slowQuery1.slowQuery1
-                // With unwrapping, we get: .data.slowQuery1 (same as inline queries)
-                if let Some(graphql_data) = response.get("data") {
-                    let value_to_insert = if let Some(data_obj_inner) = graphql_data.as_object() {
-                        // Check if there's a single field matching the result name
-                        if data_obj_inner.len() == 1 && data_obj_inner.contains_key(result_name_str) {
-                            // Unwrap: use the field's value directly
-                            data_obj_inner.get(result_name_str).unwrap().clone()
-                        } else {
-                            // Multiple fields or no match: use the entire data object
-                            graphql_data.clone()
-                        }
-                    } else {
-                        graphql_data.clone()
-                    };
-                    data_obj.insert(result_name_str.to_string(), value_to_insert);
-                } else {
-                    data_obj.insert(result_name_str.to_string(), Value::Null);
+        // Smart unwrapping logic (from spec)
+        // If target_name is present and matches a single field in the response,
+        // unwrap it to avoid double nesting like .data.users.users
+        if let Some(name) = target_name {
+            if let Some(data) = response.get("data").and_then(|d| d.as_object()) {
+                // If response is {"data": {"users": [...]}} and target is "users"
+                // Unwrap to just [...] so executor wrapping creates {"data": {"users": [...]}}
+                if data.len() == 1 && data.contains_key(name) {
+                    pipeline_ctx.state = data.get(name).unwrap().clone();
+                    return Ok(());
                 }
-
-                // If there were errors, add them to the output
-                if let Some(errors) = response.get("errors") {
-                    obj.insert("graphqlErrors".to_string(), errors.clone());
-                }
-
-                obj.remove("resultName");
             }
-            Ok(())
-        } else {
-            // Default: replace state with GraphQL response
-            pipeline_ctx.state = response;
-            Ok(())
         }
+
+        // Default: return full GraphQL response
+        pipeline_ctx.state = response;
+        Ok(())
     }
 
     fn behavior(&self) -> super::StateBehavior {
@@ -196,7 +153,7 @@ mod tests {
         };
         let mut req_ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        let result = rt.block_on(middleware.execute(&[], "query { test }", &mut pipeline_ctx, &env, &mut req_ctx));
+        let result = rt.block_on(middleware.execute(&[], "query { test }", &mut pipeline_ctx, &env, &mut req_ctx, None));
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No GraphQL schema"));

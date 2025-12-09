@@ -78,7 +78,7 @@ pipeline loadNews =
 describe "fetch pipeline"
   it "merges mocked fetch under resultName"
     when executing pipeline loadNews
-    and mock fetch returning `{ "data": { "news": { "response": { "items": [1] }, "status": 200, "headers": {} } } }`
+    and mock fetch returning `{ "response": { "items": [1] }, "status": 200, "headers": {} }`
     then output `.data.news.response.items[0]` equals 1
 
 # Auto-named jq variable, then ensure resultName removed by executor

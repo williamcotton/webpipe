@@ -60,6 +60,7 @@ pub trait Middleware: Send + Sync + std::fmt::Debug {
     /// # Arguments
     /// * `args` - Optional inline arguments evaluated from JQ expressions
     /// * `config` - The configuration string for this middleware step
+    /// * `target_name` - Optional result target name from @result(name) tag or resultName variable
     async fn execute(
         &self,
         args: &[String],
@@ -67,6 +68,7 @@ pub trait Middleware: Send + Sync + std::fmt::Debug {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
+        target_name: Option<&str>,
     ) -> Result<(), WebPipeError>;
 
     /// Returns the state manipulation behavior of this middleware.
@@ -123,10 +125,10 @@ impl MiddlewareRegistry {
         self.middlewares.insert(name.to_string(), middleware);
     }
 
-    pub async fn execute(&self, name: &str, args: &[String], config: &str, pipeline_ctx: &mut crate::runtime::PipelineContext, env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext) -> Result<(), WebPipeError> {
+    pub async fn execute(&self, name: &str, args: &[String], config: &str, pipeline_ctx: &mut crate::runtime::PipelineContext, env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext, target_name: Option<&str>) -> Result<(), WebPipeError> {
         let middleware = self.middlewares.get(name)
             .ok_or_else(|| WebPipeError::MiddlewareNotFound(name.to_string()))?;
-        middleware.execute(args, config, pipeline_ctx, env, ctx).await
+        middleware.execute(args, config, pipeline_ctx, env, ctx, target_name).await
     }
 
     pub fn get_behavior(&self, name: &str) -> Option<StateBehavior> {
@@ -167,6 +169,7 @@ mod tests {
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
+            _target_name: Option<&str>,
         ) -> Result<(), WebPipeError> {
             Ok(())
         }
@@ -196,7 +199,7 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        registry.execute("jq", &[], "{ ok: true }", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        registry.execute("jq", &[], "{ ok: true }", &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx.state["ok"], serde_json::json!(true));
     }
 
@@ -206,7 +209,7 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        let err = registry.execute("nope", &[], "", &mut pipeline_ctx, &env, &mut ctx).await.unwrap_err();
+        let err = registry.execute("nope", &[], "", &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap_err();
         match err { WebPipeError::MiddlewareNotFound(_) => {}, other => panic!("unexpected: {:?}", other) }
     }
 }

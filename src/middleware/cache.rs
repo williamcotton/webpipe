@@ -63,6 +63,7 @@ impl super::Middleware for CacheMiddleware {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
+        _target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         let input = &pipeline_ctx.state;
         #[derive(Default)]
@@ -228,6 +229,7 @@ mod tests {
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
+            _target_name: Option<&str>,
         ) -> Result<(), WebPipeError> {
             Ok(())
         }
@@ -259,7 +261,7 @@ mod tests {
 
         // Execute with cache miss
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute(&[], "ttl: 5, keyTemplate: test-key-123", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
+        mw.execute(&[], "ttl: 5, keyTemplate: test-key-123", &mut pipeline_ctx, &env, &mut req_ctx, None).await.unwrap();
 
         // Should return input unchanged (no metadata)
         assert_eq!(pipeline_ctx.state, input);
@@ -298,7 +300,7 @@ mod tests {
 
         let mut req_ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute(&[], "keyTemplate: test-key", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
+        mw.execute(&[], "keyTemplate: test-key", &mut pipeline_ctx, &env, &mut req_ctx, None).await.unwrap();
 
         // Should return stop signal with cached value and content_type
         assert_eq!(pipeline_ctx.state["_control"]["stop"], serde_json::json!(true));
@@ -315,7 +317,7 @@ mod tests {
         let env = dummy_env();
         let mut req_ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute(&[], "enabled: false", &mut pipeline_ctx, &env, &mut req_ctx).await.unwrap();
+        mw.execute(&[], "enabled: false", &mut pipeline_ctx, &env, &mut req_ctx, None).await.unwrap();
 
         // Should pass through original data unchanged
         assert_eq!(pipeline_ctx.state["original"], serde_json::json!("data"));

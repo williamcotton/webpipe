@@ -17,6 +17,7 @@ impl super::Middleware for PgMiddleware {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
+        target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         let sql = config.trim();
         if sql.is_empty() { return Err(WebPipeError::DatabaseError("Empty SQL config for pg middleware".to_string())); }
@@ -40,8 +41,6 @@ impl super::Middleware for PgMiddleware {
             // Old syntax: fallback to sqlParams from state
             pipeline_ctx.state.get("sqlParams").and_then(|v| v.as_array()).map(|arr| arr.to_vec()).unwrap_or_default()
         };
-
-        let result_name = pipeline_ctx.state.get("resultName").and_then(|v| v.as_str()).map(|s| s.to_string());
 
         let lowered = sql.to_lowercase();
         let is_select = lowered.trim_start().starts_with("select");
@@ -68,23 +67,14 @@ impl super::Middleware for PgMiddleware {
 
             let result_value = serde_json::json!({ "rows": rows_json, "rowCount": row_count });
 
-            // Replace state with query result (Transform behavior)
-            // The executor will handle preserving context if this is not the last step
-            match result_name.as_deref() {
-                Some(name) => {
-                    // With resultName: store under .data.<name>
-                    pipeline_ctx.state = serde_json::json!({
-                        "data": {
-                            name: result_value
-                        }
-                    });
-                }
-                None => {
-                    // Without resultName: store under .data
-                    pipeline_ctx.state = serde_json::json!({
-                        "data": result_value
-                    });
-                }
+            // Return raw data when target_name present (executor wraps it)
+            // Otherwise, use legacy format for backwards compatibility
+            if target_name.is_some() {
+                pipeline_ctx.state = result_value;
+            } else {
+                pipeline_ctx.state = serde_json::json!({
+                    "data": result_value
+                });
             }
             Ok(())
         } else {
@@ -100,9 +90,14 @@ impl super::Middleware for PgMiddleware {
             };
 
             let result_value = serde_json::json!({ "rows": [], "rowCount": result.rows_affected() });
-            pipeline_ctx.state = serde_json::json!({
-                "data": result_value
-            });
+
+            if target_name.is_some() {
+                pipeline_ctx.state = result_value;
+            } else {
+                pipeline_ctx.state = serde_json::json!({
+                    "data": result_value
+                });
+            }
             Ok(())
         }
     }

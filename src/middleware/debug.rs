@@ -13,6 +13,7 @@ impl super::Middleware for DebugMiddleware {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
+        _target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         let input = &pipeline_ctx.state;
         let label = { let trimmed = config.trim(); if trimmed.is_empty() { "debug" } else { trimmed } };
@@ -40,6 +41,7 @@ mod tests {
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
+            _target_name: Option<&str>,
         ) -> Result<(), WebPipeError> {
             Ok(())
         }
@@ -69,10 +71,10 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute(&[], "", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], "", &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx.state["a"], serde_json::json!(1));
         let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(input.clone());
-        mw.execute(&[], "mylabel", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], "mylabel", &mut pipeline_ctx2, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx2.state["a"], serde_json::json!(1));
     }
 }

@@ -13,7 +13,8 @@ impl Middleware for JoinMiddleware {
         config: &str,
         _pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
-        _ctx: &mut crate::executor::RequestContext,
+        _ctx: &mut crate::executor::RequestContext, 
+        _target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         // Validate config upfront to fail fast on bad syntax
         let _task_names = parse_join_config(config)?;

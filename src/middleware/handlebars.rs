@@ -90,6 +90,7 @@ impl super::Middleware for HandlebarsMiddleware {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
+        _target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         // Create a wrapper object that includes both the pipeline state and the context
         let context_value = ctx.to_value(env);
@@ -146,6 +147,7 @@ mod tests {
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
+            _target_name: Option<&str>,
         ) -> Result<(), WebPipeError> {
             Ok(())
         }
@@ -175,10 +177,10 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(data.clone());
-        hb.execute(&[], "Hello {{name}}", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        hb.execute(&[], "Hello {{name}}", &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx.state, serde_json::json!("Hello Ada"));
         let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(data.clone());
-        hb.execute(&[], "Hello {{name}}", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
+        hb.execute(&[], "Hello {{name}}", &mut pipeline_ctx2, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx2.state, serde_json::json!("Hello Ada"));
     }
 

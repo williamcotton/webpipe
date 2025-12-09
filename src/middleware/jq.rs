@@ -45,6 +45,7 @@ impl super::Middleware for JqMiddleware {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
+        _target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         // 1. Create a combined input object containing both state and context
         // This keeps the data separate from the code (filter)
@@ -90,6 +91,7 @@ mod tests {
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
+            _target_name: Option<&str>,
         ) -> Result<(), WebPipeError> {
             Ok(())
         }
@@ -119,11 +121,11 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        jq.execute(&[], ".a", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        jq.execute(&[], ".a", &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx.state, serde_json::json!(1));
         // second run should hit cache path implicitly; just ensure same result
         let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(input.clone());
-        jq.execute(&[], ".a", &mut pipeline_ctx2, &env, &mut ctx).await.unwrap();
+        jq.execute(&[], ".a", &mut pipeline_ctx2, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx2.state, serde_json::json!(1));
     }
 
@@ -134,7 +136,7 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-        let err = jq.execute(&[], ".[] | ", &mut pipeline_ctx, &env, &mut ctx).await.err().unwrap();
+        let err = jq.execute(&[], ".[] | ", &mut pipeline_ctx, &env, &mut ctx, None).await.err().unwrap();
         // Ensure it's wrapped as MiddlewareExecutionError string
         assert!(format!("{}", err).contains("JQ"));
     }

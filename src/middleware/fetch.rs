@@ -30,6 +30,7 @@ impl super::Middleware for FetchMiddleware {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
+        target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         // Determine URL and options based on inline args vs fallback state
         let (url, method_str, headers_obj, body_obj, timeout_secs) = if !args.is_empty() {
@@ -100,8 +101,6 @@ impl super::Middleware for FetchMiddleware {
 
         if let Some(body) = body_obj { req_builder = req_builder.json(&body); }
 
-        let result_name = pipeline_ctx.state.get("resultName").and_then(|v| v.as_str()).map(|s| s.to_string());
-
         let response = match req_builder.send().await {
             Ok(resp) => resp,
             Err(err) => {
@@ -135,15 +134,14 @@ impl super::Middleware for FetchMiddleware {
 
         let result_payload = serde_json::json!({ "response": response_body, "status": status_code, "headers": headers_map });
 
-        // Mutate state in place
-        if let Some(obj) = pipeline_ctx.state.as_object_mut() {
-            match result_name.as_deref() {
-                Some(name) => {
-                    let data_entry = obj.entry("data").or_insert_with(|| Value::Object(serde_json::Map::new()));
-                    if !data_entry.is_object() { *data_entry = Value::Object(serde_json::Map::new()); }
-                    if let Some(data_obj) = data_entry.as_object_mut() { data_obj.insert(name.to_string(), result_payload); }
-                }
-                None => { obj.insert("data".to_string(), result_payload); }
+        // Return raw data when target_name present (executor wraps it)
+        // Otherwise, mutate state for backwards compatibility
+        if target_name.is_some() {
+            pipeline_ctx.state = result_payload;
+        } else {
+            // Legacy: mutate state in place
+            if let Some(obj) = pipeline_ctx.state.as_object_mut() {
+                obj.insert("data".to_string(), result_payload);
             }
         }
 
@@ -186,6 +184,7 @@ mod tests {
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
+            _target_name: Option<&str>,
         ) -> Result<(), WebPipeError> {
             Ok(())
         }
@@ -214,7 +213,7 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        mw.execute(&[], "", &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], "", &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx.state["errors"][0]["type"], serde_json::json!("networkError"));
     }
 }

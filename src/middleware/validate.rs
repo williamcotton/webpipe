@@ -14,6 +14,7 @@ impl super::Middleware for ValidateMiddleware {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
+        _target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         let input = &pipeline_ctx.state;
         #[derive(Debug)]
@@ -142,6 +143,7 @@ mod tests {
             _pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
+            _target_name: Option<&str>,
         ) -> Result<(), WebPipeError> {
             Ok(())
         }
@@ -174,19 +176,19 @@ mod tests {
         let cfg = "{ name: string(2..4) }";
         // missing
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {}}));
-        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx.state["errors"][0]["type"], serde_json::json!("validationError"));
         // too short
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"name": "a"}}));
-        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("minLength"));
         // too long
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"name": "abcde"}}));
-        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("maxLength"));
         // ok
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"name": "abc"}}));
-        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert!(pipeline_ctx.state.get("errors").is_none());
     }
 
@@ -198,15 +200,15 @@ mod tests {
         let cfg = "{ email: email }";
         // missing
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {}}));
-        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx.state["errors"][0]["type"], serde_json::json!("validationError"));
         // invalid
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"email": "foo"}}));
-        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("email"));
         // valid
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"email": "a@b.com"}}));
-        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx).await.unwrap();
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert!(pipeline_ctx.state.get("errors").is_none());
     }
 }

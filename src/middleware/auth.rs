@@ -331,6 +331,7 @@ impl super::Middleware for AuthMiddleware {
         pipeline_ctx: &mut crate::runtime::PipelineContext,
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
+        _target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         let input = &pipeline_ctx.state;
         let pool = self

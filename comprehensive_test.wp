@@ -3651,8 +3651,8 @@ GET /db/users/:id
     SELECT * 
     FROM users 
     WHERE id = $1
-  `
-  |> jq: `.`
+  ` @result(foundUser)
+  |> jq: `.data.foundUser.rows[0]`
 
 # ----------------------------------------------------------------------------
 # 3. GraphQL Middleware - Internal Schema Examples
@@ -3669,3 +3669,438 @@ GET /gql/user/:id/todos
     }
   `
   |> jq: `.`
+
+# ==============================================================================
+# @result Tag Specification Examples
+# Comprehensive demonstrations of the @result(name) tag feature
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Legacy Compatibility - Using resultName Variable (Still Works!)
+# ------------------------------------------------------------------------------
+
+GET /legacy/user-with-dept
+  # Old style: Set resultName via JQ before calling middleware
+  |> jq: `{ sqlParams: [1], resultName: "user" }`
+  |> pg: `SELECT 1 as id, 'Alice' as name, 'alice@example.com' as email, 5 as dept_id`
+  
+  # Set resultName again for next query
+  |> jq: `. + { sqlParams: [.data.user.rows[0].dept_id], resultName: "department" }`
+  |> pg: `SELECT 5 as id, 'Engineering' as name`
+  
+  # Final aggregation - both .data.user and .data.department are available
+  |> jq: `{ 
+      userName: .data.user.rows[0].name,
+      userEmail: .data.user.rows[0].email,
+      deptName: .data.department.rows[0].name
+    }`
+
+# ------------------------------------------------------------------------------
+# 2. Modern Syntax - Using @result Tag (Recommended!)
+# ------------------------------------------------------------------------------
+
+GET /modern/user-with-dept
+  # New style: Use @result tag - cleaner, more declarative
+  |> jq: `{ sqlParams: [1] }`
+  |> pg: `SELECT 1 as id, 'Bob' as name, 'bob@example.com' as email, 3 as dept_id` @result(user)
+  
+  # Access data immediately, set params for next query
+  |> jq: `{ sqlParams: [.data.user.rows[0].dept_id] }`
+  |> pg: `SELECT 3 as id, 'Product' as name` @result(department)
+  
+  # Both results accumulated under .data
+  |> jq: `{ 
+      userName: .data.user.rows[0].name,
+      userEmail: .data.user.rows[0].email,
+      deptName: .data.department.rows[0].name
+    }`
+
+# ------------------------------------------------------------------------------
+# 3. Multiple Dataset Accumulation
+# ------------------------------------------------------------------------------
+
+GET /dashboard/summary
+  # Fetch multiple datasets in parallel-style (sequential execution, accumulated results)
+  |> pg: `SELECT 1 as id, 'Engineering' as name UNION SELECT 2 as id, 'Product' as name` @result(departments)
+  |> pg: `SELECT 1 as id, 'Alice' as name UNION SELECT 2 as id, 'Bob' as name UNION SELECT 3 as id, 'Carol' as name` @result(employees)
+  |> pg: `SELECT 1 as id, 'Q1 2024' as name, 'active' as status UNION SELECT 2 as id, 'Q2 2024' as name, 'planning' as status` @result(projects)
+  
+  # All three datasets available for final aggregation
+  |> jq: `{
+      totalDepartments: (.data.departments.rowCount),
+      totalEmployees: (.data.employees.rowCount),
+      totalProjects: (.data.projects.rowCount),
+      departmentNames: [.data.departments.rows[].name],
+      employeeNames: [.data.employees.rows[].name],
+      activeProjects: [.data.projects.rows[] | select(.status == "active") | .name]
+    }`
+
+# ------------------------------------------------------------------------------
+# 4. Mixing Legacy and Modern Styles (Transition Period)
+# ------------------------------------------------------------------------------
+
+GET /mixed/user-profile
+  # Old style: Using resultName variable
+  |> jq: `{ resultName: "basicInfo" }`
+  |> fetch: `https://jsonplaceholder.typicode.com/users/1`
+  
+  # New style: Using @result tag
+  |> fetch: `https://jsonplaceholder.typicode.com/users/1/todos?_limit=3` @result(recentTodos)
+  
+  # Both styles work together - data accumulated
+  |> jq: `{
+      userName: .data.basicInfo.response.name,
+      userEmail: .data.basicInfo.response.email,
+      userCity: .data.basicInfo.response.address.city,
+      todoCount: (.data.recentTodos.response | length),
+      firstTodo: .data.recentTodos.response[0].title
+    }`
+
+# ------------------------------------------------------------------------------
+# 5. Variable Auto-Naming with @result Override
+# ------------------------------------------------------------------------------
+
+# Define variables for auto-naming
+pg getActiveUsers = `SELECT 1 as id, 'Alice' as name, 'active' as status UNION SELECT 2 as id, 'Bob' as name, 'active' as status`
+pg getAllDepartments = `SELECT 1 as id, 'Engineering' as name UNION SELECT 2 as id, 'Product' as name`
+
+GET /auto-naming/demo
+  # Standard auto-naming: result goes to .data.getActiveUsers
+  |> pg: getActiveUsers
+  
+  # Override auto-naming: @result tag takes precedence
+  |> pg: getAllDepartments @result(departments)
+  
+  # Results available at different paths based on naming
+  |> jq: `{
+      users: .data.getActiveUsers.rows,
+      depts: .data.departments.rows,
+      userCount: .data.getActiveUsers.rowCount,
+      deptCount: .data.departments.rowCount
+    }`
+
+# ------------------------------------------------------------------------------
+# 6. Complex Combinations - @result with Other Tags
+# ------------------------------------------------------------------------------
+
+GET /complex/conditional-fetch
+  # Conditional execution with @when tag
+  |> lua: `
+    setWhen("isAdmin", true)
+    setWhen("isPremium", false)
+    return request
+  `
+  
+  # Fetch basic data (always)
+  |> fetch("https://jsonplaceholder.typicode.com/users/1") @result(profile)
+  
+  # Fetch admin data only when isAdmin is true
+  |> fetch("https://jsonplaceholder.typicode.com/users/1/posts?_limit=5") @result(adminPosts) @when(isAdmin)
+  
+  # Fetch premium features only when isPremium is true (will be skipped in this case)
+  |> fetch("https://jsonplaceholder.typicode.com/users/1/albums") @result(premiumAlbums) @when(isPremium)
+  
+  |> jq: `{
+      userName: .data.profile.response.name,
+      hasAdminPosts: (.data.adminPosts != null),
+      hasPremiumAlbums: (.data.premiumAlbums != null),
+      postCount: (if .data.adminPosts then (.data.adminPosts.response | length) else 0 end)
+    }`
+
+# ------------------------------------------------------------------------------
+# 7. Fetch Examples - External API Integration
+# ------------------------------------------------------------------------------
+
+GET /api/user-todos/:userId
+  |> jq: `{ userId: .params.userId }`
+  
+  # Fetch user info
+  |> fetch("https://jsonplaceholder.typicode.com/users/" + (.userId | tostring)) @result(user)
+  
+  # Fetch user's todos  
+  |> fetch("https://jsonplaceholder.typicode.com/users/" + (.userId | tostring) + "/todos") @result(todos)
+  
+  # Fetch user's posts
+  |> fetch("https://jsonplaceholder.typicode.com/users/" + (.userId | tostring) + "/posts?_limit=3") @result(posts)
+  
+  |> jq: `{
+      profile: {
+        name: .data.user.response.name,
+        email: .data.user.response.email,
+        company: .data.user.response.company.name
+      },
+      stats: {
+        totalTodos: (.data.todos.response | length),
+        completedTodos: ([.data.todos.response[] | select(.completed)] | length),
+        recentPostCount: (.data.posts.response | length)
+      },
+      recentPosts: [.data.posts.response[] | {
+        title: .title,
+        preview: (.body | .[0:50] + "...")
+      }]
+    }`
+
+# ------------------------------------------------------------------------------
+# 8. Database Queries - Relational Data Fetching
+# ------------------------------------------------------------------------------
+
+GET /reports/user-activity/:userId
+  |> jq: `{ userId: (.params.userId | tonumber) }`
+  
+  # Get user details
+  |> pg([.userId]): `
+    SELECT 
+      1 as id,
+      'Charlie' as name,
+      'charlie@example.com' as email,
+      'active' as status,
+      '2024-01-15'::date as created_at
+  ` @result(user)
+  
+  # Get user's department
+  |> pg([.userId]): `
+    SELECT 
+      5 as dept_id,
+      'Engineering' as dept_name,
+      'Tech' as division
+  ` @result(department)
+  
+  # Get user's recent activities (mock data)
+  |> pg([.userId]): `
+    SELECT 
+      1 as id,
+      'Completed project milestone' as activity,
+      '2024-01-20'::date as date
+    UNION
+    SELECT 
+      2 as id,
+      'Code review completed' as activity,
+      '2024-01-21'::date as date
+    UNION
+    SELECT 
+      3 as id,
+      'Meeting attended' as activity,
+      '2024-01-22'::date as date
+  ` @result(activities)
+  
+  |> jq: `{
+      user: {
+        id: .data.user.rows[0].id,
+        name: .data.user.rows[0].name,
+        email: .data.user.rows[0].email,
+        status: .data.user.rows[0].status,
+        memberSince: .data.user.rows[0].created_at
+      },
+      department: {
+        name: .data.department.rows[0].dept_name,
+        division: .data.department.rows[0].division
+      },
+      recentActivity: [.data.activities.rows[] | {
+        activity: .activity,
+        date: .date
+      }],
+      activityCount: .data.activities.rowCount
+    }`
+
+# ------------------------------------------------------------------------------
+# 9. Error Handling - Graceful Degradation
+# ------------------------------------------------------------------------------
+
+GET /resilient/user-data/:userId
+  |> jq: `{ userId: .params.userId }`
+  
+  # Primary data source (will succeed)
+  |> fetch("https://jsonplaceholder.typicode.com/users/" + (.userId | tostring)) @result(primary)
+  
+  # Secondary data source (might fail, but won't break the pipeline)
+  # Note: In real scenarios, you'd handle errors with @guard or error handling middleware
+  |> jq: `. + { fallbackData: "available" }`
+  
+  |> jq: `{
+      hasUserData: (.data.primary.response.name != null),
+      userName: (.data.primary.response.name // "Unknown"),
+      userEmail: (.data.primary.response.email // "N/A"),
+      dataSource: (if .data.primary then "primary" else "fallback" end)
+    }`
+
+# ------------------------------------------------------------------------------
+# 10. Precedence Demonstration - Tag > Variable > Auto-naming
+# ------------------------------------------------------------------------------
+
+# Define a variable for auto-naming
+pg getUserInfo = `SELECT 1 as id, 'Test User' as name`
+
+GET /precedence/test
+  # Test 1: Auto-naming (variable name becomes result key)
+  |> pg: getUserInfo
+  # Result: .data.getUserInfo
+  
+  # Test 2: Explicit resultName overrides auto-naming
+  |> jq: `{ resultName: "explicitName" }`
+  |> pg: getUserInfo
+  # Result: .data.explicitName (not .data.getUserInfo)
+  
+  # Test 3: @result tag overrides everything
+  |> jq: `{ resultName: "thisWillBeIgnored" }`
+  |> pg: getUserInfo @result(tagWins)
+  # Result: .data.tagWins (tag has highest precedence)
+  
+  |> jq: `{
+      hasAutoNamed: (.data.getUserInfo != null),
+      hasExplicit: (.data.explicitName != null),
+      hasTagged: (.data.tagWins != null),
+      message: "Tag precedence: @result > resultName > auto-naming"
+    }`
+
+# ------------------------------------------------------------------------------
+# 11. Real-World Example - E-commerce Order Details
+# ------------------------------------------------------------------------------
+
+GET /orders/:orderId/details
+  |> jq: `{ orderId: (.params.orderId | tonumber) }`
+  
+  # Get order information
+  |> pg([.orderId]): `
+    SELECT 
+      1 as id,
+      'ORD-2024-001' as order_number,
+      'pending' as status,
+      299.99 as total,
+      '2024-01-20'::timestamp as created_at
+  ` @result(order)
+  
+  # Get order items
+  |> pg([.orderId]): `
+    SELECT 
+      1 as id,
+      'Laptop' as product_name,
+      1 as quantity,
+      899.99 as price
+    UNION
+    SELECT 
+      2 as id,
+      'Mouse' as product_name,
+      2 as quantity,
+      29.99 as price
+  ` @result(items)
+  
+  # Get customer info for this order
+  |> pg([.orderId]): `
+    SELECT 
+      42 as customer_id,
+      'Dana Smith' as name,
+      'dana@example.com' as email,
+      '555-0123' as phone
+  ` @result(customer)
+  
+  # Get shipping address
+  |> pg([.orderId]): `
+    SELECT 
+      '123 Main St' as street,
+      'Springfield' as city,
+      'IL' as state,
+      '62701' as zip
+  ` @result(shipping)
+  
+  # Build comprehensive order details
+  |> jq: `{
+      order: {
+        id: .data.order.rows[0].id,
+        orderNumber: .data.order.rows[0].order_number,
+        status: .data.order.rows[0].status,
+        total: .data.order.rows[0].total,
+        createdAt: .data.order.rows[0].created_at
+      },
+      customer: {
+        id: .data.customer.rows[0].customer_id,
+        name: .data.customer.rows[0].name,
+        email: .data.customer.rows[0].email,
+        phone: .data.customer.rows[0].phone
+      },
+      items: [.data.items.rows[] | {
+        product: .product_name,
+        quantity: .quantity,
+        price: .price,
+        subtotal: (.quantity * .price)
+      }],
+      shipping: {
+        address: "\(.data.shipping.rows[0].street), \(.data.shipping.rows[0].city), \(.data.shipping.rows[0].state) \(.data.shipping.rows[0].zip)"
+      },
+      summary: {
+        itemCount: .data.items.rowCount,
+        totalAmount: .data.order.rows[0].total
+      }
+    }`
+
+# ------------------------------------------------------------------------------
+# 12. Advanced - Nested Data Transformation
+# ------------------------------------------------------------------------------
+
+GET /analytics/team-performance
+  # Get teams
+  |> pg: `
+    SELECT 1 as id, 'Alpha Team' as name, 'Engineering' as department
+    UNION SELECT 2 as id, 'Beta Team' as name, 'Product' as department
+  ` @result(teams)
+  
+  # Get team members
+  |> pg: `
+    SELECT 1 as team_id, 'Alice' as member_name, 95 as performance_score
+    UNION SELECT 1 as team_id, 'Bob' as member_name, 88 as performance_score
+    UNION SELECT 2 as team_id, 'Carol' as member_name, 92 as performance_score
+    UNION SELECT 2 as team_id, 'Dave' as member_name, 85 as performance_score
+  ` @result(members)
+  
+  # Get projects
+  |> pg: `
+    SELECT 1 as team_id, 'Project Alpha' as project_name, 'completed' as status
+    UNION SELECT 1 as team_id, 'Project Beta' as project_name, 'in-progress' as status
+    UNION SELECT 2 as team_id, 'Project Gamma' as project_name, 'completed' as status
+  ` @result(projects)
+  
+  # Transform into nested structure with aggregations
+  |> jq: `
+  . as $DATA |
+    {
+      teams: [
+        .data.teams.rows[] | . as $team |
+        {
+          id: .id,
+          name: .name,
+          department: .department,
+          members: [
+            $DATA.members.rows[] | 
+            select(.team_id == $team.id) |
+            { name: .member_name, score: .performance_score }
+          ],
+          projects: [
+            $DATA.projects.rows[] | 
+            select(.team_id == $team.id) |
+            { name: .project_name, status: .status }
+          ],
+          stats: {
+            memberCount: ([($DATA.members.rows[] | select(.team_id == $team.id))] | length),
+            avgScore: ([($DATA.members.rows[] | select(.team_id == $team.id) | .performance_score)] | add / length),
+            completedProjects: ([($DATA.projects.rows[] | select(.team_id == $team.id and .status == "completed"))] | length)
+          }
+        }
+      ],
+      summary: {
+        totalTeams: .data.teams.rowCount,
+        totalMembers: .data.members.rowCount,
+        totalProjects: .data.projects.rowCount
+      }
+    }
+    | {
+      teams: [
+        .teams[] | . + {
+          members: [
+            $DATA.data.members.rows[] | 
+            select(.team_id == .id) |
+            { name: .member_name, score: .performance_score }
+          ]
+        }
+      ]
+    }
+  `
+
