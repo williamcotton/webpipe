@@ -1627,7 +1627,7 @@ graphqlSchema = `
   type Query {
     currentTime: String!
     randomNumber: Int!
-    users: [User!]!
+    users(limit: Int): [User!]!
     user(id: Int!): User
     posts(limit: Int): [Post!]!
     stats: Stats!
@@ -2782,7 +2782,7 @@ GET /test-gql-mock-users
   |> graphql: `query { users(limit: 10) { id name email } }`
 
 GET /test-gql-spy-users
-  |> graphql: `query { users(limit: 10, offset: 0) { id name } }`
+  |> graphql: `query { users(limit: 10) { id name } }`
 
 GET /test-gql-mock-mutation
   |> graphql: `mutation { createUser(name: "Test", email: "test@example.com") { id name } }`
@@ -2794,8 +2794,8 @@ GET /test-gql-multi-query
   |> graphql: `query { users { id name } posts { id title } }`
 
 GET /test-gql-variables
-  |> jq: `.graphqlParams = { userId: "42" }`
-  |> graphql: `query($userId: ID!) { user(id: $userId) { id name } }`
+  |> jq: `.graphqlParams = { id: 42 }`
+  |> graphql: `query($id: ID!) { user(id: $id) { id name } }`
 
 describe "GraphQL Mocking and Spying"
   with mock query users returning `[
@@ -2811,7 +2811,7 @@ describe "GraphQL Mocking and Spying"
   it "verifies GraphQL query arguments (spying)"
     when calling GET /test-gql-spy-users
     then status is 200
-    and call query users with `{ "limit": 10, "offset": 0 }`
+    and call query users with `{ "limit": 10 }`
 
   with mock mutation createUser returning `{
     "id": 99,
@@ -2849,7 +2849,7 @@ describe "GraphQL Variables Testing"
     when calling GET /test-gql-variables
     then status is 200
     and output `.data.user.name` equals `"Variable User"`
-    and call query user with `{ "id": "42" }`
+    and call query user with `{ "id": 42 }`
 
 ## Step-Level Guards Demo (@guard tag)
 # Guards allow conditional step execution using JQ expressions
