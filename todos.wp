@@ -235,20 +235,6 @@ POST /todos
       }
     }
   `
-  # Re-fetch todos and render the full page again
-  |> jq: `.graphqlParams = { userId: .graphqlParams.userId }`
-  |> graphql: `
-    query($userId: Int!) {
-      todos(userId: $userId) {
-        id
-        title
-        completed
-        userId
-        createdAt
-        updatedAt
-      }
-    }
-  `
   |> result
     ok(303):
       |> jq: `{ setHeaders: { "Location": "/todos" } }`
