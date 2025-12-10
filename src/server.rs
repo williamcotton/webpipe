@@ -133,6 +133,7 @@ pub struct WebPipeServer {
     program: Program,
     middleware_registry: Arc<MiddlewareRegistry>,
     ctx: Arc<Context>,
+    trace_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -149,6 +150,7 @@ pub struct ServerState {
     delete_router: Arc<matchit::Router<RoutePayload>>,
     env: Arc<ExecutionEnv>,
     feature_flags: Option<Arc<Pipeline>>,
+    trace_enabled: bool,
 }
 
 impl ServerState {
@@ -174,6 +176,7 @@ impl ServerState {
             deferred: Vec::new(),
             metadata: crate::executor::RequestMetadata::default(),
             call_log: HashMap::new(),
+            profiler: crate::executor::Profiler::default(),
         }
     }
 
@@ -192,7 +195,7 @@ pub struct WebPipeRequest {
 }
 
 impl WebPipeServer {
-    pub async fn from_program(program: Program) -> Result<Self, WebPipeError> {
+    pub async fn from_program(program: Program, trace_enabled: bool) -> Result<Self, WebPipeError> {
         // 1. Build GraphQL runtime first (if schema exists)
         let graphql_runtime = if program.graphql_schema.is_some() {
             Some(Arc::new(
@@ -217,6 +220,7 @@ impl WebPipeServer {
             program,
             middleware_registry,
             ctx: ctx_arc,
+            trace_enabled,
         })
     }
 
@@ -316,6 +320,7 @@ impl WebPipeServer {
             delete_router: Arc::new(delete_router),
             env: env.clone(),
             feature_flags: self.program.feature_flags.as_ref().map(|p| Arc::new(p.clone())),
+            trace_enabled: self.trace_enabled,
         };
 
         // Single catch-all per method
@@ -465,11 +470,31 @@ async fn respond_with_pipeline(
     }
 
     // Create RequestContext with feature flags
-    let ctx = state.create_request_context(flags);
+    let mut ctx = state.create_request_context(flags);
+
+    // Push the route as the root of the profiler stack
+    let route_label = format!("{} {}", method, path);
+    ctx.profiler.push(&route_label);
+    let route_start = std::time::Instant::now();
 
     // Execute the pipeline with the RequestContext
     match crate::executor::execute_pipeline(&state.env, &payload.pipeline, request_json.clone(), ctx).await {
-        Ok((result, content_type, status_code, ctx)) => {
+        Ok((result, content_type, status_code, mut ctx)) => {
+            // Record route timing and pop from stack
+            let route_elapsed = route_start.elapsed().as_micros();
+            ctx.profiler.record_sample(route_elapsed);
+            ctx.profiler.pop();
+
+            // --- OUTPUT TRACE DATA ---
+            if state.trace_enabled && !ctx.profiler.samples.is_empty() {
+                println!("\n# speedscope trace start");
+                for (stack, micros) in &ctx.profiler.samples {
+                    println!("{} {}", stack, micros);
+                }
+                println!("# speedscope trace end\n");
+            }
+            // -------------------------
+
             // Run all deferred actions (e.g. caching, logging) with the clean result
             ctx.run_deferred(&result, &content_type, &state.env);
 
@@ -820,6 +845,7 @@ mod tests {
             delete_router: Arc::new(matchit::Router::new()),
             env: Arc::new(env),
             feature_flags: None,
+            trace_enabled: false,
         };
         // Craft a tiny pipeline that sets cookies via jq
         let p_set_cookie = Arc::new(Pipeline { steps: vec![

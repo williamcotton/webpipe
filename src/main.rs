@@ -42,9 +42,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let file_path = &args[1];
-    // Determine if test mode and verbose mode
+    // Determine if test mode, verbose mode, and trace mode
     let test_mode = args.iter().any(|a| a == "--test");
     let verbose_mode = args.iter().any(|a| a == "--verbose");
+    let trace_mode = args.iter().any(|a| a == "--trace");
     // Determine the directory for .env files (same directory as the WebPipe file)
     let env_dir = Path::new(file_path).parent().unwrap_or(Path::new("."));
 
@@ -60,8 +61,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let default_addr = "127.0.0.1:8090".to_string();
-    // If explicit CLI addr is provided (and not --test), use it. Otherwise, if PORT env is set (Heroku), bind 0.0.0.0:PORT.
-    let explicit_cli_addr = args.get(2).filter(|v| v.as_str() != "--test").cloned();
+    // If explicit CLI addr is provided (and not a flag), use it. Otherwise, if PORT env is set (Heroku), bind 0.0.0.0:PORT.
+    let explicit_cli_addr = args.get(2).filter(|v| {
+        let s = v.as_str();
+        s != "--test" && s != "--trace" && s != "--verbose"
+    }).cloned();
     let addr_str = if let Some(a) = explicit_cli_addr {
         a
     } else if let Ok(port) = std::env::var("PORT") {
@@ -126,7 +130,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         } else {
             // Create and start the server with a shutdown signal
-            let server = match WebPipeServer::from_program(program).await {
+            let server = match WebPipeServer::from_program(program, trace_mode).await {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("Failed to build server: {}", e);

@@ -90,12 +90,17 @@ impl GraphQLRuntime {
 
                                     let result_json = {
                                         let mut req_ctx = req_ctx_mutex.lock().await;
-                                        
+
                                         req_ctx.call_log.entry(key.clone())
                                             .or_default()
                                             .push(Value::Object(input.clone()));
 
-                                        if let Some(mock_val) = env.invoker.get_mock(&key) {
+                                        // --- START PROFILING ---
+                                        req_ctx.profiler.push(&key);
+                                        let start = std::time::Instant::now();
+
+                                        // Execute Pipeline (Mock or Real)
+                                        let execution_result = if let Some(mock_val) = env.invoker.get_mock(&key) {
                                             mock_val
                                         } else {
                                             let (result, _, _) = crate::executor::execute_pipeline_internal(
@@ -105,7 +110,14 @@ impl GraphQLRuntime {
                                                 &mut *req_ctx
                                             ).await.map_err(|e| e.to_string())?;
                                             result
-                                        }
+                                        };
+
+                                        let elapsed = start.elapsed().as_micros();
+                                        req_ctx.profiler.record_sample(elapsed);
+                                        req_ctx.profiler.pop();
+                                        // --- END PROFILING ---
+
+                                        execution_result
                                     };
 
                                     // Propagate errors from pipeline

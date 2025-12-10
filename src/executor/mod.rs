@@ -93,7 +93,7 @@ pub trait MiddlewareInvoker: Send + Sync {
 /// Registry for async tasks spawned with @async tag
 #[derive(Clone)]
 pub struct AsyncTaskRegistry {
-    tasks: Arc<Mutex<HashMap<String, JoinHandle<Result<Value, WebPipeError>>>>>,
+    tasks: Arc<Mutex<HashMap<String, JoinHandle<Result<(Value, Profiler), WebPipeError>>>>>,
 }
 
 impl AsyncTaskRegistry {
@@ -103,11 +103,11 @@ impl AsyncTaskRegistry {
         }
     }
 
-    pub fn register(&self, name: String, handle: JoinHandle<Result<Value, WebPipeError>>) {
+    pub fn register(&self, name: String, handle: JoinHandle<Result<(Value, Profiler), WebPipeError>>) {
         self.tasks.lock().insert(name, handle);
     }
 
-    pub fn take(&self, name: &str) -> Option<JoinHandle<Result<Value, WebPipeError>>> {
+    pub fn take(&self, name: &str) -> Option<JoinHandle<Result<(Value, Profiler), WebPipeError>>> {
         self.tasks.lock().remove(name)
     }
 }
@@ -197,6 +197,9 @@ pub struct RequestContext {
     /// Log of calls to resolvers/middleware for assertion (spying)
     /// Key: "query.users", Value: List of argument objects passed to that resolver
     pub call_log: HashMap<String, Vec<Value>>,
+
+    /// Profiler for tracking execution timing
+    pub profiler: Profiler,
 }
 
 impl RequestContext {
@@ -208,6 +211,7 @@ impl RequestContext {
             deferred: Vec::new(),
             metadata: RequestMetadata::default(),
             call_log: HashMap::new(),
+            profiler: Profiler::default(),
         }
     }
 
@@ -275,6 +279,31 @@ impl RequestContext {
 impl Default for RequestContext {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Profiler for tracking execution timing and generating folded stack traces
+#[derive(Clone, Debug, Default)]
+pub struct Profiler {
+    /// Current call stack (e.g., ["GET /api", "pipeline:auth", "pg"])
+    pub stack: Vec<String>,
+    /// Recorded samples: (folded_stack_string, duration_micros)
+    pub samples: Vec<(String, u128)>,
+}
+
+impl Profiler {
+    pub fn push(&mut self, name: &str) {
+        self.stack.push(name.to_string());
+    }
+
+    pub fn pop(&mut self) {
+        self.stack.pop();
+    }
+
+    pub fn record_sample(&mut self, duration_micros: u128) {
+        if self.stack.is_empty() { return; }
+        let stack_str = self.stack.join(";");
+        self.samples.push((stack_str, duration_micros));
     }
 }
 
@@ -746,13 +775,24 @@ async fn handle_join(
         None => parse_join_task_names(config)?,
     };
 
-    // Wait for all async tasks
+    // Wait for all async tasks and merge their profiler data
     let mut async_results = serde_json::Map::new();
     for task_name in task_names {
         if let Some(handle) = ctx.async_registry.take(&task_name) {
             match handle.await {
-                Ok(Ok(result)) => {
-                    async_results.insert(task_name, result);
+                Ok(Ok((result, async_profiler))) => {
+                    async_results.insert(task_name.clone(), result);
+
+                    // Merge async task's profiler samples into main profiler with task name prefix
+                    for (async_stack, duration) in async_profiler.samples {
+                        // Build the full stack: current_main_stack;async:task_name;async_task_stack
+                        let prefixed_stack = if ctx.profiler.stack.is_empty() {
+                            format!("async:{};{}", task_name, async_stack)
+                        } else {
+                            format!("{};async:{};{}", ctx.profiler.stack.join(";"), task_name, async_stack)
+                        };
+                        ctx.profiler.samples.push((prefixed_stack, duration));
+                    }
                 }
                 Ok(Err(e)) => {
                     // Task failed - store error representation
@@ -809,8 +849,8 @@ fn spawn_async_step(
         if name_clone == "pipeline" {
             let pipeline_name = effective_config.trim();
             if let Some(p) = env_clone.named_pipelines.get(pipeline_name) {
-                let (val, _ct, _st, _) = execute_pipeline(&env_clone, p, effective_input.clone(), async_ctx).await?;
-                Ok(val)
+                let (val, _ct, _st, ctx) = execute_pipeline(&env_clone, p, effective_input.clone(), async_ctx).await?;
+                Ok((val, ctx.profiler))
             } else {
                 Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
             }
@@ -818,7 +858,7 @@ fn spawn_async_step(
             // Create a PipelineContext for the async task
             let mut pipeline_ctx = crate::runtime::PipelineContext::new(effective_input);
             env_clone.invoker.call(&name_clone, &args_clone, &effective_config, &mut pipeline_ctx, &env_clone, &mut async_ctx, None).await?;
-            Ok(pipeline_ctx.state)
+            Ok((pipeline_ctx.state, async_ctx.profiler))
         }
     });
 
@@ -884,7 +924,28 @@ async fn execute_step<'a>(
     pipeline_ctx: &mut crate::runtime::PipelineContext,
     current_output: &mut PipelineOutput,
 ) -> Result<StepOutcome, WebPipeError> {
-    match step {
+    // 1. Determine stack frame label
+    let step_name = match step {
+        PipelineStep::Regular { name, config, .. } => {
+            if name == "pipeline" {
+                // Format: "pipeline:myPipelineName"
+                format!("pipeline:{}", config.trim())
+            } else {
+                name.clone()
+            }
+        },
+        PipelineStep::If { .. } => "if".to_string(),
+        PipelineStep::Result { .. } => "result".to_string(),
+        PipelineStep::Dispatch { .. } => "dispatch".to_string(),
+        PipelineStep::Foreach { .. } => "foreach".to_string(),
+    };
+
+    // 2. Start Profiling
+    ctx.profiler.push(&step_name);
+    let start_time = std::time::Instant::now();
+
+    // 3. Execute (Existing Logic)
+    let result = match step {
         PipelineStep::Regular { name, args, config, condition, parsed_join_targets, .. } => {
             execute_regular_step(
                 name,
@@ -1075,7 +1136,14 @@ async fn execute_step<'a>(
 
             Ok(StepOutcome::Continue)
         }
-    }
+    };
+
+    // 4. End Profiling
+    let elapsed = start_time.elapsed().as_micros();
+    ctx.profiler.record_sample(elapsed);
+    ctx.profiler.pop();
+
+    result
 }
 
 /// Execute a regular pipeline step
