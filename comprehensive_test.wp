@@ -1624,6 +1624,19 @@ graphqlSchema = `
     activeUsers: Int!
   }
 
+  type Employee {
+    id: ID!
+    teamId: ID!
+    name: String!
+    email: String!
+  }
+
+  type Team {
+    id: ID!
+    name: String!
+    employees: [Employee!]!
+  }
+
   type SlowQuery {
     result: String!
     completedAt: String!
@@ -1639,6 +1652,10 @@ graphqlSchema = `
     slowQuery1: SlowQuery!
     slowQuery2: SlowQuery!
     slowQuery3: SlowQuery!
+    teams: [Team!]!
+    team(id: ID!): Team!
+    employees(teamId: ID!): [Employee!]!
+    employee(id: ID!): Employee!
   }
 
   type Mutation {
@@ -4039,3 +4056,96 @@ GET /orders/:orderId/details
         totalAmount: .data.order.rows[0].total
       }
     }`
+
+# ============================================================================
+# DataLoader Example: Efficiently fetch employees for teams (N+1 Prevention)
+# ============================================================================
+
+# ============================================================================
+# Test route: DataLoader N+1 Prevention Demo
+# This route fetches all teams with their employees in a single batched query
+# Without DataLoader, this would cause N+1 queries (1 for teams, N for employees)
+# With DataLoader, it's only 2 queries total (1 for teams, 1 batched for all employees)
+# ============================================================================
+GET /test-teams-with-employees
+  |> graphql: `
+    query {
+      teams {
+        id
+        name
+        employees {
+          id
+          name
+          email
+        }
+      }
+    }
+  `
+
+describe "DataLoader N+1 Prevention with Database"
+  it "fetches teams with employees using DataLoader batching"
+    when calling GET /test-teams-with-employees
+    then status is 200
+    and output `.data.teams` is array
+    and output `.data.teams[0].name` is string
+    and output `.data.teams[0].employees` is array
+
+# Loader pipeline: Batch fetch employees by team IDs
+# Input: { "keys": [1, 2, 3] } (team IDs)
+# Output: { "1": [{employee}], "2": [{employee}], "3": [{employee}] }
+
+query teams =
+  |> pg: `
+    SELECT id, name FROM teams
+  `
+  |> jq: `.data.rows`
+
+query team =
+  |> pg([.id]): `
+    SELECT id, name FROM teams WHERE id = $1
+  `
+  |> jq: `.data.rows[0]`
+
+query employees =
+  |> pg([.teamId]): `
+    SELECT id, name, email FROM employees WHERE team_id = $1
+  `
+  |> jq: `.data.rows`
+
+query employee =
+  |> pg([.id]): `
+    SELECT id, name, email FROM employees WHERE id = $1
+  `
+  |> jq: `.data.rows[0]`
+
+
+pipeline EmployeesByTeamLoader =
+  |> jq: `
+    # Build IN clause from keys array
+    .keys | map(tostring) | join(",") as $teamIds |
+    # Store for use in SQL
+    { teamIdsStr: $teamIds }
+  `
+  |> pg([.teamIdsStr]): `
+    SELECT
+      id::text as id,
+      team_id::text as "teamId",
+      name,
+      email
+    FROM employees
+    WHERE team_id::text = ANY(string_to_array($1, ','))
+  `
+  |> jq: `
+    # pg middleware returns { "data": { "rows": [...] } }
+    # Group employees by teamId
+    .data.rows | group_by(.teamId) | reduce .[] as $group (
+      {};
+      . + { ($group[0].teamId): $group }
+    )
+  `
+
+# Nested resolver: Use DataLoader to fetch employees for a team
+# This resolver is called for each Team.employees field
+# The DataLoader will batch all team_id requests and call EmployeesByTeamLoader once
+resolver Team.employees =
+  |> loader(.parent.id): EmployeesByTeamLoader

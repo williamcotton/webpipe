@@ -16,7 +16,7 @@ GET /api
   |> pipeline: html
 "#;
     let (_rest, program) = parse_program(src).unwrap();
-    let server = WebPipeServer::from_program(program).await.unwrap();
+    let server = WebPipeServer::from_program(program, false).await.unwrap();
     let app = server.router();
 
     // GET /api -> 200

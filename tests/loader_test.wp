@@ -1,0 +1,85 @@
+# Comprehensive DataLoader Test
+# This test verifies that the DataLoader pattern works correctly with nested resolvers
+
+# 1. The GraphQL Schema
+graphqlSchema = `
+  type Post {
+    id: ID!
+    uid: Int!
+    author: User
+  }
+
+  type User {
+    id: ID!
+    name: String!
+  }
+
+  type Query {
+    posts: [Post]
+  }
+
+  type Mutation {
+    _empty: String
+  }
+`
+
+# 2. The Mock Data - returns 3 posts, 2 referencing user 101, 1 referencing user 102
+pipeline getPosts =
+  |> jq: `[
+    {id: "1", uid: 101},
+    {id: "2", uid: 102},
+    {id: "3", uid: 101}
+  ]`
+
+# 3. The Loader Pipeline
+# This pipeline must accept { "keys": [...] } and return a map keyed by ID
+# For testing, we mock a batch user lookup that returns user data by ID
+pipeline UserLoader =
+  |> jq: `
+    # Extract unique user IDs from the keys array
+    (.keys | unique) as $unique_keys |
+    # Create a map of users
+    {
+      "101": {id: "101", name: "Alice"},
+      "102": {id: "102", name: "Bob"}
+    } as $users |
+    # Return only the users that were requested
+    $unique_keys | map(tostring) | reduce .[] as $key (
+      {};
+      . + {($key): $users[$key]}
+    )
+  `
+
+# 4. Root Query Resolver
+query posts =
+  |> pipeline: getPosts
+
+# 5. Nested Resolver - This should use the DataLoader pattern
+# When GraphQL resolves Post.author, this resolver will be called
+# The DataLoader will batch multiple calls and execute UserLoader once
+resolver Post.author =
+  |> loader(.parent.uid): UserLoader
+
+# Test pipeline that executes the GraphQL query
+pipeline testPostsWithAuthors =
+  |> graphql: `
+    query {
+      posts {
+        id
+        uid
+        author {
+          id
+          name
+        }
+      }
+    }
+  `
+
+# Test Case
+describe "DataLoader N+1 Prevention"
+  it "batches user lookups when resolving posts"
+    when executing pipeline testPostsWithAuthors
+    with input `{}`
+    then output `.data.posts[0].author.name` equals "Alice"
+    and output `.data.posts[1].author.name` equals "Bob"
+    and output `.data.posts[2].author.name` equals "Alice"

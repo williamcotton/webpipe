@@ -20,6 +20,7 @@ pub struct Program {
     pub graphql_schema: Option<GraphQLSchema>,
     pub queries: Vec<QueryResolver>,
     pub mutations: Vec<MutationResolver>,
+    pub resolvers: Vec<TypeResolver>,
     pub feature_flags: Option<Pipeline>,
 }
 
@@ -37,6 +38,13 @@ pub struct QueryResolver {
 #[derive(Debug, Clone)]
 pub struct MutationResolver {
     pub name: String,
+    pub pipeline: Pipeline,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeResolver {
+    pub type_name: String,
+    pub field_name: String,
     pub pipeline: Pipeline,
 }
 
@@ -283,6 +291,10 @@ impl Display for Program {
         }
         for mutation in &self.mutations {
             writeln!(f, "{}", mutation)?;
+            writeln!(f)?;
+        }
+        for resolver in &self.resolvers {
+            writeln!(f, "{}", resolver)?;
             writeln!(f)?;
         }
         for route in &self.routes {
@@ -653,6 +665,13 @@ impl Display for QueryResolver {
 impl Display for MutationResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "mutation {} =", self.name)?;
+        write!(f, "{}", self.pipeline)
+    }
+}
+
+impl Display for TypeResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "resolver {}.{} =", self.type_name, self.field_name)?;
         write!(f, "{}", self.pipeline)
     }
 }
@@ -1362,6 +1381,20 @@ fn parse_mutation_resolver(input: &str) -> IResult<&str, MutationResolver> {
     Ok((input, MutationResolver { name, pipeline }))
 }
 
+fn parse_type_resolver(input: &str) -> IResult<&str, TypeResolver> {
+    let (input, _) = tag("resolver")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, type_name) = parse_identifier(input)?;
+    let (input, _) = char('.')(input)?;
+    let (input, field_name) = parse_identifier(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = char('=')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, pipeline) = parse_pipeline(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, TypeResolver { type_name, field_name, pipeline }))
+}
+
 // Test parsing
 fn parse_when(input: &str) -> IResult<&str, When> {
     alt((
@@ -1933,6 +1966,7 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
     let mut graphql_schema = None;
     let mut queries = Vec::new();
     let mut mutations = Vec::new();
+    let mut resolvers = Vec::new();
     let mut feature_flags = None;
 
     let mut remaining = input;
@@ -1959,6 +1993,9 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
         } else if let Ok((new_input, mutation)) = parse_mutation_resolver(new_remaining) {
             mutations.push(mutation);
             remaining = new_input;
+        } else if let Ok((new_input, resolver)) = parse_type_resolver(new_remaining) {
+            resolvers.push(resolver);
+            remaining = new_input;
         } else if let Ok((new_input, pipeline)) = parse_named_pipeline(new_remaining) {
             pipelines.push(pipeline);
             remaining = new_input;
@@ -1981,7 +2018,7 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
         }
     }
 
-    Ok((remaining, Program { configs, pipelines, variables, routes, describes, graphql_schema, queries, mutations, feature_flags }))
+    Ok((remaining, Program { configs, pipelines, variables, routes, describes, graphql_schema, queries, mutations, resolvers, feature_flags }))
 }
 
 #[cfg(test)]
