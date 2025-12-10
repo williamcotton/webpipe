@@ -1885,20 +1885,20 @@ GET /ok
 
 # Query resolvers that each sleep for 2 seconds
 query slowQuery1 =
-  |> pg: `SELECT pg_sleep(2), 'Query 1 complete' as result, NOW()::text as completedAt`
+  |> pg: `SELECT pg_sleep(2), 'Query 1 complete' as result, NOW()::text as "completedAt"`
   |> jq: `.data.rows[0]`
 
 query slowQuery2 =
-  |> pg: `SELECT pg_sleep(2), 'Query 2 complete' as result, NOW()::text as completedAt`
+  |> pg: `SELECT pg_sleep(2), 'Query 2 complete' as result, NOW()::text as "completedAt"`
   |> jq: `.data.rows[0]`
 
 query slowQuery3 =
-  |> pg: `SELECT pg_sleep(2), 'Query 3 complete' as result, NOW()::text as completedAt`
+  |> pg: `SELECT pg_sleep(2), 'Query 3 complete' as result, NOW()::text as "completedAt"`
   |> jq: `.data.rows[0]`
 
-graphql slowQuery1 = `query { slowQuery1 { completedAt } }`
-graphql slowQuery2 = `query { slowQuery2 { completedAt } }`
-graphql slowQuery3 = `query { slowQuery3 { completedAt } }`
+graphql slowQuery1 = `query { slowQuery1 { result completedAt } }`
+graphql slowQuery2 = `query { slowQuery2 { result completedAt } }`
+graphql slowQuery3 = `query { slowQuery3 { result completedAt } }`
 
 # Parallel execution route - should complete in ~2 seconds
 GET /test-parallel-sleep
@@ -1916,7 +1916,6 @@ GET /test-parallel-sleep
       query2: .async.q2.data.slowQuery2,
       query3: .async.q3.data.slowQuery3
     },
-    raw: .
   }`
 
 # Sequential execution route for comparison - should take ~6 seconds
