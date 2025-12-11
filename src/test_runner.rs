@@ -227,8 +227,6 @@ fn evaluate_jq_input(expr: &str, variables_ctx: &serde_json::Map<String, Value>)
 
     // Create input JSON from variables context
     let input = Value::Object(variables_ctx.clone());
-    let input_json = serde_json::to_string(&input)
-        .map_err(|e| WebPipeError::BadRequest(format!("Variable context serialization error: {}", e)))?;
 
     // Build JQ program that binds each variable as a JQ variable ($varname)
     // Example: .name as $name | .count as $count | <user_expression>
@@ -238,16 +236,9 @@ fn evaluate_jq_input(expr: &str, variables_ctx: &serde_json::Map<String, Value>)
     }
     jq_program.push_str(content);
 
-    // Compile and run JQ expression
-    let mut program = jq_rs::compile(&jq_program)
-        .map_err(|e| WebPipeError::BadRequest(format!("JQ compilation error in test input: {}", e)))?;
-    let result_json = program
-        .run(&input_json)
-        .map_err(|e| WebPipeError::BadRequest(format!("JQ execution error in test input: {}", e)))?;
-
-    // Parse result
-    serde_json::from_str(&result_json)
-        .map_err(|e| WebPipeError::BadRequest(format!("JQ result parse error: {}", e)))
+    // Use the shared runtime instead of direct jq_rs
+    crate::runtime::jq::evaluate(&jq_program, &input)
+        .map_err(|e| WebPipeError::BadRequest(format!("JQ error in test input: {}", e)))
 }
 
 
@@ -602,15 +593,8 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                     }
                 }
                 fn eval_jq_filter(input: &Value, filter: &str) -> Result<Value, WebPipeError> {
-                    let input_json = serde_json::to_string(input)
-                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Input serialization error: {}", e)))?;
-                    let mut program = jq_rs::compile(filter)
-                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ compilation error: {}", e)))?;
-                    let result_json = program
-                        .run(&input_json)
-                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {}", e)))?;
-                    serde_json::from_str(&result_json)
-                        .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("JQ result parse error: {}", e)))
+                    // Use the shared runtime instead of direct jq_rs
+                    crate::runtime::jq::evaluate(filter, input)
                 }
 
                 // Handle comparisons

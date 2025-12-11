@@ -18,7 +18,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4"] }
 async-trait = "0.1"
 async-recursion = "1.1"
-jq-rs = { git = "https://github.com/williamcotton/jq-rs.git", branch = "main" }
+jaq-core = "2.2"
+jaq-std = "2.1"
+jaq-json = { version = "1.1", features = ["serde_json"] }
 lru = "0.12"
 once_cell = "1.19"
 handlebars = "6.2"

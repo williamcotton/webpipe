@@ -1945,13 +1945,14 @@ GET /test-sequential-sleep
   |> jq: `.resultName = "q3"`
   |> graphql: slowQuery3
   |> jq: `{ totalTime: (now - .startedAt) }`
+  |> debug: `test-sequential-sleep`
   |> jq: `{
     totalTime: .totalTime,
     message: "All 3 queries completed sequentially",
     results: {
-      query1: .data.q1.slowQuery1,
-      query2: .data.q2.slowQuery2,
-      query3: .data.q3.slowQuery3
+      query1: .data.q1.data.slowQuery1,
+      query2: .data.q2.data.slowQuery2,
+      query3: .data.q3.data.slowQuery3
     }
   }`
 

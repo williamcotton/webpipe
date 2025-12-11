@@ -3,14 +3,9 @@
 # ---------- Builder ----------
 FROM rust:1-bookworm AS builder
 
-# System deps for building jq-rs and TLS
+# System deps for building TLS
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
-    clang \
-    make \
-    jq \
-    libjq-dev \
-    libonig-dev \
     libssl-dev \
   && rm -rf /var/lib/apt/lists/*
 
@@ -20,19 +15,15 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# Build release binary (ensure jq-sys finds libjq via multiarch path)
-RUN JQ_LIB_DIR=/usr/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
-    JQ_INCLUDE_DIR=/usr/include \
-    cargo build --release && \
+# Build release binary
+RUN cargo build --release && \
     strip target/release/webpipe
 
 # ---------- Runtime ----------
 FROM ubuntu:22.04
 
-# Runtime libs: libjq + oniguruma for jq-rs, OpenSSL for reqwest TLS, and certs
+# Runtime libs: OpenSSL for reqwest TLS and certs
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libjq1 \
-    libonig5 \
     libssl3 \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
