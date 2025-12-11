@@ -48,46 +48,6 @@ During development the server watches your `.wp` file and restarts on changes. I
 
 For a tutorial example and more middleware like `pg`, `fetch`, `lua`, `cache`, `auth`, `log`, and `debug`, see `example.wp`. Build with `cargo build --release` to produce an optimized binary at `target/release/webpipe`.
 
-### Security Considerations
-
-**Production Deployments:**
-
-Web Pipe enforces secure defaults in production builds (`cargo build --release`):
-
-1. **HTTPS Required**: Always use HTTPS in production
-2. **Secure Cookies**: Set `cookieSecure: true` in your auth config (enforced in production)
-3. **CSRF Protection**: Consider `cookieSameSite: "Strict"` to prevent CSRF attacks
-4. **Parameterized Queries**: Always use parameterized queries in SQL and Lua:
-
-```wp
-# Secure (parameterized)
-|> lua: `
-  local id = request.params.id
-  local result, err = executeSql("SELECT * FROM users WHERE id = $1", {id})
-`
-
-# Insecure (string concatenation - DO NOT USE)
-|> lua: `
-  local id = request.params.id
-  local result, err = executeSql("SELECT * FROM users WHERE id = " .. id)
-`
-```
-
-**Example Secure Configuration:**
-
-```wp
-config auth {
-  sessionTtl: 604800
-  cookieName: "wp_session"
-  cookieSecure: true        # Required in production
-  cookieHttpOnly: true      # Prevents XSS attacks
-  cookieSameSite: "Strict"  # Prevents CSRF attacks
-  cookiePath: "/"
-}
-```
-
-In development (debug builds), insecure settings will trigger warnings but are allowed for local testing over HTTP.
-
 ### Documentation
 
 See the full documentation index at [docs/README.md](docs/README.md).
