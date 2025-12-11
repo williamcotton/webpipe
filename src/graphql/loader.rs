@@ -51,12 +51,22 @@ impl Loader<LoaderKey> for PipelineLoader {
             // Execute the pipeline using the shared request context for profiling
             let mut req_ctx = self.req_ctx.lock().await;
 
-            match crate::executor::execute_pipeline_internal(
+            // Track loader pipeline execution in profiler
+            req_ctx.profiler.push(&pipeline_name);
+            let start = std::time::Instant::now();
+
+            let result = crate::executor::execute_pipeline_internal(
                 &self.env,
                 pipeline,
                 input,
                 &mut *req_ctx,
-            ).await {
+            ).await;
+
+            let elapsed = start.elapsed().as_micros();
+            req_ctx.profiler.record_sample(elapsed);
+            req_ctx.profiler.pop();
+
+            match result {
                 Ok((result_value, _, _)) => {
                     // Expect the result to be a Map/Object: {"key1": result1, "key2": result2}
                     if let Value::Object(result_map) = result_value {
