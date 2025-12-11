@@ -82,67 +82,113 @@ impl GraphQLRuntime {
 
                                 if let Some(pipeline) = p_reg.get(&key) {
                                     // Check if this is a TypeResolver using DataLoader
-                                    // Pattern: resolver Type.field = |> loader(keyExpr): PipelineName
-                                    let is_dataloader = if pipeline.steps.len() == 1 {
-                                        if let crate::ast::PipelineStep::Regular { name, .. } = &pipeline.steps[0] {
+                                    // Pattern: resolver Type.field = |> debug |> loader(keyExpr): PipelineName
+                                    // Find the loader step anywhere in the pipeline
+                                    let loader_step = pipeline.steps.iter().find(|step| {
+                                        if let crate::ast::PipelineStep::Regular { name, .. } = step {
                                             name == "loader"
                                         } else {
                                             false
                                         }
-                                    } else {
-                                        false
-                                    };
+                                    });
 
-                                    if is_dataloader && type_name != "Query" && type_name != "Mutation" {
-                                        // === DATALOADER RESOLVER (Batched) ===
-                                        use async_graphql::dataloader::DataLoader;
+                                    if let Some(loader_step) = loader_step {
+                                        if type_name != "Query" && type_name != "Mutation" {
+                                            // === DATALOADER RESOLVER (Batched with Pipeline Composition) ===
+                                            use async_graphql::dataloader::DataLoader;
 
-                                        let loader = ctx.data::<DataLoader<PipelineLoader>>()
-                                            .map_err(|_| async_graphql::Error::new("DataLoader not registered"))?;
+                                            let env = ctx.data::<ExecutionEnv>().unwrap();
+                                            let req_ctx_mutex = ctx.data::<Arc<Mutex<crate::executor::RequestContext>>>().unwrap();
 
-                                        // Extract loader config
-                                        let (loader_pipeline_name, key_expr) = if let crate::ast::PipelineStep::Regular { config, args, .. } = &pipeline.steps[0] {
-                                            let key_expr = args.get(0)
-                                                .ok_or_else(|| async_graphql::Error::new("loader requires a key expression"))?
-                                                .clone();
-                                            (config.clone(), key_expr)
-                                        } else {
-                                            return Err(async_graphql::Error::new("Invalid loader configuration"));
-                                        };
+                                            let loader = ctx.data::<DataLoader<PipelineLoader>>()
+                                                .map_err(|_| async_graphql::Error::new("DataLoader not registered"))?;
 
-                                        // Get parent context
-                                        let parent_json = ctx.parent_value.as_value()
-                                            .map(async_graphql_value_to_json)
-                                            .ok_or_else(|| async_graphql::Error::new("loader requires parent context"))?;
+                                            // Find the loader step index
+                                            let loader_index = pipeline.steps.iter().position(|step| {
+                                                if let crate::ast::PipelineStep::Regular { name, .. } = step {
+                                                    name == "loader"
+                                                } else {
+                                                    false
+                                                }
+                                            }).unwrap();
 
-                                        // Evaluate key expression using jq
-                                        let key_value = {
-                                            let input_obj = serde_json::json!({ "parent": parent_json });
-                                            crate::runtime::jq::evaluate(&key_expr, &input_obj)
-                                                .map_err(|e| async_graphql::Error::new(format!("Failed to evaluate key expression: {}", e)))?
-                                        };
+                                            // Extract loader config
+                                            let (loader_pipeline_name, key_expr) = if let crate::ast::PipelineStep::Regular { config, args, .. } = loader_step {
+                                                let key_expr = args.first()
+                                                    .ok_or_else(|| async_graphql::Error::new("loader requires a key expression"))?
+                                                    .clone();
+                                                (config.clone(), key_expr)
+                                            } else {
+                                                return Err(async_graphql::Error::new("Invalid loader configuration"));
+                                            };
 
-                                        // Load using DataLoader (this batches automatically!)
-                                        let loader_key = LoaderKey(loader_pipeline_name, key_value);
-                                        let result_value = loader.load_one(loader_key).await
-                                            .map_err(|e| async_graphql::Error::new(format!("DataLoader error: {}", e)))?
-                                            .unwrap_or(Value::Null);
+                                            // Get parent context
+                                            let parent_json = ctx.parent_value.as_value()
+                                                .map(async_graphql_value_to_json)
+                                                .ok_or_else(|| async_graphql::Error::new("loader requires parent context"))?;
 
-                                        // Convert to async_graphql::Value
-                                        let result_val = json_to_async_graphql_value(result_value);
+                                            // Build initial input with parent context
+                                            let mut current_value = serde_json::json!({ "parent": parent_json });
 
-                                        // Wrap correctly based on type
-                                        match result_val {
-                                            async_graphql::Value::List(items) => {
-                                                let iter = items.into_iter().map(|item| {
-                                                    FieldValue::value(item)
-                                                });
-                                                Ok(Some(FieldValue::list(iter)))
+                                            // Execute steps BEFORE the loader
+                                            if loader_index > 0 {
+                                                let before_pipeline = crate::ast::Pipeline {
+                                                    steps: pipeline.steps[..loader_index].to_vec(),
+                                                };
+
+                                                let mut req_ctx = req_ctx_mutex.lock().await;
+                                                let (result, _, _) = crate::executor::execute_pipeline_internal(
+                                                    env,
+                                                    &before_pipeline,
+                                                    current_value,
+                                                    &mut req_ctx
+                                                ).await.map_err(|e| async_graphql::Error::new(e.to_string()))?;
+                                                current_value = result;
                                             }
-                                            async_graphql::Value::Null => Ok(None),
-                                            other => Ok(Some(FieldValue::value(other)))
-                                        }
 
+                                            // Evaluate key expression using jq from current pipeline state
+                                            let key_value = crate::runtime::jq::evaluate(&key_expr, &current_value)
+                                                .map_err(|e| async_graphql::Error::new(format!("Failed to evaluate key expression: {}", e)))?;
+
+                                            // Load using DataLoader (this batches automatically!)
+                                            let loader_key = LoaderKey(loader_pipeline_name, key_value);
+                                            let mut result_value = loader.load_one(loader_key).await
+                                                .map_err(|e| async_graphql::Error::new(format!("DataLoader error: {}", e)))?
+                                                .unwrap_or(Value::Null);
+
+                                            // Execute steps AFTER the loader
+                                            if loader_index < pipeline.steps.len() - 1 {
+                                                let after_pipeline = crate::ast::Pipeline {
+                                                    steps: pipeline.steps[loader_index + 1..].to_vec(),
+                                                };
+
+                                                let mut req_ctx = req_ctx_mutex.lock().await;
+                                                let (result, _, _) = crate::executor::execute_pipeline_internal(
+                                                    env,
+                                                    &after_pipeline,
+                                                    result_value,
+                                                    &mut req_ctx
+                                                ).await.map_err(|e| async_graphql::Error::new(e.to_string()))?;
+                                                result_value = result;
+                                            }
+
+                                            // Convert to async_graphql::Value
+                                            let result_val = json_to_async_graphql_value(result_value);
+
+                                            // Wrap correctly based on type
+                                            match result_val {
+                                                async_graphql::Value::List(items) => {
+                                                    let iter = items.into_iter().map(|item| {
+                                                        FieldValue::value(item)
+                                                    });
+                                                    Ok(Some(FieldValue::list(iter)))
+                                                }
+                                                async_graphql::Value::Null => Ok(None),
+                                                other => Ok(Some(FieldValue::value(other)))
+                                            }
+                                        } else {
+                                            Err(async_graphql::Error::new("loader can only be used in type resolvers, not Query/Mutation"))
+                                        }
                                     } else {
                                         // === PIPELINE RESOLVER (Root Queries/Mutations and Non-Loader Resolvers) ===
                                         let env = ctx.data::<ExecutionEnv>().unwrap();
@@ -281,13 +327,16 @@ impl GraphQLRuntime {
     ) -> Result<Value, WebPipeError> {
         use async_graphql::dataloader::DataLoader;
 
-        // Create the PipelineLoader with batching support
+        let ctx_arc = Arc::new(Mutex::new(std::mem::take(ctx)));
+
+        // Create the PipelineLoader with batching support and shared request context for profiling
         let loader = DataLoader::new(
-            PipelineLoader { env: env.clone() },
+            PipelineLoader {
+                env: env.clone(),
+                req_ctx: ctx_arc.clone(),
+            },
             tokio::spawn
         );
-
-        let ctx_arc = Arc::new(Mutex::new(std::mem::take(ctx)));
 
         let request = Request::new(query)
             .variables(Variables::from_json(variables))

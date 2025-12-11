@@ -13,6 +13,7 @@ pub struct LoaderKey(pub String, pub Value);
 /// It batches requests by pipeline name and executes each pipeline once with all keys
 pub struct PipelineLoader {
     pub env: ExecutionEnv,
+    pub req_ctx: Arc<tokio::sync::Mutex<crate::executor::RequestContext>>,
 }
 
 impl Loader<LoaderKey> for PipelineLoader {
@@ -20,9 +21,6 @@ impl Loader<LoaderKey> for PipelineLoader {
     type Error = Arc<WebPipeError>;
 
     async fn load(&self, keys: &[LoaderKey]) -> Result<HashMap<LoaderKey, Self::Value>, Self::Error> {
-        // Debug: Log batching info
-        tracing::info!("🔥 DataLoader.load() called with {} total keys", keys.len());
-
         // Group keys by pipeline name
         let mut grouped: HashMap<String, Vec<(LoaderKey, Value)>> = HashMap::new();
         for key in keys {
@@ -35,8 +33,6 @@ impl Loader<LoaderKey> for PipelineLoader {
 
         // Execute each pipeline with its batched keys
         for (pipeline_name, key_entries) in grouped {
-            // Debug: Log pipeline execution
-            tracing::info!("  → Executing pipeline '{}' with {} batched keys", pipeline_name, key_entries.len());
 
             // Extract just the key values
             let key_values: Vec<Value> = key_entries.iter().map(|(_, v)| v.clone()).collect();
@@ -52,14 +48,14 @@ impl Loader<LoaderKey> for PipelineLoader {
                     format!("{}", pipeline_name)
                 )))?;
 
-            // Execute the pipeline using the internal executor
-            let mut request_ctx = crate::executor::RequestContext::new();
+            // Execute the pipeline using the shared request context for profiling
+            let mut req_ctx = self.req_ctx.lock().await;
 
             match crate::executor::execute_pipeline_internal(
                 &self.env,
                 pipeline,
                 input,
-                &mut request_ctx,
+                &mut *req_ctx,
             ).await {
                 Ok((result_value, _, _)) => {
                     // Expect the result to be a Map/Object: {"key1": result1, "key2": result2}

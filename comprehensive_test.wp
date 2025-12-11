@@ -4086,9 +4086,9 @@ describe "DataLoader N+1 Prevention with Database"
   it "fetches teams with employees using DataLoader batching"
     when calling GET /test-teams-with-employees
     then status is 200
-    and output `.data.teams` is array
-    and output `.data.teams[0].name` is string
-    and output `.data.teams[0].employees` is array
+    and output `.data.teams | type` equals `"array"`
+    and output `.data.teams[0].name | type` equals `"string"`
+    and output `.data.teams[0].employees | type` equals `"array"`
 
 # Loader pipeline: Batch fetch employees by team IDs
 # Input: { "keys": [1, 2, 3] } (team IDs)
