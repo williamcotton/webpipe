@@ -19,7 +19,15 @@ impl super::Middleware for PgMiddleware {
         _ctx: &mut crate::executor::RequestContext,
         target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
-        let sql = config.trim();
+        let config_trimmed = config.trim();
+
+        // 1. Detect Raw Mode (!raw prefix)
+        let (sql, is_raw) = if config_trimmed.starts_with("!raw") {
+            (config_trimmed.strip_prefix("!raw").unwrap_or(config_trimmed).trim(), true)
+        } else {
+            (config_trimmed, false)
+        };
+
         if sql.is_empty() { return Err(WebPipeError::DatabaseError("Empty SQL config for pg middleware".to_string())); }
 
         // Check if we have a database connection (configured via config block)
@@ -41,6 +49,26 @@ impl super::Middleware for PgMiddleware {
             // Old syntax: fallback to sqlParams from state
             pipeline_ctx.state.get("sqlParams").and_then(|v| v.as_array()).map(|arr| arr.to_vec()).unwrap_or_default()
         };
+
+        // 2. Handle Raw Mode Execution
+        if is_raw {
+            // Expect the query to return exactly one row with one column of type JSON
+            // This bypasses the json_agg wrapping and passes the JSON directly
+            let mut query = sqlx::query_scalar::<_, sqlx::types::Json<Value>>(sql);
+            for p in &params { query = bind_json_param_scalar(query, p); }
+
+            let result_json = match query.fetch_one(pool).await {
+                Ok(json) => json.0,
+                Err(e) => {
+                    pipeline_ctx.state = build_sql_error_value(&e, sql);
+                    return Ok(());
+                }
+            };
+
+            // DIRECT ASSIGNMENT: No wrapping in "data" or "rows", no JQ needed later
+            pipeline_ctx.state = result_json;
+            return Ok(());
+        }
 
         let lowered = sql.to_lowercase();
         let is_select = lowered.trim_start().starts_with("select");

@@ -4121,27 +4121,31 @@ query employee =
 
 pipeline EmployeesByTeamLoader =
   |> jq: `
-    # Build IN clause from keys array
+    # Build comma-separated list from keys array
     .keys | map(tostring) | join(",") as $teamIds |
-    # Store for use in SQL
     { teamIdsStr: $teamIds }
   `
-  |> pg([.teamIdsStr]): `
+  |> pg([.teamIdsStr]): `!raw
     SELECT
-      id::text as id,
-      team_id::text as "teamId",
-      name,
-      email
-    FROM employees
-    WHERE team_id::text = ANY(string_to_array($1, ','))
-  `
-  |> jq: `
-    # pg middleware returns { "data": { "rows": [...] } }
-    # Group employees by teamId
-    .data.rows | group_by(.teamId) | reduce .[] as $group (
-      {};
-      . + { ($group[0].teamId): $group }
-    )
+      json_object_agg(
+        sub.team_id,
+        sub.employees
+      )
+    FROM (
+      SELECT
+        team_id::text,
+        json_agg(
+          json_build_object(
+            'id', id::text,
+            'name', name,
+            'email', email,
+            'teamId', team_id::text
+          )
+        ) as employees
+      FROM employees
+      WHERE team_id::text = ANY(string_to_array($1, ','))
+      GROUP BY team_id
+    ) sub
   `
 
 # Nested resolver: Use DataLoader to fetch employees for a team
