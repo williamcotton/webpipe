@@ -18,6 +18,11 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
+    # ADDED: Essential for multi-arch builds (even with xx-optimized Dockerfiles)
+    # This allows the runner to execute the final ARM64 runtime setup steps.
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       
