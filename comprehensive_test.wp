@@ -4176,3 +4176,11 @@ pipeline EmployeesByTeamLoader =
 # - .context: request context (headers, user, etc.)
 resolver Team.employees =
   |> loader(.parent.id): EmployeesByTeamLoader
+
+# Example route using the getTeam pipeline with args
+pipeline getTeam =
+  |> pg: `SELECT * FROM teams WHERE id = $1`
+
+GET /team/:id
+  |> pipeline({ sqlParams: [.params.id] }): getTeam
+  |> jq: `{ team: .data.rows[0] }`
