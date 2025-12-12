@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let default_addr = "127.0.0.1:8090".to_string();
+    let default_addr = "127.0.0.1:7770".to_string();
     // If explicit CLI addr is provided (and not a flag), use it. Otherwise, if PORT env is set (Heroku), bind 0.0.0.0:PORT.
     let explicit_cli_addr = args.get(2).filter(|v| {
         let s = v.as_str();

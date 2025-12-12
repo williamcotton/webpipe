@@ -849,7 +849,30 @@ fn spawn_async_step(
         if name_clone == "pipeline" {
             let pipeline_name = effective_config.trim();
             if let Some(p) = env_clone.named_pipelines.get(pipeline_name) {
-                let (val, _ct, _st, ctx) = execute_pipeline(&env_clone, p, effective_input.clone(), async_ctx).await?;
+                // If args are provided, evaluate and merge into input
+                let pipeline_input = if !args_clone.is_empty() {
+                    // Evaluate arg[0] as jq expression
+                    let arg_value = crate::runtime::jq::evaluate(&args_clone[0], &effective_input)
+                        .map_err(|e| WebPipeError::MiddlewareExecutionError(
+                            format!("pipeline argument evaluation failed: {}", e)
+                        ))?;
+
+                    // Merge arg_value into input (shallow merge)
+                    if let (Some(input_obj), Some(arg_obj)) = (effective_input.as_object(), arg_value.as_object()) {
+                        let mut merged = input_obj.clone();
+                        for (k, v) in arg_obj {
+                            merged.insert(k.clone(), v.clone());
+                        }
+                        Value::Object(merged)
+                    } else {
+                        // If either is not an object, use arg_value as-is
+                        arg_value
+                    }
+                } else {
+                    effective_input.clone()
+                };
+
+                let (val, _ct, _st, ctx) = execute_pipeline(&env_clone, p, pipeline_input, async_ctx).await?;
                 Ok((val, ctx.profiler))
             } else {
                 Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
@@ -869,14 +892,38 @@ fn spawn_async_step(
 fn handle_recursive_pipeline<'a>(
     env: &'a ExecutionEnv,
     ctx: &'a mut RequestContext,
+    args: &'a [String],
     config: &'a str,
     input: Value,
 ) -> Pin<Box<dyn Future<Output = Result<StepResult, WebPipeError>> + Send + 'a>> {
     Box::pin(async move {
         let pipeline_name = config.trim();
         if let Some(pipeline) = env.named_pipelines.get(pipeline_name) {
+            // If args are provided, evaluate and merge into input
+            let pipeline_input = if !args.is_empty() {
+                // Evaluate arg[0] as jq expression
+                let arg_value = crate::runtime::jq::evaluate(&args[0], &input)
+                    .map_err(|e| WebPipeError::MiddlewareExecutionError(
+                        format!("pipeline argument evaluation failed: {}", e)
+                    ))?;
+
+                // Merge arg_value into input (shallow merge)
+                if let (Some(input_obj), Some(arg_obj)) = (input.as_object(), arg_value.as_object()) {
+                    let mut merged = input_obj.clone();
+                    for (k, v) in arg_obj {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                    Value::Object(merged)
+                } else {
+                    // If either is not an object, use arg_value as-is
+                    arg_value
+                }
+            } else {
+                input
+            };
+
             // Reuse the same context for recursive pipeline execution
-            let (value, content_type, status_code) = execute_pipeline_internal(env, pipeline, input, ctx).await?;
+            let (value, content_type, status_code) = execute_pipeline_internal(env, pipeline, pipeline_input, ctx).await?;
             Ok(StepResult {
                 value,
                 content_type,
@@ -1200,7 +1247,7 @@ async fn execute_regular_step(
             handle_join(ctx, &effective_config, parsed_join_targets, effective_input.clone()).await?
         }
         ExecutionMode::Recursive => {
-            handle_recursive_pipeline(env, ctx, &effective_config, effective_input.clone()).await?
+            handle_recursive_pipeline(env, ctx, args, &effective_config, effective_input.clone()).await?
         }
         ExecutionMode::Standard => {
             // Standard execution - pass mutable context

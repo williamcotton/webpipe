@@ -20,7 +20,7 @@ describe "hello, world"
     and output equals `<p>hello, world</p>`
 ```
 
-Run the server with cargo, pointing to your `.wp` file. The server listens on `127.0.0.1:8090` by default. Try opening `http://127.0.0.1:8090/hello/world`.
+Run the server with cargo, pointing to your `.wp` file. The server listens on `127.0.0.1:7770` by default. Try opening `http://127.0.0.1:7770/hello/world`.
 
 ```bash
 cargo run hello.wp

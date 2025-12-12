@@ -15,7 +15,7 @@ CMD ["app.wp"]
 Run:
 ```bash
 docker build -t myapp .
-docker run -p 8090:8090 --env-file .env myapp
+docker run -p 7770:7770 --env-file .env myapp
 ```
 
 
