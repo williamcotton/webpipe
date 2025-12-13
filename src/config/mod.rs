@@ -89,13 +89,21 @@ impl ConfigManager {
 
     pub fn get_number_value(&self, config_name: &str, key: &str) -> Result<i64, WebPipeError> {
         let config_json = self.resolve_config_as_json(config_name)?;
-        
+
         config_json
             .get(key)
             .and_then(|v| v.as_i64())
             .ok_or_else(|| WebPipeError::ConfigError(format!(
                 "Number value '{}' not found in config '{}'", key, config_name
             )))
+    }
+
+    pub fn get_graphql_endpoint(&self) -> Option<String> {
+        self.resolve_config_as_json("graphql")
+            .ok()
+            .and_then(|config| config.get("endpoint")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()))
     }
 }
 

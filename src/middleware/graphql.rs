@@ -62,7 +62,7 @@ impl Middleware for GraphQLMiddleware {
                 "No GraphQL schema defined in program".into()
             ))?;
 
-        // Determine variables based on inline args vs fallback state
+        // Determine variables based on inline args, state.variables, or fallback
         let variables = if !args.is_empty() {
             // New syntax: graphql(variables_expr)
             // Evaluate arg[0] for variables object
@@ -73,6 +73,9 @@ impl Middleware for GraphQLMiddleware {
                 ));
             }
             variables_value
+        } else if let Some(vars) = pipeline_ctx.state.get("variables") {
+            // Automatic endpoint: variables from request body
+            vars.clone()
         } else {
             // Old syntax: fallback to graphqlParams from state
             pipeline_ctx.state
@@ -81,10 +84,22 @@ impl Middleware for GraphQLMiddleware {
                 .unwrap_or_else(|| serde_json::json!({}))
         };
 
-        // Execute the GraphQL query
-        let query = config;
+        // Extract the GraphQL query
+        let query = if config.is_empty() {
+            // Dynamic mode: read query from state (for automatic endpoint)
+            pipeline_ctx.state
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| WebPipeError::ConfigError(
+                    "GraphQL middleware requires either a config string or 'query' in state".into()
+                ))?
+                .to_string()
+        } else {
+            // Static mode: use config string (existing behavior)
+            config.to_string()
+        };
         let response = runtime.execute(
-            query,
+            &query,
             variables,
             pipeline_ctx.state.clone(),
             _env,

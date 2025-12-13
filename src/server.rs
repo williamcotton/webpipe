@@ -129,6 +129,37 @@ fn pipeline_needs_flags(
     false
 }
 
+/// Create a synthetic pipeline for the automatic GraphQL endpoint
+fn create_graphql_endpoint_pipeline() -> Pipeline {
+    use crate::ast::ConfigType;
+
+    Pipeline {
+        steps: vec![
+            // Extract query and variables from request body
+            PipelineStep::Regular {
+                name: "jq".to_string(),
+                args: vec![],
+                config: r#"{
+                    query: .body.query,
+                    variables: (.body.variables // {})
+                }"#.to_string(),
+                config_type: ConfigType::Backtick,
+                condition: None,
+                parsed_join_targets: None,
+            },
+            // Execute GraphQL with empty config (triggers dynamic mode)
+            PipelineStep::Regular {
+                name: "graphql".to_string(),
+                args: vec![],
+                config: "".to_string(),
+                config_type: ConfigType::Backtick,
+                condition: None,
+                parsed_join_targets: None,
+            },
+        ],
+    }
+}
+
 pub struct WebPipeServer {
     program: Program,
     middleware_registry: Arc<MiddlewareRegistry>,
@@ -297,6 +328,34 @@ impl WebPipeServer {
                     warn!("Unsupported HTTP method: {}", other);
                     continue;
                 }
+            }
+        }
+
+        // Register automatic GraphQL endpoint if configured
+        if let Some(endpoint) = crate::config::global().get_graphql_endpoint() {
+            // Only register if we have a GraphQL schema
+            if self.program.graphql_schema.is_some() {
+                let graphql_pipeline = Arc::new(create_graphql_endpoint_pipeline());
+
+                // Check if pipeline needs flags (should be false for our simple pipeline)
+                let needs_flags = pipeline_needs_flags(&graphql_pipeline, &named_pipelines);
+
+                let payload = RoutePayload {
+                    pipeline: graphql_pipeline,
+                    needs_flags,
+                };
+
+                // Register POST route
+                if let Err(e) = post_router.insert(endpoint.clone(), payload) {
+                    warn!("Failed to register GraphQL endpoint at POST {}: {}", endpoint, e);
+                } else {
+                    info!("Registered automatic GraphQL endpoint at POST {}", endpoint);
+                }
+            } else {
+                warn!(
+                    "GraphQL endpoint configured at {} but no GraphQL schema defined",
+                    endpoint
+                );
             }
         }
 
