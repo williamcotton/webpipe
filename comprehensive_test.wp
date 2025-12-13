@@ -4126,11 +4126,7 @@ pipeline EmployeesByTeamLoader =
   # - .args: {limit: 5} (GraphQL field arguments)
   # - .context: {...} (request context)
   # |> debug: `EmployeesByTeamLoader received`
-  |> jq: `{
-      teamIds: (.keys | map(tostring) | join(",")),
-      limit: (.args.limit // 10)
-  }`
-  |> pg([.teamIds, .limit]): `!raw
+  |> pg([(.keys | map(tostring) | join(",")), (.args.limit // 10)]): `!raw
     SELECT
       json_object_agg(
         sub.team_id,
