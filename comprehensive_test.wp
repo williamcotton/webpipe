@@ -4129,7 +4129,7 @@ pipeline EmployeesByTeamLoader =
       )
     FROM (
       SELECT
-        team_id::text,
+        team_id,
         json_agg(
           json_build_object(
             'id', id::text,
@@ -4137,9 +4137,21 @@ pipeline EmployeesByTeamLoader =
             'email', email,
             'teamId', team_id::text
           )
-        ) as employees
-      FROM employees
-      WHERE team_id::text = ANY(string_to_array($1, ','))
+        ) AS employees
+      FROM (
+        SELECT
+          id,
+          name,
+          email,
+          team_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY team_id
+            ORDER BY id
+          ) AS rn
+        FROM employees
+        WHERE team_id::text = ANY(string_to_array($1, ','))
+      ) ranked
+      WHERE ranked.rn <= 10
       GROUP BY team_id
     ) sub
   `
