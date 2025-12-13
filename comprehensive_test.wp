@@ -4121,12 +4121,7 @@ query employee =
 
 
 pipeline EmployeesByTeamLoader =
-  |> jq: `
-    # Build comma-separated list from keys array
-    .keys | map(tostring) | join(",") as $teamIds |
-    { teamIdsStr: $teamIds }
-  `
-  |> pg([.teamIdsStr]): `!raw
+  |> pg([.keys | map(tostring) | join(",")]): `!raw
     SELECT
       json_object_agg(
         sub.team_id,
