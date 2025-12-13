@@ -5,9 +5,31 @@ use async_graphql::dataloader::Loader;
 use crate::executor::ExecutionEnv;
 use crate::error::WebPipeError;
 
-/// Key for the DataLoader: (PipelineName, KeyValue)
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct LoaderKey(pub String, pub Value);
+/// Key for the DataLoader: (PipelineName, KeyValue, Context)
+/// Hash/Eq only consider pipeline_name and key for batching,
+/// but we carry the context through to pass to the pipeline
+#[derive(Debug, Clone)]
+pub struct LoaderKey {
+    pub pipeline_name: String,
+    pub key: Value,
+    pub context: Value,  // Full {parent, args, context} from resolver
+}
+
+// Implement Hash/Eq to only consider pipeline_name and key for batching
+impl PartialEq for LoaderKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.pipeline_name == other.pipeline_name && self.key == other.key
+    }
+}
+
+impl Eq for LoaderKey {}
+
+impl std::hash::Hash for LoaderKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.pipeline_name.hash(state);
+        serde_json::to_string(&self.key).unwrap_or_default().hash(state);
+    }
+}
 
 /// PipelineLoader implements the async-graphql Loader trait
 /// It batches requests by pipeline name and executes each pipeline once with all keys
@@ -22,11 +44,11 @@ impl Loader<LoaderKey> for PipelineLoader {
 
     async fn load(&self, keys: &[LoaderKey]) -> Result<HashMap<LoaderKey, Self::Value>, Self::Error> {
         // Group keys by pipeline name
-        let mut grouped: HashMap<String, Vec<(LoaderKey, Value)>> = HashMap::new();
+        let mut grouped: HashMap<String, Vec<LoaderKey>> = HashMap::new();
         for key in keys {
-            grouped.entry(key.0.clone())
+            grouped.entry(key.pipeline_name.clone())
                 .or_insert_with(Vec::new)
-                .push((key.clone(), key.1.clone()));
+                .push(key.clone());
         }
 
         let mut results = HashMap::new();
@@ -35,11 +57,19 @@ impl Loader<LoaderKey> for PipelineLoader {
         for (pipeline_name, key_entries) in grouped {
 
             // Extract just the key values
-            let key_values: Vec<Value> = key_entries.iter().map(|(_, v)| v.clone()).collect();
+            let key_values: Vec<Value> = key_entries.iter().map(|k| k.key.clone()).collect();
 
-            // Construct input: { "keys": [val1, val2, ...] }
+            // Extract args and context from the first key
+            // All keys in a batch share the same args/context (same GraphQL query)
+            let first_context = &key_entries[0].context;
+            let args = first_context.get("args").cloned().unwrap_or(Value::Null);
+            let context = first_context.get("context").cloned().unwrap_or(Value::Null);
+
+            // Construct input: { "keys": [...], "args": {...}, "context": {...} }
             let input = serde_json::json!({
-                "keys": key_values
+                "keys": key_values,
+                "args": args,
+                "context": context
             });
 
             // Find the pipeline in the named pipelines registry
@@ -71,13 +101,13 @@ impl Loader<LoaderKey> for PipelineLoader {
                     // Expect the result to be a Map/Object: {"key1": result1, "key2": result2}
                     if let Value::Object(result_map) = result_value {
                         // Map results back to the original LoaderKeys
-                        for (loader_key, key_value) in key_entries {
-                            // Convert key_value to string for lookup
-                            let key_str = match &key_value {
+                        for loader_key in key_entries {
+                            // Convert key to string for lookup
+                            let key_str = match &loader_key.key {
                                 Value::String(s) => s.clone(),
                                 Value::Number(n) => n.to_string(),
                                 Value::Bool(b) => b.to_string(),
-                                _ => serde_json::to_string(&key_value)
+                                _ => serde_json::to_string(&loader_key.key)
                                     .unwrap_or_else(|_| "unknown".to_string()),
                             };
 

@@ -80,6 +80,13 @@ impl GraphQLRuntime {
                             FieldFuture::new(async move {
                                 let key = format!("{}.{}", type_name, field_name);
 
+                                // Retrieve the root pipeline context passed via execute()
+                                // We use a specific type wrapper or just extract Value if registered directly
+                                // In execute() we register .data(pipeline_state), which is a Value.
+                                // However, we must be careful because DataLoader is also registered.
+                                // We'll extract it as a Value.
+                                let pipeline_context = ctx.data::<Value>().unwrap_or(&Value::Null).clone();
+
                                 if let Some(pipeline) = p_reg.get(&key) {
                                     // Check if this is a TypeResolver using DataLoader
                                     // Pattern: resolver Type.field = |> debug |> loader(keyExpr): PipelineName
@@ -127,8 +134,18 @@ impl GraphQLRuntime {
                                                 .map(async_graphql_value_to_json)
                                                 .ok_or_else(|| async_graphql::Error::new("loader requires parent context"))?;
 
-                                            // Build initial input with parent context
-                                            let mut current_value = serde_json::json!({ "parent": parent_json });
+                                            // Extract GraphQL Arguments
+                                            let mut args_map = serde_json::Map::new();
+                                            for (name, accessor) in ctx.args.iter() {
+                                                args_map.insert(name.to_string(), async_graphql_value_to_json(accessor.as_value()));
+                                            }
+
+                                            // Build initial input with parent context, args, and pipeline context
+                                            let mut current_value = serde_json::json!({
+                                                "parent": parent_json,
+                                                "args": args_map,
+                                                "context": pipeline_context
+                                            });
 
                                             // Execute steps BEFORE the loader
                                             if loader_index > 0 {
@@ -151,7 +168,13 @@ impl GraphQLRuntime {
                                                 .map_err(|e| async_graphql::Error::new(format!("Failed to evaluate key expression: {}", e)))?;
 
                                             // Load using DataLoader (this batches automatically!)
-                                            let loader_key = LoaderKey(loader_pipeline_name, key_value);
+                                            // Pass the full current_value as context so the loader pipeline
+                                            // can access args and context from the resolver
+                                            let loader_key = LoaderKey {
+                                                pipeline_name: loader_pipeline_name,
+                                                key: key_value,
+                                                context: current_value.clone(),
+                                            };
                                             let mut result_value = loader.load_one(loader_key).await
                                                 .map_err(|e| async_graphql::Error::new(format!("DataLoader error: {}", e)))?
                                                 .unwrap_or(Value::Null);
@@ -201,12 +224,20 @@ impl GraphQLRuntime {
                                             input.insert("parent".to_string(), async_graphql_value_to_json(parent));
                                         }
 
-                                        // Add GraphQL arguments
+                                        // Add Pipeline Context
+                                        input.insert("context".to_string(), pipeline_context);
+
+                                        // Add GraphQL arguments (flattened for backward compatibility)
+                                        let mut args_obj = serde_json::Map::new();
                                         for (name, accessor) in ctx.args.iter() {
-                                            // Directly extract Value ref
-                                            let val_ref = accessor.as_value();
-                                            input.insert(name.to_string(), async_graphql_value_to_json(val_ref));
+                                            let val_json = async_graphql_value_to_json(accessor.as_value());
+                                            // Add to structured args object
+                                            args_obj.insert(name.to_string(), val_json.clone());
+                                            // Add to root (legacy behavior)
+                                            input.insert(name.to_string(), val_json);
                                         }
+                                        // Add structured args object as well
+                                        input.insert("args".to_string(), Value::Object(args_obj));
 
                                         let result_json = {
                                             let mut req_ctx = req_ctx_mutex.lock().await;
@@ -321,7 +352,7 @@ impl GraphQLRuntime {
         &self,
         query: &str,
         variables: Value,
-        _pipeline_state: Value,
+        pipeline_state: Value,
         env: &ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
     ) -> Result<Value, WebPipeError> {
@@ -342,7 +373,9 @@ impl GraphQLRuntime {
             .variables(Variables::from_json(variables))
             .data(env.clone())
             .data(ctx_arc.clone())
-            .data(loader);
+            .data(loader)
+            // Pass the pipeline state (e.g. headers, request body from the caller) to the resolvers
+            .data(pipeline_state);
 
         let response = self.schema.execute(request).await;
 

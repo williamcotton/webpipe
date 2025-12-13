@@ -1634,7 +1634,7 @@ graphqlSchema = `
   type Team {
     id: ID!
     name: String!
-    employees: [Employee!]!
+    employees(limit: Int): [Employee!]!
   }
 
   type SlowQuery {
@@ -4074,7 +4074,7 @@ GET /test-teams-with-employees
       teams {
         id
         name
-        employees {
+        employees(limit: 5) {
           id
           name
           email
@@ -4121,7 +4121,16 @@ query employee =
 
 
 pipeline EmployeesByTeamLoader =
-  |> pg([.keys | map(tostring) | join(",")]): `!raw
+  # The loader automatically provides:
+  # - .keys: [1, 2, 3] (batched team IDs)
+  # - .args: {limit: 5} (GraphQL field arguments)
+  # - .context: {...} (request context)
+  # |> debug: `EmployeesByTeamLoader received`
+  |> jq: `{
+      teamIds: (.keys | map(tostring) | join(",")),
+      limit: (.args.limit // 10)
+  }`
+  |> pg([.teamIds, .limit]): `!raw
     SELECT
       json_object_agg(
         sub.team_id,
@@ -4151,13 +4160,19 @@ pipeline EmployeesByTeamLoader =
         FROM employees
         WHERE team_id::text = ANY(string_to_array($1, ','))
       ) ranked
-      WHERE ranked.rn <= 10
+      WHERE ranked.rn <= $2
       GROUP BY team_id
     ) sub
   `
+  # |> debug: `EmployeesByTeamLoader - result`
 
 # Nested resolver: Use DataLoader to fetch employees for a team
 # This resolver is called for each Team.employees field
 # The DataLoader will batch all team_id requests and call EmployeesByTeamLoader once
+#
+# Magic! The loader pipeline automatically receives:
+# - .keys: batched keys (team IDs)
+# - .args: GraphQL field arguments (limit in this case)
+# - .context: request context (headers, user, etc.)
 resolver Team.employees =
   |> loader(.parent.id): EmployeesByTeamLoader
