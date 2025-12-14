@@ -4087,6 +4087,11 @@ GET /test-teams-with-employees
     }
   `
 
+GET /test-teams-with-employees-2
+  |> pg: `SELECT id, name FROM teams`
+  |> jq: `.data.rows | map(.id) as $keys | { keys: $keys, args: { limit: 5 } }`
+  |> pipeline: EmployeesByTeamLoader  
+
 describe "DataLoader N+1 Prevention with Database"
   it "fetches teams with employees using DataLoader batching"
     when calling GET /test-teams-with-employees
