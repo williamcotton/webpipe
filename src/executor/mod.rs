@@ -312,7 +312,7 @@ impl Profiler {
 #[derive(Clone)]
 pub struct ExecutionEnv {
     /// Variables for resolution and auto-naming
-    pub variables: Arc<Vec<Variable>>,
+    pub variables: Arc<HashMap<(String, String), Variable>>,
 
     /// Named pipelines registry
     pub named_pipelines: Arc<HashMap<String, Arc<Pipeline>>>,
@@ -359,12 +359,14 @@ impl MiddlewareInvoker for RealInvoker {
 }
 
 fn resolve_config_and_autoname(
-    variables: &[Variable],
+    variables: &HashMap<(String, String), Variable>,
     middleware_name: &str,
     step_config: &str,
     input: &Value,
 ) -> (String, Value, bool) {
-    if let Some(var) = variables.iter().find(|v| v.var_type == middleware_name && v.name == step_config) {
+    let key = (middleware_name.to_string(), step_config.to_string());
+    
+    if let Some(var) = variables.get(&key) {
         let resolved_config = var.value.clone();
         let mut new_input = input.clone();
         let mut auto_named = false;
@@ -1418,7 +1420,7 @@ mod tests {
         async fn call(
             &self,
             name: &str,
-            args: &[String],
+            _args: &[String],
             cfg: &str,
             pipeline_ctx: &mut crate::runtime::PipelineContext,
             _env: &ExecutionEnv,
@@ -1453,10 +1455,10 @@ mod tests {
         }
     }
 
-    fn env_with_vars(vars: Vec<Variable>) -> ExecutionEnv {
+    fn env_with_vars(_vars: Vec<Variable>) -> ExecutionEnv {
         let registry = Arc::new(MiddlewareRegistry::empty());
         ExecutionEnv {
-            variables: Arc::new(vars),
+            variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
             registry,

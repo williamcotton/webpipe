@@ -7,6 +7,7 @@ use webpipe::ast::{parse_program, Pipeline};
 use webpipe::executor::{execute_pipeline, ExecutionEnv, RealInvoker};
 use webpipe::middleware::MiddlewareRegistry;
 use webpipe::runtime::Context;
+use webpipe::ast::Variable;
 
 fn find_pipeline_owned(program: &webpipe::ast::Program, name: &str) -> Pipeline {
     program
@@ -30,8 +31,14 @@ async fn build_env(program: &webpipe::ast::Program) -> ExecutionEnv {
         .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
         .collect();
 
+    // Convert variables to HashMap
+    let variables_map: HashMap<(String, String), Variable> = program.variables
+        .iter()
+        .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+        .collect();
+
     ExecutionEnv {
-        variables: Arc::new(program.variables.clone()),
+        variables: Arc::new(variables_map),
         named_pipelines: Arc::new(named),
         invoker: Arc::new(RealInvoker::new(registry.clone())),
         registry: registry.clone(),

@@ -136,6 +136,7 @@ impl Middleware for GraphQLMiddleware {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
     fn middleware_requires_graphql_runtime() {
@@ -158,7 +159,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = Arc::new(crate::middleware::MiddlewareRegistry::default());
         let env = crate::executor::ExecutionEnv {
-            variables: Arc::new(vec![]),
+            variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(crate::executor::RealInvoker::new(registry.clone())),
             registry: registry.clone(),

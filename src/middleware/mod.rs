@@ -183,7 +183,7 @@ mod tests {
 
         let registry = Arc::new(MiddlewareRegistry::empty());
         ExecutionEnv {
-            variables: Arc::new(vec![]),
+            variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
             registry,

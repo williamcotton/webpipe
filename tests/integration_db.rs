@@ -8,6 +8,7 @@ use webpipe::ast::{parse_program, Pipeline};
 use webpipe::executor::{execute_pipeline, ExecutionEnv, RealInvoker};
 use webpipe::middleware::MiddlewareRegistry;
 use webpipe::runtime::Context;
+use webpipe::ast::Variable;
 
 fn pg_test_program(table_name: &str) -> String {
     let host = std::env::var("PGHOST").unwrap_or_else(|_| "localhost".to_string());
@@ -69,8 +70,13 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
         .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
         .collect();
 
+    let variables_map: HashMap<(String, String), Variable> = program.variables
+        .iter()
+        .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+        .collect();
+
     let env = ExecutionEnv {
-        variables: Arc::new(program.variables.clone()),
+        variables: Arc::new(variables_map),
         named_pipelines: Arc::new(named),
         invoker: Arc::new(RealInvoker::new(registry.clone())),
         registry: registry.clone(),

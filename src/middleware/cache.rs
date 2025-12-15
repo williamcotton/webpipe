@@ -239,7 +239,7 @@ mod tests {
         use crate::runtime::context::{CacheStore, RateLimitStore};
         let registry = Arc::new(crate::middleware::MiddlewareRegistry::empty());
         ExecutionEnv {
-            variables: Arc::new(vec![]),
+            variables: Arc::new(std::collections::HashMap::new()),
             named_pipelines: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(StubInvoker),
             registry,

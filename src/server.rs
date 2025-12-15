@@ -359,8 +359,14 @@ impl WebPipeServer {
             }
         }
 
+        // Convert variables Vec to HashMap for O(1) lookup
+        let variables_map: HashMap<(String, String), crate::ast::Variable> = self.program.variables
+            .iter()
+            .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+            .collect();
+
         let env = Arc::new(ExecutionEnv {
-            variables: Arc::new(self.program.variables.clone()),
+            variables: Arc::new(variables_map),
             named_pipelines: Arc::new(named_pipelines),
             invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
             registry: self.middleware_registry.clone(),
@@ -889,7 +895,7 @@ mod tests {
         let ctx = Context::from_program_configs(vec![], &[]).await.unwrap();
         let registry = Arc::new(MiddlewareRegistry::with_builtins(Arc::new(ctx.clone())));
         let env = ExecutionEnv {
-            variables: Arc::new(vec![]),
+            variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(HashMap::new()),
             invoker: Arc::new(RealInvoker::new(registry.clone())),
             registry: registry.clone(),

@@ -397,8 +397,14 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                 .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
                                 .collect();
 
+                            // Convert variables Vec to HashMap for O(1) lookup
+                            let variables_map: HashMap<(String, String), crate::ast::Variable> = program.variables
+                                .iter()
+                                .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+                                .collect();
+
                             let env = ExecutionEnv {
-                                variables: Arc::new(program.variables.clone()),
+                                variables: Arc::new(variables_map),
                                 named_pipelines: Arc::new(named),
                                 invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                                 registry: registry.clone(),
@@ -451,8 +457,15 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             .iter()
                             .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
                             .collect();
+
+                        // Convert variables Vec to HashMap for O(1) lookup
+                        let variables_map: HashMap<(String, String), crate::ast::Variable> = program.variables
+                            .iter()
+                            .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+                            .collect();
+
                         let env = ExecutionEnv {
-                            variables: Arc::new(program.variables.clone()),
+                            variables: Arc::new(variables_map),
                             named_pipelines: Arc::new(named),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             registry: registry.clone(),
@@ -489,8 +502,15 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             .iter()
                             .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
                             .collect();
+
+                        // Convert variables Vec to HashMap for O(1) lookup
+                        let variables_map: HashMap<(String, String), crate::ast::Variable> = program.variables
+                            .iter()
+                            .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+                            .collect();
+                        
                         let env = ExecutionEnv {
-                            variables: Arc::new(program.variables.clone()),
+                            variables: Arc::new(variables_map),
                             named_pipelines: Arc::new(named),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             registry: registry.clone(),
