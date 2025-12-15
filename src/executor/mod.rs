@@ -1244,14 +1244,15 @@ async fn execute_regular_step(
     let step_result = match mode {
         ExecutionMode::Join => {
             // Use pre-parsed targets for hot path optimization
-            handle_join(ctx, &effective_config, parsed_join_targets, effective_input.clone()).await?
+            handle_join(ctx, &effective_config, parsed_join_targets, effective_input).await?
         }
         ExecutionMode::Recursive => {
-            handle_recursive_pipeline(env, ctx, args, &effective_config, effective_input.clone()).await?
+            handle_recursive_pipeline(env, ctx, args, &effective_config, effective_input).await?
         }
         ExecutionMode::Standard => {
-            // Standard execution - pass mutable context
-            let mut temp_ctx = crate::runtime::PipelineContext::new(pipeline_ctx.state.clone());
+            // Standard middleware usually expects to mutate a context.
+            // We create a temp context with the input.
+            let mut temp_ctx = crate::runtime::PipelineContext::new(effective_input);
             handle_standard_execution(env, ctx, name, args, &effective_config, &mut temp_ctx, target_name.as_deref()).await?;
             StepResult {
                 value: temp_ctx.state,
