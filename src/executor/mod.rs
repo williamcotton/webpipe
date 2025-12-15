@@ -961,6 +961,10 @@ async fn handle_standard_execution(
     })
 }
 
+fn take_state(ctx: &mut crate::runtime::PipelineContext) -> Value {
+    std::mem::take(&mut ctx.state)
+}
+
 /// Dispatch to the appropriate step handler
 async fn execute_step<'a>(
     step: &'a PipelineStep,
@@ -1014,10 +1018,11 @@ async fn execute_step<'a>(
             let selected = select_branch(branches, &error_type);
             if let Some(branch) = selected {
                 let inherited_cookies = pipeline_ctx.state.get("setCookies").cloned();
+                let input_state = take_state(pipeline_ctx);
                 let (mut result, branch_content_type, _status) = execute_pipeline_internal(
                     env,
                     &branch.pipeline,
-                    pipeline_ctx.state.clone(),
+                    input_state,
                     ctx
                 ).await?;
                 if inherited_cookies.is_some() {
@@ -1029,6 +1034,7 @@ async fn execute_step<'a>(
                         }
                     }
                 }
+                pipeline_ctx.state = result.clone();
                 let final_content_type = if branch_content_type != "application/json" {
                     branch_content_type
                 } else {
@@ -1066,10 +1072,11 @@ async fn execute_step<'a>(
             // 3. Execute Branch
             if is_truthy {
                 // Run THEN branch with ORIGINAL state
+                let input_state = take_state(pipeline_ctx);
                 let (res, ct, status) = execute_pipeline_internal(
                     env,
                     then_branch,
-                    pipeline_ctx.state.clone(),
+                    input_state,
                     ctx
                 ).await?;
 
@@ -1083,10 +1090,11 @@ async fn execute_step<'a>(
                 }
             } else if let Some(else_pipe) = else_branch {
                 // Run ELSE branch with ORIGINAL state
+                let input_state = take_state(pipeline_ctx);
                 let (res, ct, status) = execute_pipeline_internal(
                     env,
                     else_pipe,
-                    pipeline_ctx.state.clone(),
+                    input_state,
                     ctx
                 ).await?;
 
@@ -1122,10 +1130,11 @@ async fn execute_step<'a>(
 
             // Execute the matched pipeline (or do nothing if no match and no default)
             if let Some(pipeline) = matched_pipeline {
+                let input_state = take_state(pipeline_ctx);
                 let (res, ct, status) = execute_pipeline_internal(
                     env,
                     pipeline,
-                    pipeline_ctx.state.clone(),
+                    input_state,
                     ctx
                 ).await?;
 
