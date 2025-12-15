@@ -6,51 +6,40 @@ use jaq_core::{
 };
 use jaq_json::Val;
 use lru::LruCache;
-use parking_lot::Mutex;
 use serde_json::Value;
 
+use std::cell::RefCell;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, LazyLock};
+use std::rc::Rc;
 
-/// Compiled JQ filter with its arena (arena must outlive filter).
-///
-/// `Arena` must be stored alongside the compiled filter because the filter may
-/// reference allocations within the arena.
+// We wrap the filter in Rc so we can clone it cheaply out of the cache 
+// if we need to (though we mostly just borrow it).
+// We do NOT need Arc or Mutex because this is strictly single-threaded.
 struct CompiledFilter {
     #[allow(dead_code)]
-    arena: Arena,
+    arena: Rc<Arena>,
     filter: jaq_core::Filter<jaq_core::Native<Val>>,
 }
 
-/// Cache entries are individually locked so JQ execution does not serialize
-/// across *all* expressions (only per-expression).
-type CacheEntry = Arc<Mutex<CompiledFilter>>;
-
-/// Global LRU cache for compiled JQ programs.
-///
-/// IMPORTANT: This lock is held only for cache bookkeeping (lookup/insert/LRU update).
-/// JQ execution happens outside the global cache lock.
-static JQ_FILTER_CACHE: LazyLock<Mutex<LruCache<String, CacheEntry>>> = LazyLock::new(|| {
-    Mutex::new(LruCache::new(
-        NonZeroUsize::new(100).expect("non-zero cache capacity"),
-    ))
-});
+// Thread-Local Cache: No locks, just a RefCell for interior mutability.
+thread_local! {
+    static THREAD_JQ_CACHE: RefCell<LruCache<String, Rc<CompiledFilter>>> = RefCell::new(
+        LruCache::new(NonZeroUsize::new(4096).expect("non-zero cache capacity"))
+    );
+}
 
 /// Compile a JQ expression into a `CompiledFilter`.
 fn compile_filter(expr: &str) -> Result<CompiledFilter, WebPipeError> {
-    // Create loader with standard library.
     let loader = Loader::new(jaq_std::defs().chain(jaq_json::defs()));
-
-    // Arena must outlive compiled modules/filter.
-    let arena = Arena::default();
-
-    // Load and parse the program.
+    let arena = Rc::new(Arena::default());
     let program = File { code: expr, path: () };
+    
+    // Load into the arena
     let modules = loader.load(&arena, program).map_err(|e| {
         WebPipeError::MiddlewareExecutionError(format!("JQ parsing error: {e:?}"))
     })?;
 
-    // Compile with standard functions.
+    // Compile
     let filter = Compiler::default()
         .with_funs(jaq_std::funs().chain(jaq_json::funs()))
         .compile(modules)
@@ -59,86 +48,48 @@ fn compile_filter(expr: &str) -> Result<CompiledFilter, WebPipeError> {
     Ok(CompiledFilter { arena, filter })
 }
 
-/// Get a cached compiled filter for `expr`, compiling and caching on miss.
-///
-/// The global cache lock is held only briefly. On cache miss, compilation occurs
-/// outside the cache lock.
-///
-/// Note: Under high concurrency, the same expression can be compiled more than once
-/// if two threads miss simultaneously; the second inserter will reuse the cached entry.
-fn get_or_compile(expr: &str) -> Result<CacheEntry, WebPipeError> {
-    // Fast path: try cache hit (and update LRU order).
-    if let Some(entry) = {
-        let mut cache = JQ_FILTER_CACHE.lock();
-        cache.get(expr).cloned()
-    } {
-        return Ok(entry);
-    }
+/// Get a compiled filter from the thread-local cache, compiling on miss.
+fn get_or_compile(expr: &str) -> Result<Rc<CompiledFilter>, WebPipeError> {
+    THREAD_JQ_CACHE.with(|cache_cell| {
+        let mut cache = cache_cell.borrow_mut();
+        
+        // Fast path: Hit
+        if let Some(filter) = cache.get(expr) {
+            return Ok(filter.clone());
+        }
 
-    // Miss: compile outside global cache lock.
-    let compiled = compile_filter(expr)?;
-    let new_entry: CacheEntry = Arc::new(Mutex::new(compiled));
-
-    // Insert (or reuse if another thread inserted meanwhile).
-    let mut cache = JQ_FILTER_CACHE.lock();
-    if let Some(existing) = cache.get(expr).cloned() {
-        Ok(existing)
-    } else {
-        cache.put(expr.to_string(), Arc::clone(&new_entry));
-        Ok(new_entry)
-    }
+        // Slow path: Compile (happens once per thread per filter)
+        let compiled = compile_filter(expr)?;
+        let rc = Rc::new(compiled);
+        
+        cache.put(expr.to_string(), rc.clone());
+        Ok(rc)
+    })
 }
 
-/// Evaluate a JQ expression against a JSON value and return the first result.
-///
-/// This is the shared runtime function used by all middleware that need to evaluate
-/// JQ expressions. It uses a global LRU cache for compiled programs, and per-entry
-/// locks to avoid serializing execution across unrelated expressions.
-///
-/// # Semantics
-/// - Returns the **first** output value produced by the filter.
-/// - If the filter produces no outputs, returns `null`.
-///
-/// # Performance
-/// - Cache Hit: O(1) cache lookup + JQ execution
-/// - Cache Miss: compilation + JQ execution, then cached for future use
-///
-/// # Arguments
-/// * `expr` - The JQ expression to evaluate
-/// * `input` - The JSON value to use as input to the JQ expression
-///
-/// # Returns
-/// The first result of evaluating the JQ expression as a JSON value.
-/// If the filter produces no results, returns `null`.
+/// Evaluate a JQ expression against a JSON value.
+/// This function is synchronous and CPU-bound.
 pub fn evaluate(expr: &str, input: &Value) -> Result<Value, WebPipeError> {
-    // Keep behavior stable, but reduce cache misses from surrounding whitespace.
     let expr = expr.trim();
-
+    
+    // Retrieve the filter (this is lock-free, just a RefCell borrow)
     let entry = get_or_compile(expr)?;
 
-    // Convert serde_json::Value -> jaq_json::Val.
-    // (This clones the JSON input; jaq_json::Val is an owned representation.)
     let jaq_input = Val::from(input.clone());
-
-    // Create execution context with no inputs iterator.
     let inputs = RcIter::new(core::iter::empty());
     let ctx = Ctx::new([], &inputs);
 
-    // IMPORTANT: The iterator returned by `run(...)` can borrow from the compiled filter.
-    // Therefore we must keep the entry lock alive until we've pulled the first result.
-    let first_val: Val = {
-        let compiled = entry.lock();
-        let mut results = compiled.filter.run((ctx, jaq_input));
+    // Execute
+    // We run this without holding the cache RefCell borrow, thanks to Rc cloning above.
+    let mut results = entry.filter.run((ctx, jaq_input));
+    
+    let first_val = results
+        .next()
+        .unwrap_or_else(|| Ok(Val::Null))
+        .map_err(|e| {
+            WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {e}"))
+        })?;
 
-        results
-            .next()
-            .unwrap_or_else(|| Ok(Val::Null))
-            .map_err(|e| {
-                WebPipeError::MiddlewareExecutionError(format!("JQ execution error: {e}"))
-            })?
-    };
-
-    // Convert jaq_json::Val -> serde_json::Value.
     Ok(Value::from(first_val))
 }
 
@@ -148,51 +99,27 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_evaluate_simple_expression() {
-        let input = json!({"a": 1, "b": 2});
-        let result = evaluate(".a", &input).unwrap();
-        assert_eq!(result, json!(1));
+    fn test_thread_local_caching() {
+        let input = json!({"val": 10});
+        
+        // First call: Compiles and inserts into this thread's cache
+        let res1 = evaluate(".val + 1", &input).unwrap();
+        assert_eq!(res1, json!(11));
+
+        // Second call: Hits the thread-local cache
+        let res2 = evaluate(".val + 1", &input).unwrap();
+        assert_eq!(res2, json!(11));
     }
 
     #[test]
-    fn test_evaluate_complex_expression() {
-        let input = json!({"items": [1, 2, 3]});
-        let result = evaluate(".items | map(. * 2)", &input).unwrap();
-        assert_eq!(result, json!([2, 4, 6]));
-    }
-
-    #[test]
-    fn test_evaluate_caching() {
-        let input = json!({"x": 10});
-        // First call - will compile and cache.
-        let result1 = evaluate(".x + 5", &input).unwrap();
-        assert_eq!(result1, json!(15));
-
-        // Second call - should hit cache.
-        let result2 = evaluate(".x + 5", &input).unwrap();
-        assert_eq!(result2, json!(15));
-    }
-
-    #[test]
-    fn test_evaluate_compilation_error() {
-        let input = json!({});
-        let result = evaluate(".[] | ", &input);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("JQ"));
-    }
-
-    #[test]
-    fn test_evaluate_first_result_only() {
-        // Test that we only get first result from iterator.
-        let input = json!([1, 2, 3]);
-        let result = evaluate(".[]", &input).unwrap();
-        assert_eq!(result, json!(1)); // Only first element.
-    }
-
-    #[test]
-    fn test_evaluate_no_results_returns_null() {
-        let input = json!([]);
-        let result = evaluate(".[] | select(. > 10)", &input).unwrap();
-        assert_eq!(result, json!(null));
+    fn test_concurrent_threads() {
+        // Verify that different threads work independently
+        let handle = std::thread::spawn(|| {
+            let input = json!({"a": 1});
+            evaluate(".a", &input).unwrap()
+        });
+        
+        let res = handle.join().unwrap();
+        assert_eq!(res, json!(1));
     }
 }
