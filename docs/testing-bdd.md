@@ -843,7 +843,7 @@ describe "Team with Employees"
   it "resolves nested employees field"
     when calling POST /graphql
     with headers `{ "content-type": "application/json" }`
-    with body `{ "query": "query { teams { id name employees { id name } } }" }`
+    and with body `{ "query": "query { teams { id name employees { id name } } }" }`
     then status is 200
     and output `.data.teams[0].employees | length` equals 2
     and output `.data.teams[0].employees[0].name` equals "Alice"
@@ -866,7 +866,7 @@ describe "Team Employees with Limit"
   it "passes limit argument to loader"
     when calling POST /graphql
     with headers `{ "content-type": "application/json" }`
-    with body `{ "query": "query { teams { employees(limit: 1) { name } } }" }`
+    and with body `{ "query": "query { teams { employees(limit: 1) { name } } }" }`
     then status is 200
     and call pipeline EmployeesByTeamLoader with `{
       keys: ["1"],
@@ -893,7 +893,7 @@ describe "Users -> Posts -> Comments"
   it "resolves 3 levels of nesting efficiently"
     when calling POST /graphql
     with headers `{ "content-type": "application/json" }`
-    with body `{ "query": "query { users { posts { comments { text } } } }" }`
+    and with body `{ "query": "query { users { posts { comments { text } } } }" }`
     then status is 200
     and output `.data.users[0].posts[0].comments[0].text` equals "Comment 1"
     # Verify batching occurred
