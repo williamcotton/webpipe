@@ -4189,3 +4189,12 @@ pipeline getTeam =
 GET /team/:id
   |> pipeline({ sqlParams: [.params.id] }): getTeam
   |> jq: `{ team: .data.rows[0] }`
+
+describe "Calling GraphQL endpoints"
+  it "can call the GraphQL endpoint"
+    when calling POST /graphql
+    with headers `{ "content-type": "application/json" }`
+    and with body `{ "query": "query { teams { id name } }" }`
+    then status is 200
+    and output `.data.teams | type` equals `"array"`
+    and output `.data.teams[0].name | type` equals `"string"`

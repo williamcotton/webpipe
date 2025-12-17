@@ -130,7 +130,7 @@ fn pipeline_needs_flags(
 }
 
 /// Create a synthetic pipeline for the automatic GraphQL endpoint
-fn create_graphql_endpoint_pipeline() -> Pipeline {
+pub fn create_graphql_endpoint_pipeline() -> Pipeline {
     use crate::ast::ConfigType;
 
     Pipeline {
@@ -335,21 +335,30 @@ impl WebPipeServer {
         if let Some(endpoint) = crate::config::global().get_graphql_endpoint() {
             // Only register if we have a GraphQL schema
             if self.program.graphql_schema.is_some() {
-                let graphql_pipeline = Arc::new(create_graphql_endpoint_pipeline());
+                // Check if user has already defined a POST route for this endpoint
+                let user_defined_route = self.program.routes.iter().any(|route| {
+                    route.method == "POST" && route.path == endpoint
+                });
 
-                // Check if pipeline needs flags (should be false for our simple pipeline)
-                let needs_flags = pipeline_needs_flags(&graphql_pipeline, &named_pipelines);
-
-                let payload = RoutePayload {
-                    pipeline: graphql_pipeline,
-                    needs_flags,
-                };
-
-                // Register POST route
-                if let Err(e) = post_router.insert(endpoint.clone(), payload) {
-                    warn!("Failed to register GraphQL endpoint at POST {}: {}", endpoint, e);
+                if user_defined_route {
+                    info!("User-defined POST {} route found, skipping automatic GraphQL endpoint registration", endpoint);
                 } else {
-                    info!("Registered automatic GraphQL endpoint at POST {}", endpoint);
+                    let graphql_pipeline = Arc::new(create_graphql_endpoint_pipeline());
+
+                    // Check if pipeline needs flags (should be false for our simple pipeline)
+                    let needs_flags = pipeline_needs_flags(&graphql_pipeline, &named_pipelines);
+
+                    let payload = RoutePayload {
+                        pipeline: graphql_pipeline,
+                        needs_flags,
+                    };
+
+                    // Register POST route
+                    if let Err(e) = post_router.insert(endpoint.clone(), payload) {
+                        warn!("Failed to register GraphQL endpoint at POST {}: {}", endpoint, e);
+                    } else {
+                        info!("Registered automatic GraphQL endpoint at POST {}", endpoint);
+                    }
                 }
             } else {
                 warn!(

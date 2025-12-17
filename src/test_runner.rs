@@ -327,6 +327,26 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                     }
 
                     // Build a matchit router for this method
+                    // Store the automatic GraphQL pipeline outside the loop so it lives long enough
+                    let graphql_endpoint_pipeline: Option<Pipeline> = if method == "POST" {
+                        if let Some(endpoint) = config::global().get_graphql_endpoint() {
+                            if program.graphql_schema.is_some() {
+                                let user_defined = program.routes.iter().any(|r| r.method == "POST" && r.path == endpoint);
+                                if !user_defined {
+                                    Some(crate::server::create_graphql_endpoint_pipeline())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     let mut router: matchit::Router<(&Pipeline, Option<&str>)> = matchit::Router::new();
                     for route in &program.routes {
                         if &route.method == method {
@@ -338,6 +358,13 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // Add automatic GraphQL endpoint to router if it was created
+                    if let Some(ref pipeline) = graphql_endpoint_pipeline {
+                        if let Some(endpoint) = config::global().get_graphql_endpoint() {
+                            let _ = router.insert(endpoint, (pipeline, Some("graphql")));
                         }
                     }
                     match router.at(&path_str) {
