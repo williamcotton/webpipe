@@ -10,7 +10,7 @@ A concise index for everything Web Pipe—from first steps to advanced usage.
 2. **Getting Started** — Install, run, and create your first pipeline.  
    [getting-started.md](./getting-started.md)
 
-3. **DSL Syntax** — The Web Pipe language: grammar, literals, blocks, and patterns.  
+3. **DSL Syntax** — The Web Pipe language: control flow, inline arguments, and blocks.  
    [dsl-syntax.md](./dsl-syntax.md)
 
 4. **GraphQL** — Native support for schemas, resolvers, and queries.  
@@ -21,13 +21,19 @@ A concise index for everything Web Pipe—from first steps to advanced usage.
 - **Configuration** — Defining `config` blocks, environment variables, and secrets.  
   [config.md](./config.md)
 
-- **Routes & Pipelines** — Declaring routes, composing steps, and controlling flow.  
+- **Routes & Pipelines** — Declaring routes, composing steps, and result tagging.  
   [routes-and-pipelines.md](./routes-and-pipelines.md)
+
+- **Inline Arguments** — Passing dynamic data directly to middleware.  
+  [inline-arguments.md](./inline-arguments.md)
+
+- **Context & Metadata** — Accessing system state (`$context`) in middleware.  
+  [context.md](./context.md)
 
 - **Concurrency** — Async tasks and joining results.  
   [concurrency.md](./concurrency.md)
 
-- **Flow Control** — Conditional execution with tags (`@env`, `@flag`) and if/else blocks.
+- **Flow Control** — Conditional execution with `if`, `dispatch`, `foreach` and tags (`@when`, `@guard`).
   [flow-control.md](./flow-control.md)
 
 - **Variables & Partials** — Reusable SQL, templates, and pipeline fragments.  
@@ -44,7 +50,7 @@ A concise index for everything Web Pipe—from first steps to advanced usage.
 - **Mocking** — Stubbing middleware and deterministic test inputs.  
   [mocking.md](./mocking.md)
 
-- **Testing & BDD** — Spec syntax, end-to-end route tests, and pipeline assertions.  
+- **Testing & BDD** — Spec syntax, `let` variables, DOM assertions, and end-to-end tests.  
   [testing-bdd.md](./testing-bdd.md)
 
 ## Middleware Guides

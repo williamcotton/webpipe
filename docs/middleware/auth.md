@@ -64,4 +64,27 @@ config auth {
 - `cookieSecure: false` will prevent server from issuing session cookies
 - Always deploy with HTTPS
 
+---
+
+## Manual Cookie Management
+
+For advanced cookie management beyond auth sessions, you can manually set cookies in your response JSON:
+
+```wp
+GET /custom-cookies
+  |> jq: `{
+    message: "Response",
+    setCookies: [
+      "customId=abc123; HttpOnly; Secure; Max-Age=3600; Path=/",
+      "preference=darkMode; Max-Age=86400; Path=/"
+    ]
+  }`
+```
+
+See [Result Routing - Cookie Management](../result-routing.md#cookie-management) for comprehensive cookie documentation including:
+- Cookie syntax and attributes
+- Multiple cookies
+- Cookie security best practices
+- Deleting cookies with Max-Age=0
+
 
