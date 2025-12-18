@@ -6,9 +6,11 @@ GET /hello/:world
 
 describe "hello, world"
   it "calls the route"
-    when calling GET /hello/world
+    let world = "world"
+    
+    when calling GET /hello/{{world}}
     then status is 200
-    and output equals `<p>hello, world</p>`
+    and selector `p` text equals "hello, {{world}}"
 
 GET /lua/:id/example
   |> lua: `

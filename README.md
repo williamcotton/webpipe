@@ -15,9 +15,11 @@ GET /hello/:world
 
 describe "hello, world"
   it "calls the route"
-    when calling GET /hello/world
+    let world = "world"
+    
+    when calling GET /hello/{{world}}
     then status is 200
-    and output equals `<p>hello, world</p>`
+    and selector `p` text equals "hello, {{world}}"
 ```
 
 Run the server with cargo, pointing to your `.wp` file. The server listens on `127.0.0.1:7770` by default. Try opening `http://127.0.0.1:7770/hello/world`.

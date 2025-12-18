@@ -1,16 +1,20 @@
-## Web Pipe Tutorial
-# This file is a self-contained tutorial for the Web Pipe DSL.
-# It introduces configuration, variables, pipelines, routes, and tests.
-# You can run it directly:
+## Web Pipe Complete Tutorial
+# This is a comprehensive tutorial covering all Web Pipe features with modern syntax.
+#
+# Run the server:
 #   cargo run -- example.wp
-# Or run tests:
+# Run tests:
 #   cargo run -- example.wp --test
+#
+# Expected database schema:
+#   CREATE TABLE teams (id serial primary key, name text, created_at timestamp default now());
+#   CREATE TABLE users (id serial primary key, login text unique, email text, password_hash text,
+#                       type text default 'user', status text default 'active', created_at timestamp default now());
 
 
-
-
+## ========================================
 ## 1) Configuration
-# Configure Postgres, authentication cookies, cache, and logging.
+## ========================================
 
 config pg {
   host: $WP_PG_HOST || "localhost"
@@ -44,137 +48,278 @@ config log {
   level: "debug"
   includeBody: false
   includeHeaders: true
+  maxBodySize: 1024
   timestamp: true
 }
 
+config graphql {
+  endpoint: "/graphql"
+}
 
-## 2) Reusable variables and partials
-# Variables allow you to name snippets that middleware can use later.
 
-# Handlebars partials
-handlebars layout = `
-<!DOCTYPE html>
-<html><head><title>{{title}}</title></head>
-<body>{{{body}}}</body></html>
-`
-
-handlebars helloPartial = `<p>Hello, {{name}}!</p>`
+## ========================================
+## 2) Variables: Reusable Snippets
+## ========================================
 
 # SQL variables
 pg findTeamById = `SELECT * FROM teams WHERE id = $1`
 pg listTeams = `SELECT * FROM teams ORDER BY id`
+pg insertTeam = `INSERT INTO teams (name) VALUES ($1) RETURNING *`
+
+# Handlebars partials - define defaults first for inline block usage
+handlebars title = `Default Title`
+handlebars body = `Default body content`
+
+handlebars layout = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>{{>title}}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 p-8">
+  {{>body}}
+</body>
+</html>
+`
+
+handlebars helloPartial = `<p class="greeting">Hello, {{name}}!</p>`
+
+handlebars teamCard = `
+<div class="team-card bg-white p-4 rounded shadow">
+  <h3 class="team-name font-bold">{{name}}</h3>
+  <p class="team-id text-gray-600">ID: {{id}}</p>
+</div>
+`
 
 
-## 3) Named pipelines
-# Pipelines can be re-used across routes.
+## ========================================
+## 3) Pipelines: Reusable Middleware Chains
+## ========================================
 
 pipeline loadTeam =
-  |> jq: `{ sqlParams: [(.params.id // .query.id // .body.id // 0)] }`
-  |> pg: findTeamById
+  |> pg([(.params.id // .query.id // .body.id | tonumber)]): findTeamById
+  |> jq: `{ team: .data.findTeamById.rows[0] }`
 
 
-## 4) Basics: JQ and templating
-# A friendly hello route using a path parameter.
+## ========================================
+## 4) Basic Routes: GET, POST, PUT, DELETE
+## ========================================
 
+# Simple GET with path parameter
 GET /hello/:name
   |> jq: `{ name: .params.name }`
-  |> handlebars: `<p>hello, {{name}}</p>`
+  |> handlebars: `{{>helloPartial}}`
 
-# Echo the incoming request body and method.
+# POST with body
 POST /echo
-  |> jq: `{ method: .method, body: .body }`
+  |> jq: `{
+    method: .method,
+    body: .body,
+    headers: .headers
+  }`
+
+# PUT with path parameter and body
+PUT /teams/:id
+  |> jq: `{
+    id: .params.id,
+    name: .body.name,
+    action: "update"
+  }`
+
+# DELETE with path parameter
+DELETE /teams/:id
+  |> jq: `{
+    id: .params.id,
+    deleted: true
+  }`
 
 
-## 5) Handlebars page composition
-# Compose a simple page using a layout and a partial.
+## ========================================
+## 5) JQ Transformations
+## ========================================
+
+GET /jq-demo/:id
+  |> jq: `{
+    id: (.params.id | tonumber),
+    query: .query,
+    timestamp: now,
+    computed: (.params.id | tonumber) * 2
+  }`
+
+
+## ========================================
+## 6) Handlebars Templating
+## ========================================
 
 GET /hello-page/:name
-  |> jq: `{ title: "Hello Page", body: ({{>helloPartial}}), name: .params.name }`
-  |> handlebars: `{{>layout}}`
-
-
-## 6) Postgres: parameters and results
-# Routes that query the teams table. Schema expected:
-#   CREATE TABLE teams (id serial primary key, name text);
-
-GET /teams
-  |> jq: `{ sqlParams: [] }`
-  |> pg: listTeams
   |> jq: `{
-    teams: .data.listTeams
+    pageTitle: "Hello Page",
+    name: .params.name
+  }`
+  |> handlebars: `
+    {{#*inline "title"}}{{pageTitle}}{{/inline}}
+    {{#*inline "body"}}
+      <h1 class="text-3xl font-bold">Hello, {{name}}!</h1>
+      <p class="welcome-text mt-4">Welcome to Web Pipe</p>
+    {{/inline}}
+    {{>layout}}
+  `
+
+GET /teams-page
+  |> pg: listTeams @result(teams)
+  |> jq: `{
+    pageTitle: "Teams",
+    teams: .data.teams.rows
+  }`
+  |> handlebars: `
+    {{#*inline "title"}}{{pageTitle}}{{/inline}}
+    {{#*inline "body"}}
+      <h1 class="text-3xl font-bold mb-6">Teams</h1>
+      <div class="grid grid-cols-3 gap-4">
+        {{#each teams}}
+          {{>teamCard}}
+        {{/each}}
+      </div>
+    {{/inline}}
+    {{>layout}}
+  `
+
+
+## ========================================
+## 7) Postgres/SQL Queries (Modern Syntax)
+## ========================================
+
+# Simple query with inline parameters
+GET /teams
+  |> pg: listTeams @result(teams)
+  |> jq: `{
+    teams: .data.teams.rows,
+    count: (.data.teams.rows | length)
   }`
 
 GET /teams/:id
   |> pipeline: loadTeam
+
+# INSERT with inline parameters
+POST /teams
+  |> validate: `{ name: string(3..50) }`
+  |> pg([.body.name]): insertTeam
   |> jq: `{
-    team: if (.data.findTeamById.rows | length > 0) then .data.findTeamById.rows[0] else null end,
-    found: (.data.findTeamById.rows | length > 0)
+    team: .data.insertTeam.rows[0],
+    created: true
+  }`
+
+# Multiple queries with @result tags
+GET /multi-query/:id
+  |> pg: listTeams @result(allTeams)
+  |> pg([(.params.id | tonumber)]): findTeamById @result(specificTeam)
+  |> jq: `{
+    allTeams: .data.allTeams.rows,
+    specificTeam: .data.specificTeam.rows[0]
   }`
 
 
-## 7) Result routing
-# Map structured error objects to HTTP status codes and custom body shapes.
-
-GET /result-demo
-  |> jq: `{
-    errors: [ { type: "validationError", field: "q", message: "missing q" } ]
-  }`
-  |> result
-    ok(200):
-      |> jq: `{ ok: true }`
-    validationError(400):
-      |> jq: `{ error: "Validation failed", field: .errors[0].field, message: .errors[0].message }`
-    default(500):
-      |> jq: `{ error: "Unhandled", type: .errors[0].type }`
-
-
-## 8) Fetch and caching
-# Demonstrate running a remote HTTP request, with optional caching controls.
-
-GET /zen
-  |> fetch: `https://api.github.com/zen`
-  |> jq: `{
-    zen:.data.response
-  }`
-
-GET /search
-  |> jq: `{
-    fetchUrl: "https://httpbin.org/anything",
-    fetchMethod: "GET",
-    fetchHeaders: { "X-Search": (.query.q // "") },
-    resultName: "api"
-  }`
-  |> cache: `
-    enabled: true,
-    ttl: 120
-  `
-  |> fetch: `_`
-  |> jq: `{
-    status: .data.api.status,
-    headers: .data.api.headers,
-    url: .data.api.response.url
-  }`
-
-
-## 9) Lua basics and SQL from Lua
-# Lua has access to the current request as `request` and helpers like executeSql and getEnv.
+## ========================================
+## 8) Lua Scripting
+## ========================================
 
 GET /lua/echo/:id
-  |> lua: `return { from = "lua", id = request.params.id, method = request.method }`
+  |> lua: `
+    return {
+      from = "lua",
+      id = request.params.id,
+      method = request.method,
+      luaVersion = _VERSION
+    }
+  `
 
 GET /lua/teams/:id
   |> lua: `
     local id = tonumber(request.params.id)
     local result, err = executeSql("SELECT * FROM teams WHERE id = $1", {id})
+
     if err then
-      return { errors = { { type = "sqlError", message = err } } }
+      return {
+        errors = {{ type = "sqlError", message = err }}
+      }
     end
-    return result
+
+    return {
+      team = result.rows[1],
+      found = #result.rows > 0
+    }
+  `
+
+GET /lua/env
+  |> lua: `
+    local dbHost = getEnv("WP_PG_HOST") or "not set"
+    return {
+      dbHost = dbHost,
+      env = "retrieved from environment"
+    }
   `
 
 
-## 10) Authentication flows
-# Minimal login/register/logout/status flow using built-in middleware.
+## ========================================
+## 9) Result Routing
+## ========================================
+
+GET /result-demo
+  |> jq: `{
+    errors: [{
+      type: "validationError",
+      field: "email",
+      message: "Email is required"
+    }]
+  }`
+  |> result
+    ok(200):
+      |> jq: `{ success: true, data: .data }`
+    validationError(400):
+      |> jq: `{
+        error: "Validation failed",
+        field: .errors[0].field,
+        message: .errors[0].message
+      }`
+    authError(401):
+      |> jq: `{ error: "Unauthorized", message: .errors[0].message }`
+    sqlError(500):
+      |> jq: `{
+        error: "Database error",
+        sqlstate: .errors[0].sqlstate,
+        message: .errors[0].message
+      }`
+    default(500):
+      |> jq: `{ error: "Internal server error" }`
+
+
+## ========================================
+## 10) Validation
+## ========================================
+
+POST /validate-demo
+  |> validate: `{
+    name: string(3..50),
+    email: email,
+    age: number,
+    website: string(5..100)
+  }`
+  |> result
+    ok(200):
+      |> jq: `{ success: true, data: .body }`
+    validationError(400):
+      |> jq: `{
+        error: "Validation failed",
+        field: .errors[0].field,
+        rule: .errors[0].rule,
+        message: .errors[0].message
+      }`
+
+
+## ========================================
+## 11) Authentication
+## ========================================
 
 POST /login
   |> validate: `{
@@ -184,7 +329,14 @@ POST /login
   |> auth: "login"
   |> result
     ok(200):
-      |> jq: `{ success: true, user: .user }`
+      |> jq: `{
+        success: true,
+        user: {
+          id: .user.id,
+          login: .user.login,
+          email: .user.email
+        }
+      }`
     validationError(400):
       |> jq: `{ success: false, error: .errors[0].message }`
     authError(401):
@@ -199,7 +351,7 @@ POST /register
   |> auth: "register"
   |> result
     ok(201):
-      |> jq: `{ success: true, message: "registered" }`
+      |> jq: `{ success: true, message: "Registration successful" }`
     validationError(400):
       |> jq: `{ success: false, error: .errors[0].message }`
     authError(409):
@@ -207,7 +359,7 @@ POST /register
 
 POST /logout
   |> auth: "logout"
-  |> jq: `{ success: true }`
+  |> jq: `{ success: true, message: "Logged out" }`
 
 GET /me
   |> auth: "optional"
@@ -216,41 +368,456 @@ GET /me
     user: .user
   }`
 
+GET /protected
+  |> auth: "required"
+  |> result
+    ok(200):
+      |> jq: `{
+        message: "Access granted",
+        user: .user.login
+      }`
+    authError(401):
+      |> jq: `{ error: "Authentication required" }`
 
-## 11) Logging and debugging
-# Enable logging metadata and optionally print the JSON for debugging.
+
+## ========================================
+## 12) Caching
+## ========================================
+
+# Basic caching
+GET /cache-basic
+  |> cache: `ttl: 60, enabled: true`
+  |> jq: `{
+    message: "This response is cached for 60 seconds",
+    timestamp: now
+  }`
+
+# Cache with custom key template
+GET /user/:id/profile
+  |> cache: `keyTemplate: user-profile-{params.id}, ttl: 120, enabled: true`
+  |> jq: `{
+    userId: .params.id,
+    profile: "User profile data",
+    fetchedAt: now
+  }`
+
+# Cache with query parameters in key
+GET /search
+  |> cache: `keyTemplate: search-{query.q}-{query.category}, ttl: 300, enabled: true`
+  |> jq: `{
+    query: .query.q,
+    category: .query.category,
+    results: ["result1", "result2"],
+    cached: true
+  }`
+
+
+## ========================================
+## 13) Logging and Debugging
+## ========================================
 
 GET /log-demo
-  |> log: `level: debug, includeHeaders: true, includeBody: false`
-  |> jq: `{ message: "logged" }`
+  |> log: `level: info, includeHeaders: true, includeBody: true`
+  |> jq: `{ message: "This request will be logged" }`
 
 GET /debug-demo
-  |> debug: "Current pipeline value"
-  |> jq: `{ ok: true }`
+  |> jq: `{ step: "first", data: [1, 2, 3] }`
+  |> debug: `After first transformation`
+  |> jq: `{ step: "second", sum: (.data | add) }`
+  |> debug: `After computing sum`
 
 
-## 12) Tests
-# A few basic tests to validate the tutorial routes.
+## ========================================
+## 14) Cookies
+## ========================================
 
-describe "hello"
-  it "greets by name"
-    when calling GET /hello/Ada
-    then status is 200
-    and output matches `^<p>hello, Ada</p>$`
-
-describe "teams"
-  with mock pg returning `{
-    "rows": [ { "id": 1, "name": "Platform" } ]
+GET /cookies
+  |> jq: `{
+    message: "Cookie demo",
+    receivedCookies: .cookies,
+    setCookies: [
+      "sessionId=abc123; HttpOnly; Secure; Max-Age=3600",
+      "theme=dark; Path=/; Max-Age=86400"
+    ]
   }`
-  it "lists teams"
+
+
+## ========================================
+## 15) HTTP Fetch (Modern Inline Syntax)
+## ========================================
+
+# Simple GET request with inline string
+GET /fetch-demo
+  |> fetch("https://api.github.com/zen")
+  |> jq: `{
+    zen: .data.response,
+    status: .data.status
+  }`
+
+# Dynamic URL with inline expression
+GET /fetch-user/:id
+  |> fetch("https://api.github.com/users/" + (.params.id))
+  |> jq: `{
+    user: .data.response,
+    success: (.data.status == 200)
+  }`
+
+# Named fetch result with @result tag
+GET /fetch-named
+  |> fetch("https://api.github.com/zen") @result(githubZen)
+  |> jq: `{
+    zen: .data.githubZen.response,
+    fetchedAt: now
+  }`
+
+# Complex fetch with traditional approach (for custom headers/body)
+GET /fetch-post
+  |> jq: `{
+    fetchUrl: "https://httpbin.org/post",
+    fetchMethod: "POST",
+    fetchBody: { name: "test", value: 123 },
+    fetchHeaders: { "Content-Type": "application/json" }
+  }`
+  |> fetch: `_`
+  |> jq: `{
+    response: .data.response,
+    success: (.data.status == 200)
+  }`
+
+
+## ========================================
+## 16) GraphQL (Modern Inline Syntax)
+## ========================================
+
+graphqlSchema = `
+  type Team {
+    id: ID!
+    name: String!
+    createdAt: String
+  }
+
+  type Query {
+    teams: [Team!]!
+    team(id: Int!): Team
+    currentTime: String!
+  }
+
+  type Mutation {
+    createTeam(name: String!): Team!
+  }
+`
+
+# Query resolvers
+query teams =
+  |> pg: listTeams
+  |> jq: `.data.listTeams.rows`
+
+query team =
+  |> pg([.id]): findTeamById
+  |> jq: `.data.findTeamById.rows[0]`
+
+query currentTime =
+  |> pg: `SELECT NOW()::text as time`
+  |> jq: `.data.rows[0].time`
+
+# Mutation resolvers
+mutation createTeam =
+  |> validate: `{ name: string(3..50) }`
+  |> pg([.name]): insertTeam
+  |> jq: `.data.insertTeam.rows[0]`
+
+# GraphQL endpoint with inline object parameters
+GET /graphql-demo
+  |> graphql: `
+    query {
+      teams {
+        id
+        name
+      }
+      currentTime
+    }
+  `
+
+GET /graphql-with-args/:id
+  |> graphql({ id: (.params.id | tonumber) }): `
+    query($id: Int!) {
+      team(id: $id) {
+        id
+        name
+      }
+    }
+  `
+
+POST /graphql-mutation
+  |> graphql({ name: .body.name }): `
+    mutation($name: String!) {
+      createTeam(name: $name) {
+        id
+        name
+      }
+    }
+  `
+
+
+## ========================================
+## 17) Tags & Feature Flags
+## ========================================
+
+pipeline featureFlags =
+  |> lua: `
+    -- Enable feature for 50% of requests
+    local rand = math.random()
+    setFlag("new-ui", rand < 0.5)
+
+    -- Always enable beta for staff
+    if request.user and request.user.type == "staff" then
+      setFlag("beta-features", true)
+    end
+
+    return {}
+  `
+
+GET /feature-demo
+  |> jq: `{ version: "1.0", ui: "classic" }` @!flag(new-ui)
+  |> jq: `{ version: "2.0", ui: "modern" }` @flag(new-ui)
+
+# Environment-specific middleware
+GET /env-demo
+  |> jq: `{ env: "production", debug: false }` @env(production)
+  |> jq: `{ env: "development", debug: true }` @env(development)
+  |> log: `level: debug` @!env(production)
+
+
+## ========================================
+## 18) Async & Join (Parallel Execution)
+## ========================================
+
+# Sequential (slow) - takes ~6 seconds
+GET /sequential-slow
+  |> fetch("https://httpbin.org/delay/2")
+  |> jq: `{ first: .data.response }`
+  |> fetch("https://httpbin.org/delay/2")
+  |> jq: `. + { second: .data.response }`
+  |> fetch("https://httpbin.org/delay/2")
+  |> jq: `. + { third: .data.response }`
+
+# Parallel (fast) - takes ~2 seconds total
+GET /parallel-fast
+  |> fetch("https://httpbin.org/delay/2") @async(req1)
+  |> fetch("https://httpbin.org/delay/2") @async(req2)
+  |> fetch("https://httpbin.org/delay/2") @async(req3)
+  |> join: `req1, req2, req3`
+  |> jq: `{
+    message: "All 3 requests completed in parallel!",
+    results: [
+      .async.req1.data.response,
+      .async.req2.data.response,
+      .async.req3.data.response
+    ]
+  }`
+
+# Parallel GraphQL queries
+GET /graphql-parallel
+  |> graphql: `query { teams { id name } }` @async(teamsQuery)
+  |> graphql: `query { currentTime }` @async(timeQuery)
+  |> join: `teamsQuery, timeQuery`
+  |> jq: `{
+    teams: .async.teamsQuery.data.teams,
+    loadedAt: .async.timeQuery.data.currentTime,
+    executionMode: "parallel"
+  }`
+
+
+## ========================================
+## 19) Tests: Comprehensive BDD Framework
+## ========================================
+
+# Basic route testing with let variables
+describe "hello route with variables"
+  let name = "World"
+
+  it "greets by name using let variable"
+    when calling GET /hello/{{name}}
+    then status is 200
+    and selector `p.greeting` text equals "Hello, {{name}}!"
+
+# Testing with CSS selectors
+describe "teams page with selectors"
+  with mock pg.listTeams returning `{
+    "rows": [
+      { "id": 1, "name": "Platform" },
+      { "id": 2, "name": "Growth" }
+    ]
+  }`
+
+  it "renders team cards with correct structure"
+    when calling GET /teams-page
+    then status is 200
+    and contentType is "text/html"
+    and selector `.team-card` exists
+    and selector `.team-name` text contains "Platform"
+    and selector `.team-id` text equals "ID: 1"
+
+# Testing JSON responses
+describe "teams API"
+  with mock pg.listTeams returning `{
+    "rows": [
+      { "id": 1, "name": "Platform" },
+      { "id": 2, "name": "Growth" }
+    ]
+  }`
+
+  it "lists all teams"
     when calling GET /teams
     then status is 200
-    and output contains `{ "rows": [ { "id": 1 } ] }`
+    and output contains `{ "teams": [{ "id": 1 }] }`
+    and output `.count` equals 2
 
+  it "gets team by id with let variable"
+    let teamId = "1"
+
+    when calling GET /teams/{{teamId}}
+    then status is 200
+    and output contains `{ "team": { "id": 1, "name": "Platform" } }`
+
+# Testing pipelines directly
+describe "pipeline testing"
+  with mock pg.findTeamById returning `{
+    "rows": [{ "id": 42, "name": "Test Team" }]
+  }`
+
+  it "executes loadTeam pipeline"
+    let id = "42"
+
+    when executing pipeline loadTeam
+    with input `{ "params": { "id": "{{id}}" } }`
+    then output equals `{
+      "team": { "id": 42, "name": "Test Team" }
+    }`
+
+  it "supports jq path assertions"
+    when executing pipeline loadTeam
+    with input `{ "params": { "id": "42" } }`
+    then output `.team.id` equals 42
+    and output `.team.name` equals "Test Team"
+
+# Testing validation
+describe "validation"
+  it "catches validation errors"
+    when calling POST /validate-demo
+    with body `{ "name": "ab", "email": "invalid" }`
+    then status is 400
+    and output contains `{ "error": "Validation failed" }`
+
+  it "passes valid input"
+    when calling POST /validate-demo
+    with body `{ "name": "John Doe", "email": "john@example.com", "age": 30, "website": "https://example.com" }`
+    then status is 200
+    and output `.success` equals true
+
+# Testing result routing
 describe "result routing"
   it "maps validation errors to 400"
     when calling GET /result-demo
     then status is 400
     and output contains `{ "error": "Validation failed" }`
+    and output `.field` equals "email"
+
+# Testing with regex
+describe "regex matching"
+  it "supports output matches regex"
+    let name = "Test"
+
+    when calling GET /hello/{{name}}
+    then output matches `Hello,\s*{{name}}!`
+
+# Testing status ranges
+describe "status codes"
+  it "supports status ranges"
+    when calling GET /hello/World
+    then status in 200..299
+
+  it "checks exact status"
+    when calling GET /result-demo
+    then status is 400
+
+# Testing JQ transformations
+describe "jq demo"
+  it "transforms params correctly"
+    let id = "42"
+
+    when calling GET /jq-demo/{{id}}
+    then status is 200
+    and output `.id` equals 42
+    and output `.computed` equals 84
+
+# Testing multiple let variables
+describe "multiple let variables"
+  let firstName = "John"
+  let lastName = "Doe"
+
+  it "uses multiple variables in test"
+    when calling GET /hello/{{firstName}} {{lastName}}
+    then status is 200
+    and selector `p.greeting` text contains "{{firstName}}"
+
+# Testing with mock variations
+describe "mock variations"
+  it "test with empty results"
+    with mock pg.listTeams returning `{ "rows": [] }`
+
+    when calling GET /teams
+    then status is 200
+    and output `.count` equals 0
+
+  it "test with multiple results"
+    with mock pg.listTeams returning `{
+      "rows": [
+        { "id": 1, "name": "Team 1" },
+        { "id": 2, "name": "Team 2" },
+        { "id": 3, "name": "Team 3" }
+      ]
+    }`
+
+    when calling GET /teams
+    then status is 200
+    and output `.count` equals 3
+    and output `.teams | map(.id)` equals `[1, 2, 3]`
+
+# Testing HTML page structure
+describe "hello page rendering"
+  let userName = "Alice"
+
+  it "renders complete HTML page"
+    when calling GET /hello-page/{{userName}}
+    then status is 200
+    and contentType is "text/html"
+    and selector `h1` text equals "Hello, {{userName}}!"
+    and selector `.welcome-text` text contains "Welcome to Web Pipe"
 
 
+## ========================================
+## Summary
+## ========================================
+# This tutorial covers:
+#  ✓ Configuration (pg, auth, cache, log, graphql)
+#  ✓ Variables (SQL, Handlebars, GraphQL)
+#  ✓ Pipelines (reusable middleware chains)
+#  ✓ Routes (GET, POST, PUT, DELETE)
+#  ✓ JQ transformations
+#  ✓ Handlebars templating (partials, layouts, inline blocks)
+#  ✓ Postgres/SQL with modern inline syntax: pg([.param])
+#  ✓ Lua scripting (executeSql, getEnv, setFlag)
+#  ✓ Result routing (ok, validationError, authError, sqlError)
+#  ✓ Validation (string, number, email, rules)
+#  ✓ Authentication (login, register, logout, required, optional)
+#  ✓ Caching (TTL, custom keyTemplate)
+#  ✓ Logging and debugging
+#  ✓ Cookies (read and set)
+#  ✓ HTTP Fetch with inline syntax: fetch("url")
+#  ✓ GraphQL with inline syntax: graphql({ var: .value })
+#  ✓ Tags & Feature Flags (@env, @flag, @async, @result)
+#  ✓ Async/Join (parallel execution)
+#  ✓ Tests (let variables, selectors, multiple assertions)
+#
+# For more examples, see comprehensive_test.wp
