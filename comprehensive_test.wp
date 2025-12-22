@@ -4173,6 +4173,31 @@ pipeline EmployeesByTeamLoader =
   `
   # |> debug: `EmployeesByTeamLoader - result`
 
+pipeline EmployeesByTeamLoaderV2 =
+  # 1. Fetch raw rows using standard SQL
+  # We still use ROW_NUMBER() for efficiency (to apply the limit in the DB),
+  # but we return standard rows instead of a JSON blob.
+  |> pg([(.keys | map(tostring) | join(",")), (.args.limit // 10)]): `
+    SELECT id, name, email, team_id
+    FROM (
+      SELECT
+        id, name, email, team_id,
+        ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY id) as rn
+      FROM employees
+      WHERE team_id::text = ANY(string_to_array($1, ','))
+    ) ranked
+    WHERE rn <= $2
+  `
+  # 2. Use JQ to map the flat list of rows into the DataLoader object structure
+  # Input: { "data": { "rows": [{id:1, team_id: 1}, {id:2, team_id: 2}, ...] } }
+  # Output: { "1": [{...}], "2": [{...}] }
+  |> jq: `
+    reduce .data.rows[] as $row (
+      {};
+      .[$row.team_id | tostring] += [$row]
+    )
+  `
+
 # Nested resolver: Use DataLoader to fetch employees for a team
 # This resolver is called for each Team.employees field
 # The DataLoader will batch all team_id requests and call EmployeesByTeamLoader once
