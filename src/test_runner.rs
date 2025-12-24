@@ -440,7 +440,8 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
 
                                 cache: crate::runtime::context::CacheStore::new(8, 60),
                     rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-                                
+                                #[cfg(feature = "debugger")]
+                                debugger: None,
                             };
 
                             // Pipeline-level mock when route uses a named pipeline
@@ -501,7 +502,8 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
 
                             cache: crate::runtime::context::CacheStore::new(8, 60),
                     rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-
+                            #[cfg(feature = "debugger")]
+                            debugger: None,
                         };
                         let ctx = crate::executor::RequestContext::new();
                         let (out, ct, status_opt, ctx) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input, ctx).await?;
@@ -546,7 +548,8 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
 
                             cache: crate::runtime::context::CacheStore::new(8, 60),
                     rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-
+                            #[cfg(feature = "debugger")]
+                            debugger: None,
                         };
                         let ctx = crate::executor::RequestContext::new();
                         let (out, ct, status_opt, ctx) = crate::executor::execute_pipeline(&env, &pipeline, input, ctx).await?;

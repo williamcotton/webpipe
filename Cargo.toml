@@ -42,6 +42,13 @@ parking_lot = "0.12"
 async-graphql = { version = "7.0", features = ["dynamic-schema", "dataloader", "chrono"] }
 async-graphql-parser = "7.0"
 async-graphql-value = "7.0"
+dashmap = "6.1"
 
 [features]
 pg_tests = []
+debugger = []
+
+[[bin]]
+name = "webpipe-dap"
+path = "src/bin/webpipe-dap.rs"
+required-features = ["debugger"]

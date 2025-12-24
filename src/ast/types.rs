@@ -193,6 +193,20 @@ pub enum PipelineStep {
     },
 }
 
+impl PipelineStep {
+    /// Get the source location of this step
+    /// Used by the debugger to match breakpoints
+    pub fn location(&self) -> &SourceLocation {
+        match self {
+            PipelineStep::Regular { location, .. } => location,
+            PipelineStep::Result { location, .. } => location,
+            PipelineStep::If { location, .. } => location,
+            PipelineStep::Dispatch { location, .. } => location,
+            PipelineStep::Foreach { location, .. } => location,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DispatchBranch {
     pub condition: TagExpr,

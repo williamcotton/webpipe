@@ -175,6 +175,14 @@ impl RequestMetadata {
     }
 }
 
+/// Debug stepping modes for step-by-step execution
+#[cfg(feature = "debugger")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepMode {
+    /// Stop at next step in same pipeline (don't enter nested pipelines)
+    StepOver,
+}
+
 /// Per-request mutable context (The Backpack)
 pub struct RequestContext {
     /// Feature flags for this request (extracted from headers or auth, NOT from user JSON)
@@ -200,6 +208,14 @@ pub struct RequestContext {
 
     /// Profiler for tracking execution timing
     pub profiler: Profiler,
+
+    /// Debug thread ID for DAP protocol (None in production)
+    #[cfg(feature = "debugger")]
+    pub debug_thread_id: Option<u64>,
+
+    /// Debug stepping mode (StepOver pauses at next step)
+    #[cfg(feature = "debugger")]
+    pub debug_step_mode: Option<StepMode>,
 }
 
 impl RequestContext {
@@ -212,6 +228,10 @@ impl RequestContext {
             metadata: RequestMetadata::default(),
             call_log: HashMap::new(),
             profiler: Profiler::default(),
+            #[cfg(feature = "debugger")]
+            debug_thread_id: None,
+            #[cfg(feature = "debugger")]
+            debug_step_mode: None,
         }
     }
 
@@ -331,6 +351,11 @@ pub struct ExecutionEnv {
 
     /// Global rate limit store (shared across requests)
     pub rate_limit: RateLimitStore,
+
+    /// Optional debugger hook (None = zero cost in production)
+    /// When enabled, before_step/after_step are called for each pipeline step
+    #[cfg(feature = "debugger")]
+    pub debugger: Option<std::sync::Arc<dyn crate::debugger::DebuggerHook>>,
 }
 
 #[derive(Clone)]
@@ -997,6 +1022,27 @@ async fn execute_step<'a>(
     ctx.profiler.push(&step_name);
     let start_time = std::time::Instant::now();
 
+    // Debugger Hook: before_step
+    #[cfg(feature = "debugger")]
+    if let Some(ref dbg) = env.debugger {
+        let thread_id = ctx.debug_thread_id.unwrap_or(0);
+        let location = step.location();
+        eprintln!("[EXEC] Calling before_step: thread={}, step={}, line={}", thread_id, step_name, location.line);
+        let action = dbg.before_step(thread_id, &step_name, location, &pipeline_ctx.state).await?;
+
+        // Handle stepping actions
+        match action {
+            crate::debugger::StepAction::Continue => {
+                // Clear step mode - resume normal execution
+                ctx.debug_step_mode = None;
+            }
+            crate::debugger::StepAction::StepOver => {
+                // Set step mode - pause at next step
+                ctx.debug_step_mode = Some(StepMode::StepOver);
+            }
+        }
+    }
+
     // 3. Execute (Existing Logic)
     let result = match step {
         PipelineStep::Regular { name, args, config, condition, parsed_join_targets, .. } => {
@@ -1195,6 +1241,14 @@ async fn execute_step<'a>(
             Ok(StepOutcome::Continue)
         }
     };
+
+    // Debugger Hook: after_step
+    #[cfg(feature = "debugger")]
+    if let Some(ref dbg) = env.debugger {
+        let thread_id = ctx.debug_thread_id.unwrap_or(0);
+        let location = step.location();
+        dbg.after_step(thread_id, &step_name, location, &pipeline_ctx.state).await;
+    }
 
     // 4. End Profiling
     let elapsed = start_time.elapsed().as_micros();

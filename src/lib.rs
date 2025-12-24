@@ -11,6 +11,9 @@ pub mod http {
     pub mod request;
 }
 
+#[cfg(feature = "debugger")]
+pub mod debugger;
+
 pub use ast::*;
 pub use error::WebPipeError;
 pub use server::{WebPipeServer, WebPipeRequest};

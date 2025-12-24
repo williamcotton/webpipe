@@ -76,6 +76,10 @@ pub enum WebPipeError {
 
     #[error("Rate limit exceeded: {0}")]
     RateLimitExceeded(String),
+
+    #[cfg(feature = "debugger")]
+    #[error("Debugger error: {0}")]
+    DebuggerError(String),
 }
 
 impl WebPipeError {
@@ -104,6 +108,8 @@ impl WebPipeError {
             WebPipeError::MethodNotAllowed(_) => StatusCode::METHOD_NOT_ALLOWED,
             WebPipeError::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
             WebPipeError::RateLimitExceeded(_) => StatusCode::TOO_MANY_REQUESTS,
+            #[cfg(feature = "debugger")]
+            WebPipeError::DebuggerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -132,6 +138,8 @@ impl WebPipeError {
             WebPipeError::MethodNotAllowed(_) => "method_not_allowed",
             WebPipeError::Timeout(_) => "timeout",
             WebPipeError::RateLimitExceeded(_) => "rate_limit_exceeded",
+            #[cfg(feature = "debugger")]
+            WebPipeError::DebuggerError(_) => "debugger_error",
         }
     }
 }

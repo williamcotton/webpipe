@@ -167,6 +167,8 @@ pub struct WebPipeServer {
     middleware_registry: Arc<MiddlewareRegistry>,
     ctx: Arc<Context>,
     trace_enabled: bool,
+    #[cfg(feature = "debugger")]
+    debugger: Option<std::sync::Arc<dyn crate::debugger::DebuggerHook>>,
 }
 
 #[derive(Clone)]
@@ -202,6 +204,13 @@ impl ServerState {
     /// SECURITY: Feature flags are extracted from the feature_flags pipeline result,
     /// NOT from user-provided JSON input (which would be a security vulnerability)
     fn create_request_context(&self, flags: HashMap<String, bool>) -> crate::executor::RequestContext {
+        #[cfg(feature = "debugger")]
+        let debug_thread_id = if let Some(ref debugger) = self.env.debugger {
+            Some(debugger.allocate_thread_id())
+        } else {
+            None
+        };
+
         crate::executor::RequestContext {
             feature_flags: flags,
             conditions: HashMap::new(),
@@ -210,6 +219,10 @@ impl ServerState {
             metadata: crate::executor::RequestMetadata::default(),
             call_log: HashMap::new(),
             profiler: crate::executor::Profiler::default(),
+            #[cfg(feature = "debugger")]
+            debug_thread_id,
+            #[cfg(feature = "debugger")]
+            debug_step_mode: None,
         }
     }
 
@@ -228,7 +241,27 @@ pub struct WebPipeRequest {
 }
 
 impl WebPipeServer {
+    #[cfg(feature = "debugger")]
+    pub async fn from_program_with_debugger(
+        program: Program,
+        trace_enabled: bool,
+        debugger: Option<std::sync::Arc<dyn crate::debugger::DebuggerHook>>,
+    ) -> Result<Self, WebPipeError> {
+        Self::from_program_internal(program, trace_enabled, debugger).await
+    }
+
     pub async fn from_program(program: Program, trace_enabled: bool) -> Result<Self, WebPipeError> {
+        Self::from_program_internal(program, trace_enabled, None).await
+    }
+
+    async fn from_program_internal(
+        program: Program,
+        trace_enabled: bool,
+        #[cfg(feature = "debugger")]
+        debugger: Option<std::sync::Arc<dyn crate::debugger::DebuggerHook>>,
+        #[cfg(not(feature = "debugger"))]
+        _debugger: Option<()>,
+    ) -> Result<Self, WebPipeError> {
         // 1. Build GraphQL runtime first (if schema exists)
         let graphql_runtime = if program.graphql_schema.is_some() {
             Some(Arc::new(
@@ -254,6 +287,8 @@ impl WebPipeServer {
             middleware_registry,
             ctx: ctx_arc,
             trace_enabled,
+            #[cfg(feature = "debugger")]
+            debugger,
         })
     }
 
@@ -384,6 +419,8 @@ impl WebPipeServer {
             environment: std::env::var("WEBPIPE_ENV").ok(),
             cache: self.ctx.cache.clone(),
             rate_limit: self.ctx.rate_limit.clone(),
+            #[cfg(feature = "debugger")]
+            debugger: self.debugger.clone(),
         });
 
         // Set the execution environment in the Context so GraphQL middleware can access it
@@ -913,6 +950,8 @@ mod tests {
             environment: None,
             cache: ctx.cache.clone(),
             rate_limit: ctx.rate_limit.clone(),
+            #[cfg(feature = "debugger")]
+            debugger: None,
         };
         let state = ServerState {
             get_router: Arc::new(matchit::Router::new()),
