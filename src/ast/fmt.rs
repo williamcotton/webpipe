@@ -174,14 +174,14 @@ impl Display for PipelineStep {
                 }
                 Ok(())
             }
-            PipelineStep::Result { branches } => {
+            PipelineStep::Result { branches, .. } => {
                 writeln!(f, "  |> result")?;
                 for branch in branches {
                     write!(f, "    {}", branch)?;
                 }
                 Ok(())
             }
-            PipelineStep::If { condition, then_branch, else_branch } => {
+            PipelineStep::If { condition, then_branch, else_branch, .. } => {
                 writeln!(f, "  |> if")?;
                 // Format condition pipeline with proper indentation
                 for step in &condition.steps {
@@ -201,7 +201,7 @@ impl Display for PipelineStep {
                 }
                 Ok(())
             }
-            PipelineStep::Dispatch { branches, default } => {
+            PipelineStep::Dispatch { branches, default, .. } => {
                 writeln!(f, "  |> dispatch")?;
                 // Format case branches
                 for branch in branches {
@@ -225,7 +225,7 @@ impl Display for PipelineStep {
                 }
                 Ok(())
             }
-            PipelineStep::Foreach { selector, pipeline } => {
+            PipelineStep::Foreach { selector, pipeline, .. } => {
                 writeln!(f, "  |> foreach {}", selector)?;
                 // Format inner pipeline with proper indentation
                 for step in &pipeline.steps {

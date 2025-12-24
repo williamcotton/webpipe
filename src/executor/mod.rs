@@ -1014,7 +1014,7 @@ async fn execute_step<'a>(
                 current_output,
             ).await
         }
-        PipelineStep::Result { branches } => {
+        PipelineStep::Result { branches, .. } => {
             // Handle result step - returns immediately
             let error_type = extract_error_type(&pipeline_ctx.state);
             let selected = select_branch(branches, &error_type);
@@ -1055,7 +1055,7 @@ async fn execute_step<'a>(
                 }))
             }
         }
-        PipelineStep::If { condition, then_branch, else_branch } => {
+        PipelineStep::If { condition, then_branch, else_branch, .. } => {
             // 1. Run Condition on Cloned State
             let (cond_result, _, _) = execute_pipeline_internal(
                 env,
@@ -1113,7 +1113,7 @@ async fn execute_step<'a>(
 
             Ok(StepOutcome::Continue)
         }
-        PipelineStep::Dispatch { branches, default } => {
+        PipelineStep::Dispatch { branches, default, .. } => {
             // Iterate through branches and find the first matching condition
             let mut matched_pipeline = None;
 
@@ -1153,7 +1153,7 @@ async fn execute_step<'a>(
 
             Ok(StepOutcome::Continue)
         }
-        PipelineStep::Foreach { selector, pipeline } => {
+        PipelineStep::Foreach { selector, pipeline, .. } => {
             // SURGICAL EXTRACTION PATTERN
             // 1. EXTRACTION
             // Use json_path helper to find the node and .take() it.
@@ -1474,11 +1474,11 @@ mod tests {
     async fn result_branch_selection_and_status() {
         let env = env_with_vars(vec![]);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "echo".to_string(), args: Vec::new(), config: "{}".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None },
+            PipelineStep::Regular { name: "echo".to_string(), args: Vec::new(), config: "{}".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation::default() },
             PipelineStep::Result { branches: vec![
-                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Ok, status_code: 201, pipeline: Pipeline { steps: vec![] } },
-                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 200, pipeline: Pipeline { steps: vec![] } },
-            ]}
+                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Ok, status_code: 201, pipeline: Pipeline { steps: vec![] }, location: crate::ast::SourceLocation::default() },
+                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 200, pipeline: Pipeline { steps: vec![] }, location: crate::ast::SourceLocation::default() },
+            ], location: crate::ast::SourceLocation::default() }
         ]};
         let (out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert!(out.is_object());
@@ -1491,9 +1491,9 @@ mod tests {
         let input = serde_json::json!({ "errors": [ { "type": "validationError", "message": "bad" } ] });
         let pipeline = Pipeline { steps: vec![
             PipelineStep::Result { branches: vec![
-                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Custom("validationError".to_string()), status_code: 422, pipeline: Pipeline { steps: vec![] } },
-                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 500, pipeline: Pipeline { steps: vec![] } },
-            ]}
+                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Custom("validationError".to_string()), status_code: 422, pipeline: Pipeline { steps: vec![] }, location: crate::ast::SourceLocation::default() },
+                crate::ast::ResultBranch { branch_type: crate::ast::ResultBranchType::Default, status_code: 500, pipeline: Pipeline { steps: vec![] }, location: crate::ast::SourceLocation::default() },
+            ], location: crate::ast::SourceLocation::default() }
         ]};
         let (_out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, input, RequestContext::new()).await.unwrap();
         assert_eq!(status, Some(422));
@@ -1503,7 +1503,7 @@ mod tests {
     async fn handlebars_sets_html_content_type() {
         let env = env_with_vars(vec![]);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "Hello".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
+            PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "Hello".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation::default() }
         ]};
         let (_out, ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert_eq!(ct, "text/html");
@@ -1514,7 +1514,7 @@ mod tests {
         let vars = vec![Variable { var_type: "echo".to_string(), name: "myVar".to_string(), value: "{}".to_string() }];
         let env = env_with_vars(vars);
         let pipeline = Pipeline { steps: vec![
-            PipelineStep::Regular { name: "echo".to_string(), args: Vec::new(), config: "myVar".to_string(), config_type: crate::ast::ConfigType::Identifier, condition: None, parsed_join_targets: None }
+            PipelineStep::Regular { name: "echo".to_string(), args: Vec::new(), config: "myVar".to_string(), config_type: crate::ast::ConfigType::Identifier, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation::default() }
         ]};
         let (out, _ct, _st, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert!(out.get("resultName").is_none());
@@ -1534,6 +1534,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("env", false, vec!["production"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1554,6 +1555,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("env", false, vec!["production"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1575,6 +1577,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("env", true, vec!["production"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1596,6 +1599,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("env", true, vec!["production"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1619,6 +1623,7 @@ mod tests {
                     TagExpr::Tag(Tag { name: "env".to_string(), negated: true, args: vec!["staging".to_string()] })
                 ),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1639,6 +1644,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("env", false, vec!["production"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1658,6 +1664,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("flag", false, vec!["beta"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1683,6 +1690,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("needs", false, vec!["flags"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1703,6 +1711,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["task1"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             },
             PipelineStep::Regular {
                 name: "echo".to_string(),
@@ -1710,6 +1719,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1733,6 +1743,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["task1"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
@@ -1740,6 +1751,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: Some(vec!["task1".to_string()]),
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1765,6 +1777,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["task1"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             },
             PipelineStep::Regular {
                 name: "echo".to_string(),
@@ -1772,6 +1785,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["task2"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
@@ -1779,6 +1793,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: Some(vec!["task1".to_string(), "task2".to_string()]),
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1802,6 +1817,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["a"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
@@ -1809,6 +1825,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: Some(vec!["a".to_string()]),
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1830,6 +1847,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             },
             // Async task should see counter: 1
             PipelineStep::Regular {
@@ -1838,6 +1856,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("async", false, vec!["snapshot"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             },
             // Modify state after async spawn
             PipelineStep::Regular {
@@ -1846,6 +1865,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             },
             PipelineStep::Regular {
                 name: "join".to_string(),
@@ -1853,6 +1873,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: None,
                 parsed_join_targets: Some(vec!["snapshot".to_string()]),
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1879,6 +1900,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("when", false, vec!["is_admin"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1898,6 +1920,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("when", false, vec!["is_admin"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1919,6 +1942,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("when", true, vec!["is_admin"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1938,6 +1962,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("when", false, vec!["is_admin", "is_premium"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1967,6 +1992,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("flag", false, vec!["beta"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 
@@ -1978,6 +2004,7 @@ mod tests {
                 config_type: crate::ast::ConfigType::Quoted,
                 condition: single_tag("when", false, vec!["beta"]),
                 parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
             }
         ]};
 

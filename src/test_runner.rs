@@ -1,4 +1,4 @@
-use crate::ast::{Mock, Pipeline, PipelineRef, PipelineStep, Program, Variable, When, DomAssertType};
+use crate::ast::{Mock, Pipeline, PipelineRef, PipelineStep, Program, Variable, When, DomAssertType, SourceLocation};
 use crate::error::WebPipeError;
 use crate::middleware::MiddlewareRegistry;
 use crate::executor::{ExecutionEnv, MiddlewareInvoker};
@@ -523,7 +523,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                         (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
                     } else {
                         // Single-step pipeline invoking the variable's middleware
-                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), args: Vec::new(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None }] };
+                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), args: Vec::new(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None, location: SourceLocation { line: 0, column: 0, offset: 0 } }] };
                         let named: HashMap<String, Arc<Pipeline>> = program
                             .pipelines
                             .iter()

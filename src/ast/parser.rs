@@ -1,7 +1,7 @@
 use nom::IResult;
 use nom::{
     branch::alt,
-    bytes::complete::{tag, take_till1, take_until},
+    bytes::complete::{tag, take_till1, take_until, take},
     character::complete::{alphanumeric1, char, digit1, multispace0},
     combinator::{map, map_res, opt, recognize},
     multi::many0,
@@ -10,23 +10,39 @@ use nom::{
 };
 
 use super::types::*;
+use nom_locate::LocatedSpan;
+
+/// Span type that tracks location information
+pub type Span<'a> = LocatedSpan<&'a str>;
+
+/// Extract SourceLocation from a Span
+fn location_from_span(span: Span) -> SourceLocation {
+    SourceLocation {
+        line: span.location_line() as usize,
+        column: span.get_column(),
+        offset: span.location_offset(),
+    }
+}
 
 // Skip whitespace and comments (lines starting with #)
-fn skip_ws_and_comments(input: &str) -> IResult<&str, ()> {
+fn skip_ws_and_comments(input: Span) -> IResult<Span, ()> {
     let mut remaining = input;
     loop {
         // Skip whitespace
         let (new_input, _) = multispace0(remaining)?;
         remaining = new_input;
-        
+
         // Check for comment line
-        if remaining.starts_with('#') {
+        let fragment = remaining.fragment();
+        if fragment.starts_with('#') {
             // Skip to end of line
-            if let Some(newline_pos) = remaining.find('\n') {
-                remaining = &remaining[newline_pos + 1..];
+            if let Some(newline_pos) = fragment.find('\n') {
+                let (new_input, _) = take(newline_pos + 1)(remaining)?;
+                remaining = new_input;
             } else {
                 // Comment goes to end of input
-                remaining = "";
+                let (new_input, _) = take(fragment.len())(remaining)?;
+                remaining = new_input;
             }
         } else {
             break;
@@ -36,22 +52,22 @@ fn skip_ws_and_comments(input: &str) -> IResult<&str, ()> {
 }
 
 // Multi-line string parser for backtick-delimited content
-fn parse_multiline_string(input: &str) -> IResult<&str, String> {
+fn parse_multiline_string(input: Span) -> IResult<Span, String> {
     delimited(
         char('`'),
-        map(take_until("`"), |s: &str| s.to_string()),
+        map(take_until("`"), |s: Span| s.fragment().to_string()),
         char('`')
     ).parse(input)
 }
 
 // Pipeline step configuration parser - handles both backticks and double quotes
-fn parse_step_config(input: &str) -> IResult<&str, (String, ConfigType)> {
+fn parse_step_config(input: Span) -> IResult<Span, (String, ConfigType)> {
     alt((
         // Backtick-delimited multi-line strings
         map(
             delimited(
                 char('`'),
-                map(take_until("`"), |s: &str| s.to_string()),
+                map(take_until("`"), |s: Span| s.fragment().to_string()),
                 char('`')
             ),
             |s| (s, ConfigType::Backtick)
@@ -60,7 +76,7 @@ fn parse_step_config(input: &str) -> IResult<&str, (String, ConfigType)> {
         map(
             delimited(
                 char('"'),
-                map(take_until("\""), |s: &str| s.to_string()),
+                map(take_until("\""), |s: Span| s.fragment().to_string()),
                 char('"')
             ),
             |s| (s, ConfigType::Quoted)
@@ -71,25 +87,25 @@ fn parse_step_config(input: &str) -> IResult<&str, (String, ConfigType)> {
 }
 
 // Basic parsers
-fn parse_method(input: &str) -> IResult<&str, String> {
+fn parse_method(input: Span) -> IResult<Span, String> {
     map(
         alt((tag("GET"), tag("POST"), tag("PUT"), tag("DELETE"))),
-        |s: &str| s.to_string()
+        |s: Span| s.fragment().to_string()
     ).parse(input)
 }
 
-fn parse_identifier(input: &str) -> IResult<&str, String> {
+fn parse_identifier(input: Span) -> IResult<Span, String> {
     map(
         recognize((
             alt((alphanumeric1, tag("_"))),
             many0(alt((alphanumeric1, tag("_"), tag("-"))))
         )),
-        |s: &str| s.to_string()
+        |s: Span| s.fragment().to_string()
     ).parse(input)
 }
 
 // Config parsing
-fn parse_config_value(input: &str) -> IResult<&str, ConfigValue> {
+fn parse_config_value(input: Span) -> IResult<Span, ConfigValue> {
     alt((
         // Environment variable with default
         map(
@@ -100,7 +116,7 @@ fn parse_config_value(input: &str) -> IResult<&str, ConfigValue> {
                     delimited(char('"'), take_until("\""), char('"'))
                 )
             ),
-            |(var, default)| ConfigValue::EnvVar { var, default: Some(default.to_string()) }
+            |(var, default)| ConfigValue::EnvVar { var, default: Some(default.fragment().to_string()) }
         ),
         // Environment variable without default
         map(
@@ -110,18 +126,18 @@ fn parse_config_value(input: &str) -> IResult<&str, ConfigValue> {
         // String literal
         map(
             delimited(char('"'), take_until("\""), char('"')),
-            |s: &str| ConfigValue::String(s.to_string())
+            |s: Span| ConfigValue::String(s.fragment().to_string())
         ),
         // Boolean
-        map(alt((tag("true"), tag("false"))), |s| {
-            ConfigValue::Boolean(s == "true")
+        map(alt((tag("true"), tag("false"))), |s: Span| {
+            ConfigValue::Boolean(s.fragment() == &"true")
         }),
         // Number
-        map_res(digit1, |s: &str| s.parse::<i64>().map(ConfigValue::Number))
+        map_res(digit1, |s: Span| s.fragment().parse::<i64>().map(ConfigValue::Number))
     )).parse(input)
 }
 
-fn parse_config_property(input: &str) -> IResult<&str, ConfigProperty> {
+fn parse_config_property(input: Span) -> IResult<Span, ConfigProperty> {
     let (input, _) = multispace0(input)?;
     let (input, key) = parse_identifier(input)?;
     let (input, _) = (multispace0, char(':'), multispace0).parse(input)?;
@@ -129,7 +145,7 @@ fn parse_config_property(input: &str) -> IResult<&str, ConfigProperty> {
     Ok((input, ConfigProperty { key, value }))
 }
 
-fn parse_config(input: &str) -> IResult<&str, Config> {
+fn parse_config(input: Span) -> IResult<Span, Config> {
     let (input, _) = tag("config")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, name) = parse_identifier(input)?;
@@ -144,9 +160,10 @@ fn parse_config(input: &str) -> IResult<&str, Config> {
 }
 
 // Pipeline parsing
-fn parse_if_step(input: &str) -> IResult<&str, PipelineStep> {
+fn parse_if_step(input: Span) -> IResult<Span, PipelineStep> {
     // 1. Parse Header: "|> if"
     let (input, _) = skip_ws_and_comments(input)?;
+    let start_span = input;
     let (input, _) = tag("|>")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("if")(input)?;
@@ -176,10 +193,13 @@ fn parse_if_step(input: &str) -> IResult<&str, PipelineStep> {
     // 5. Parse Optional "end" keyword
     let (input, _) = opt(tag("end")).parse(input)?;
 
+    let location = location_from_span(start_span);
+
     Ok((input, PipelineStep::If {
         condition,
         then_branch,
         else_branch,
+        location,
     }))
 }
 
@@ -189,35 +209,35 @@ fn parse_if_step(input: &str) -> IResult<&str, PipelineStep> {
 //   or_expr  := and_expr ("or" and_expr)*
 //   and_expr := primary ("and" primary)*
 //   primary  := tag | "(" tag_expr ")"
-fn parse_tag_expr(input: &str) -> IResult<&str, TagExpr> {
+fn parse_tag_expr(input: Span) -> IResult<Span, TagExpr> {
     parse_or_expr(input)
 }
 
-fn parse_or_expr(input: &str) -> IResult<&str, TagExpr> {
+fn parse_or_expr(input: Span) -> IResult<Span, TagExpr> {
     let (input, first) = parse_and_expr(input)?;
     let (input, rest) = many0(preceded(
         delimited(multispace0, tag("or"), multispace0),
         parse_and_expr
     )).parse(input)?;
-    
+
     Ok((input, rest.into_iter().fold(first, |acc, expr| {
         TagExpr::Or(Box::new(acc), Box::new(expr))
     })))
 }
 
-fn parse_and_expr(input: &str) -> IResult<&str, TagExpr> {
+fn parse_and_expr(input: Span) -> IResult<Span, TagExpr> {
     let (input, first) = parse_tag_primary(input)?;
     let (input, rest) = many0(preceded(
         delimited(multispace0, tag("and"), multispace0),
         parse_tag_primary
     )).parse(input)?;
-    
+
     Ok((input, rest.into_iter().fold(first, |acc, expr| {
         TagExpr::And(Box::new(acc), Box::new(expr))
     })))
 }
 
-fn parse_tag_primary(input: &str) -> IResult<&str, TagExpr> {
+fn parse_tag_primary(input: Span) -> IResult<Span, TagExpr> {
     alt((
         // Grouped expression: ( expr )
         map(
@@ -235,8 +255,9 @@ fn parse_tag_primary(input: &str) -> IResult<&str, TagExpr> {
 
 // Parse a single dispatch branch: case @tag: |> pipeline
 // Now supports boolean expressions: case @when(a) and @when(b):
-fn parse_dispatch_branch(input: &str) -> IResult<&str, DispatchBranch> {
+fn parse_dispatch_branch(input: Span) -> IResult<Span, DispatchBranch> {
     let (input, _) = skip_ws_and_comments(input)?;
+    let start_span = input;
     let (input, _) = tag("case")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, condition) = parse_tag_expr(input)?;
@@ -245,13 +266,15 @@ fn parse_dispatch_branch(input: &str) -> IResult<&str, DispatchBranch> {
     let (input, _) = skip_ws_and_comments(input)?;
     // parse_pipeline stops when it hits tokens it doesn't recognize
     let (input, pipeline) = parse_pipeline(input)?;
-    Ok((input, DispatchBranch { condition, pipeline }))
+    let location = location_from_span(start_span);
+    Ok((input, DispatchBranch { condition, pipeline, location }))
 }
 
 // Parse the dispatch step: |> dispatch case ... case ... default: ... end
-fn parse_dispatch_step(input: &str) -> IResult<&str, PipelineStep> {
+fn parse_dispatch_step(input: Span) -> IResult<Span, PipelineStep> {
     // 1. Parse Header: "|> dispatch"
     let (input, _) = skip_ws_and_comments(input)?;
+    let start_span = input;
     let (input, _) = tag("|>")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("dispatch")(input)?;
@@ -274,12 +297,15 @@ fn parse_dispatch_step(input: &str) -> IResult<&str, PipelineStep> {
     // 4. Parse optional 'end' keyword
     let (input, _) = opt(tag("end")).parse(input)?;
 
-    Ok((input, PipelineStep::Dispatch { branches, default }))
+    let location = location_from_span(start_span);
+
+    Ok((input, PipelineStep::Dispatch { branches, default, location }))
 }
 
-fn parse_foreach_step(input: &str) -> IResult<&str, PipelineStep> {
+fn parse_foreach_step(input: Span) -> IResult<Span, PipelineStep> {
     // 1. Header: "|> foreach"
     let (input, _) = skip_ws_and_comments(input)?;
+    let start_span = input;
     let (input, _) = tag("|>")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("foreach")(input)?;
@@ -288,7 +314,7 @@ fn parse_foreach_step(input: &str) -> IResult<&str, PipelineStep> {
     // 2. Selector: "data.rows"
     // Consume characters until we hit a newline or a comment start (#)
     let (input, raw_selector) = take_till1(|c| c == '\n' || c == '#')(input)?;
-    let selector = raw_selector.trim().to_string();
+    let selector = raw_selector.fragment().trim().to_string();
     let (input, _) = skip_ws_and_comments(input)?;
 
     // 3. Inner Pipeline
@@ -299,13 +325,16 @@ fn parse_foreach_step(input: &str) -> IResult<&str, PipelineStep> {
     // 4. Footer: "end"
     let (input, _) = tag("end")(input)?;
 
+    let location = location_from_span(start_span);
+
     Ok((input, PipelineStep::Foreach {
         selector,
         pipeline,
+        location,
     }))
 }
 
-fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
+fn parse_pipeline_step(input: Span) -> IResult<Span, PipelineStep> {
     alt((
         parse_result_step,
         parse_if_step,
@@ -316,7 +345,7 @@ fn parse_pipeline_step(input: &str) -> IResult<&str, PipelineStep> {
 }
 
 // Tag parsing
-fn parse_tag(input: &str) -> IResult<&str, Tag> {
+fn parse_tag(input: Span) -> IResult<Span, Tag> {
     let (input, _) = char('@')(input)?;
 
     // Check for negation
@@ -334,7 +363,7 @@ fn parse_tag(input: &str) -> IResult<&str, Tag> {
 }
 
 // Parse a tag argument - can be either an identifier or a backtick string
-fn parse_tag_argument(input: &str) -> IResult<&str, String> {
+fn parse_tag_argument(input: Span) -> IResult<Span, String> {
     alt((
         // Allow backtick strings for JQ expressions (like @guard)
         parse_multiline_string,
@@ -343,7 +372,7 @@ fn parse_tag_argument(input: &str) -> IResult<&str, String> {
     )).parse(input)
 }
 
-fn parse_tag_args(input: &str) -> IResult<&str, Vec<String>> {
+fn parse_tag_args(input: Span) -> IResult<Span, Vec<String>> {
     delimited(
         char('('),
         nom::multi::separated_list1(
@@ -384,51 +413,54 @@ fn parse_join_task_names(config: &str) -> Option<Vec<String>> {
 /// Parse optional step condition (tag expression after the config)
 /// Supports:
 ///   - @tag (single tag)
-///   - @tag @tag2 (implicit AND for backwards compatibility)  
+///   - @tag @tag2 (implicit AND for backwards compatibility)
 ///   - @tag and @tag2 (explicit AND)
 ///   - @tag or @tag2 (explicit OR)
 ///   - (@tag or @tag2) and @tag3 (grouping)
-fn parse_step_condition(input: &str) -> IResult<&str, Option<TagExpr>> {
+fn parse_step_condition(input: Span) -> IResult<Span, Option<TagExpr>> {
     // Skip inline whitespace
     let (input, _) = nom::bytes::complete::take_while(|c| c == ' ' || c == '\t')(input)?;
-    
+
     // Check if there's a tag expression starting (@ for tags, ( for grouped expressions)
-    if !input.starts_with('@') && !input.starts_with('(') {
+    let fragment = input.fragment();
+    if !fragment.starts_with('@') && !fragment.starts_with('(') {
         return Ok((input, None));
     }
-    
+
     // Parse the first tag expression (which may include and/or)
     let (mut input, mut expr) = parse_tag_expr(input)?;
-    
+
     // Check for additional space-separated tags (implicit AND for backwards compatibility)
     // This handles: @dev @flag(x) which was valid in the old Vec<Tag> format
     loop {
         let (remaining, _) = nom::bytes::complete::take_while(|c| c == ' ' || c == '\t')(input)?;
-        
+
         // Check if there's another tag starting (without and/or keyword)
-        if !remaining.starts_with('@') {
+        let frag = remaining.fragment();
+        if !frag.starts_with('@') {
             break;
         }
-        
+
         // Make sure it's not just a newline or comment coming
-        if remaining.starts_with('\n') || remaining.starts_with('#') || remaining.starts_with("//") {
+        if frag.starts_with('\n') || frag.starts_with('#') || frag.starts_with("//") {
             break;
         }
-        
+
         // Parse the next tag (just a single tag, not a full expression)
         let (remaining, next_tag) = parse_tag(remaining)?;
         expr = TagExpr::And(Box::new(expr), Box::new(TagExpr::Tag(next_tag)));
         input = remaining;
     }
-    
+
     Ok((input, Some(expr)))
 }
 
 /// Parse inline arguments for middleware (e.g., fetch(url, options))
 /// Returns a vector of argument strings
-fn parse_inline_args(input: &str) -> IResult<&str, Vec<String>> {
+fn parse_inline_args(input: Span) -> IResult<Span, Vec<String>> {
     // Check if we have arguments starting with ( or [
-    let trimmed_input = input.trim_start();
+    let fragment = input.fragment();
+    let trimmed_input = fragment.trim_start();
     if !trimmed_input.starts_with('(') && !trimmed_input.starts_with('[') {
         return Ok((input, Vec::new()));
     }
@@ -445,7 +477,8 @@ fn parse_inline_args(input: &str) -> IResult<&str, Vec<String>> {
     let mut escape_next = false;
     let mut end_pos = None;
 
-    for (idx, ch) in input.char_indices() {
+    let input_fragment = input.fragment();
+    for (idx, ch) in input_fragment.char_indices() {
         if escape_next {
             escape_next = false;
             continue;
@@ -470,8 +503,8 @@ fn parse_inline_args(input: &str) -> IResult<&str, Vec<String>> {
         nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Eof))
     })?;
 
-    let args_content = &input[..end_pos];
-    let remaining = &input[end_pos + 1..]; // Skip the closing bracket
+    let args_content = &input_fragment[..end_pos];
+    let (remaining, _) = take(end_pos + 1)(input)?; // Skip the closing bracket
 
     // Split by commas, respecting nesting and strings
     let args = split_balanced_args(args_content);
@@ -532,8 +565,9 @@ fn split_balanced_args(content: &str) -> Vec<String> {
     args
 }
 
-fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
+fn parse_regular_step(input: Span) -> IResult<Span, PipelineStep> {
     let (input, _) = skip_ws_and_comments(input)?;
+    let start_span = input;
     let (input, _) = tag("|>")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, name) = parse_identifier(input)?;
@@ -563,21 +597,25 @@ fn parse_regular_step(input: &str) -> IResult<&str, PipelineStep> {
     };
 
     let (input, _) = multispace0(input)?;
-    Ok((input, PipelineStep::Regular { name, args, config, config_type, condition, parsed_join_targets }))
+    let location = location_from_span(start_span);
+    Ok((input, PipelineStep::Regular { name, args, config, config_type, condition, parsed_join_targets, location }))
 }
 
-fn parse_result_step(input: &str) -> IResult<&str, PipelineStep> {
+fn parse_result_step(input: Span) -> IResult<Span, PipelineStep> {
     let (input, _) = skip_ws_and_comments(input)?;
+    let start_span = input;
     let (input, _) = tag("|>")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("result")(input)?;
     let (input, _) = skip_ws_and_comments(input)?;
     let (input, branches) = many0(parse_result_branch).parse(input)?;
-    Ok((input, PipelineStep::Result { branches }))
+    let location = location_from_span(start_span);
+    Ok((input, PipelineStep::Result { branches, location }))
 }
 
-fn parse_result_branch(input: &str) -> IResult<&str, ResultBranch> {
+fn parse_result_branch(input: Span) -> IResult<Span, ResultBranch> {
     let (input, _) = skip_ws_and_comments(input)?;
+    let start_span = input;
     let (input, branch_type_str) = parse_identifier(input)?;
     let branch_type = match branch_type_str.as_str() {
         "ok" => ResultBranchType::Ok,
@@ -586,24 +624,25 @@ fn parse_result_branch(input: &str) -> IResult<&str, ResultBranch> {
     };
     let (input, _) = char('(')(input)?;
     let (input, status_code_str) = digit1(input)?;
-    let status_code = status_code_str.parse::<u16>().map_err(|_| {
+    let status_code = status_code_str.fragment().parse::<u16>().map_err(|_| {
         nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::MapRes))
     })?;
     let (input, _) = char(')')(input)?;
     let (input, _) = char(':')(input)?;
     let (input, _) = multispace0(input)?;
     let (input, pipeline) = parse_pipeline(input)?;
-    Ok((input, ResultBranch { branch_type, status_code, pipeline }))
+    let location = location_from_span(start_span);
+    Ok((input, ResultBranch { branch_type, status_code, pipeline, location }))
 }
 
-fn parse_pipeline(input: &str) -> IResult<&str, Pipeline> {
+fn parse_pipeline(input: Span) -> IResult<Span, Pipeline> {
     let mut steps = Vec::new();
     let mut remaining = input;
-    
+
     loop {
         // Skip whitespace and comments before checking for next step
         let (new_input, _) = skip_ws_and_comments(remaining)?;
-        
+
         // Try to parse a pipeline step
         if let Ok((after_step, step)) = parse_pipeline_step(new_input) {
             steps.push(step);
@@ -616,7 +655,7 @@ fn parse_pipeline(input: &str) -> IResult<&str, Pipeline> {
     }
 }
 
-fn parse_named_pipeline(input: &str) -> IResult<&str, NamedPipeline> {
+fn parse_named_pipeline(input: Span) -> IResult<Span, NamedPipeline> {
     let (input, _) = tag("pipeline")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, name) = parse_identifier(input)?;
@@ -628,7 +667,7 @@ fn parse_named_pipeline(input: &str) -> IResult<&str, NamedPipeline> {
     Ok((input, NamedPipeline { name, pipeline }))
 }
 
-fn parse_feature_flags(input: &str) -> IResult<&str, Pipeline> {
+fn parse_feature_flags(input: Span) -> IResult<Span, Pipeline> {
     let (input, _) = tag("featureFlags")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char('=')(input)?;
@@ -638,7 +677,7 @@ fn parse_feature_flags(input: &str) -> IResult<&str, Pipeline> {
     Ok((input, pipeline))
 }
 
-fn parse_pipeline_ref(input: &str) -> IResult<&str, PipelineRef> {
+fn parse_pipeline_ref(input: Span) -> IResult<Span, PipelineRef> {
     alt((
         // Inline pipeline (prefer inline so routes can chain steps after a pipeline call)
         map(parse_pipeline, PipelineRef::Inline),
@@ -654,7 +693,7 @@ fn parse_pipeline_ref(input: &str) -> IResult<&str, PipelineRef> {
 }
 
 // Variable parsing
-fn parse_variable(input: &str) -> IResult<&str, Variable> {
+fn parse_variable(input: Span) -> IResult<Span, Variable> {
     let (input, var_type) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
     let (input, name) = parse_identifier(input)?;
@@ -667,7 +706,7 @@ fn parse_variable(input: &str) -> IResult<&str, Variable> {
 }
 
 // Route parsing
-fn parse_route(input: &str) -> IResult<&str, Route> {
+fn parse_route(input: Span) -> IResult<Span, Route> {
     let (input, method) = parse_method(input)?;
     let (input, _) = multispace0(input)?;
     let (input, path) = take_till1(|c| c == ' ' || c == '\n')(input)?;
@@ -676,13 +715,13 @@ fn parse_route(input: &str) -> IResult<&str, Route> {
     let (input, _) = multispace0(input)?;
     Ok((input, Route {
         method,
-        path: path.to_string(),
+        path: path.fragment().to_string(),
         pipeline
     }))
 }
 
 // GraphQL parsing
-fn parse_graphql_schema(input: &str) -> IResult<&str, GraphQLSchema> {
+fn parse_graphql_schema(input: Span) -> IResult<Span, GraphQLSchema> {
     let (input, _) = tag("graphqlSchema")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char('=')(input)?;
@@ -692,7 +731,7 @@ fn parse_graphql_schema(input: &str) -> IResult<&str, GraphQLSchema> {
     Ok((input, GraphQLSchema { sdl }))
 }
 
-fn parse_query_resolver(input: &str) -> IResult<&str, QueryResolver> {
+fn parse_query_resolver(input: Span) -> IResult<Span, QueryResolver> {
     let (input, _) = tag("query")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, name) = parse_identifier(input)?;
@@ -704,7 +743,7 @@ fn parse_query_resolver(input: &str) -> IResult<&str, QueryResolver> {
     Ok((input, QueryResolver { name, pipeline }))
 }
 
-fn parse_mutation_resolver(input: &str) -> IResult<&str, MutationResolver> {
+fn parse_mutation_resolver(input: Span) -> IResult<Span, MutationResolver> {
     let (input, _) = tag("mutation")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, name) = parse_identifier(input)?;
@@ -716,7 +755,7 @@ fn parse_mutation_resolver(input: &str) -> IResult<&str, MutationResolver> {
     Ok((input, MutationResolver { name, pipeline }))
 }
 
-fn parse_type_resolver(input: &str) -> IResult<&str, TypeResolver> {
+fn parse_type_resolver(input: Span) -> IResult<Span, TypeResolver> {
     let (input, _) = tag("resolver")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, type_name) = parse_identifier(input)?;
@@ -731,7 +770,7 @@ fn parse_type_resolver(input: &str) -> IResult<&str, TypeResolver> {
 }
 
 // Test parsing
-fn parse_when(input: &str) -> IResult<&str, When> {
+fn parse_when(input: Span) -> IResult<Span, When> {
     alt((
         map(
             (
@@ -741,7 +780,7 @@ fn parse_when(input: &str) -> IResult<&str, When> {
                 multispace0,
                 take_till1(|c| c == '\n')
             ),
-            |(_, _, method, _, path)| When::CallingRoute { method, path: path.to_string() }
+            |(_, _, method, _, path)| When::CallingRoute { method, path: path.fragment().to_string() }
         ),
         map(
             (
@@ -768,12 +807,12 @@ fn parse_when(input: &str) -> IResult<&str, When> {
     )).parse(input)
 }
 
-fn parse_condition(input: &str) -> IResult<&str, Condition> {
+fn parse_condition(input: Span) -> IResult<Span, Condition> {
     let (input, _) = multispace0(input)?;
     let (input, condition_type_str) = alt((tag("then"), tag("and"))).parse(input)?;
-    let condition_type = match condition_type_str {
-        "then" => ConditionType::Then,
-        "and" => ConditionType::And,
+    let condition_type = match condition_type_str.fragment() {
+        &"then" => ConditionType::Then,
+        &"and" => ConditionType::And,
         _ => unreachable!(),
     };
     let (input, _) = multispace0(input)?;
@@ -781,12 +820,12 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
     let (input, _) = multispace0(input)?;
 
     // Check if this is a call assertion: "then call query users with ..."
-    if field == "call" {
+    if field.fragment() == &"call" {
         // Parse call target: "query users" or "mutation createTodo"
         let (input, call_type) = alt((tag("query"), tag("mutation"))).parse(input)?;
         let (input, _) = nom::character::complete::multispace1(input)?;
         let (input, call_name) = parse_identifier(input)?;
-        let call_target = format!("{}.{}", call_type, call_name);
+        let call_target = format!("{}.{}", call_type.fragment(), call_name);
         let (input, _) = multispace0(input)?;
 
         // Parse comparison (typically "with" or "with arguments")
@@ -801,9 +840,9 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
             map(parse_multiline_string, |s| s.to_string()),
             map(
                 delimited(char('"'), take_until("\""), char('"')),
-                |s: &str| s.to_string()
+                |s: Span| s.fragment().to_string()
             ),
-            map(take_till1(|c| c == '\n'), |s: &str| s.to_string()),
+            map(take_till1(|c| c == '\n'), |s: Span| s.fragment().to_string()),
         )).parse(input)?;
 
         return Ok((input, Condition {
@@ -811,7 +850,7 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
             field: "call".to_string(),
             header_name: None,
             jq_expr: None,
-            comparison: comparison.to_string(),
+            comparison: comparison.fragment().to_string(),
             value,
             is_call_assertion: true,
             call_target: Some(call_target),
@@ -821,12 +860,12 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
     }
 
     // Check if field is "selector" - if so, parse CSS selector and DOM assertion
-    if field == "selector" {
+    if field.fragment() == &"selector" {
         let (input, selector_val) = alt((
             map(parse_multiline_string, |s| s.to_string()),
             map(
                 delimited(char('"'), take_until("\""), char('"')),
-                |s: &str| s.to_string()
+                |s: Span| s.fragment().to_string()
             ),
         )).parse(input)?;
         let (input, _) = multispace0(input)?;
@@ -835,8 +874,8 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
         let (input, operation) = take_till1(|c| c == ' ' || c == '\n')(input)?;
         let (input, _) = multispace0(input)?;
 
-        match operation {
-            "exists" => {
+        match operation.fragment() {
+            &"exists" => {
                 return Ok((input, Condition {
                     condition_type,
                     field: "selector".to_string(),
@@ -850,7 +889,7 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
                     dom_assert: Some(DomAssertType::Exists),
                 }));
             }
-            "does" => {
+            &"does" => {
                 // Parse "does not exist"
                 let (input, _) = tag("not")(input)?;
                 let (input, _) = multispace0(input)?;
@@ -868,7 +907,7 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
                     dom_assert: Some(DomAssertType::Exists),
                 }));
             }
-            "text" => {
+            &"text" => {
                 // Parse comparison and value
                 let (input, comparison) = take_till1(|c| c == ' ')(input)?;
                 let (input, _) = multispace0(input)?;
@@ -876,16 +915,16 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
                     map(parse_multiline_string, |s| s.to_string()),
                     map(
                         delimited(char('"'), take_until("\""), char('"')),
-                        |s: &str| s.to_string()
+                        |s: Span| s.fragment().to_string()
                     ),
-                    map(take_till1(|c| c == '\n'), |s: &str| s.to_string()),
+                    map(take_till1(|c| c == '\n'), |s: Span| s.fragment().to_string()),
                 )).parse(input)?;
                 return Ok((input, Condition {
                     condition_type,
                     field: "selector".to_string(),
                     header_name: None,
                     jq_expr: None,
-                    comparison: comparison.to_string(),
+                    comparison: comparison.fragment().to_string(),
                     value,
                     is_call_assertion: false,
                     call_target: None,
@@ -893,11 +932,11 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
                     dom_assert: Some(DomAssertType::Text),
                 }));
             }
-            "count" => {
+            &"count" => {
                 // Parse comparison (equals | is | is greater than | is less than)
                 // Read until we hit a number
                 let (input, comp_text) = take_till1(|c: char| c.is_ascii_digit())(input)?;
-                let comparison = comp_text.trim().to_string();
+                let comparison = comp_text.fragment().trim().to_string();
                 let (input, value) = take_till1(|c| c == '\n')(input)?;
                 return Ok((input, Condition {
                     condition_type,
@@ -905,33 +944,33 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
                     header_name: None,
                     jq_expr: None,
                     comparison,
-                    value: value.trim().to_string(),
+                    value: value.fragment().trim().to_string(),
                     is_call_assertion: false,
                     call_target: None,
                     selector: Some(selector_val),
                     dom_assert: Some(DomAssertType::Count),
                 }));
             }
-            "attribute" => {
+            &"attribute" => {
                 // Parse attribute name
                 let (input, attr_name) = alt((
                     map(parse_multiline_string, |s| s.to_string()),
                     map(
                         delimited(char('"'), take_until("\""), char('"')),
-                        |s: &str| s.to_string()
+                        |s: Span| s.fragment().to_string()
                     ),
                 )).parse(input)?;
                 let (input, _) = multispace0(input)?;
                 // Parse comparison - read until we hit a quote or backtick (start of value)
                 let (input, comparison) = take_till1(|c| c == '"' || c == '`')(input)?;
-                let comparison = comparison.trim();
+                let comparison = comparison.fragment().trim();
                 let (input, value) = alt((
                     map(parse_multiline_string, |s| s.to_string()),
                     map(
                         delimited(char('"'), take_until("\""), char('"')),
-                        |s: &str| s.to_string()
+                        |s: Span| s.fragment().to_string()
                     ),
-                    map(take_till1(|c| c == '\n'), |s: &str| s.to_string()),
+                    map(take_till1(|c| c == '\n'), |s: Span| s.fragment().to_string()),
                 )).parse(input)?;
                 return Ok((input, Condition {
                     condition_type,
@@ -956,12 +995,12 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
     }
 
     // Check if field is "header" - if so, parse header name
-    let (input, header_name_opt) = if field == "header" {
+    let (input, header_name_opt) = if field.fragment() == &"header" {
         let (input, header_val) = alt((
             map(parse_multiline_string, |s| s.to_string()),
             map(
                 delimited(char('"'), take_until("\""), char('"')),
-                |s: &str| s.to_string()
+                |s: Span| s.fragment().to_string()
             ),
         )).parse(input)?;
         let (input, _) = multispace0(input)?;
@@ -987,17 +1026,17 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
         // quoted on the same line
         map(
             delimited(char('"'), take_until("\""), char('"')),
-            |s: &str| s.to_string()
+            |s: Span| s.fragment().to_string()
         ),
         // bare until end of line
-        map(take_till1(|c| c == '\n'), |s: &str| s.to_string()),
+        map(take_till1(|c| c == '\n'), |s: Span| s.fragment().to_string()),
     )).parse(input)?;
     Ok((input, Condition {
         condition_type,
-        field: field.to_string(),
+        field: field.fragment().to_string(),
         header_name: header_name_opt,
         jq_expr: jq_expr_opt,
-        comparison: comparison.to_string(),
+        comparison: comparison.fragment().to_string(),
         value,
         is_call_assertion: false,
         call_target: None,
@@ -1006,7 +1045,7 @@ fn parse_condition(input: &str) -> IResult<&str, Condition> {
     }))
 }
 
-fn parse_mock(input: &str) -> IResult<&str, Mock> {
+fn parse_mock(input: Span) -> IResult<Span, Mock> {
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("with")(input)?;
     let (input, _) = multispace0(input)?;
@@ -1029,7 +1068,7 @@ fn parse_mock(input: &str) -> IResult<&str, Mock> {
     } else {
         // Handle existing single identifiers like "pg" or "pg.var"
         let (input2, target) = take_till1(|c: char| c == ' ' || c == '\n')(input)?;
-        (input2, target.to_string())
+        (input2, target.fragment().to_string())
     };
 
     let (input, _) = multispace0(input)?;
@@ -1043,7 +1082,7 @@ fn parse_mock(input: &str) -> IResult<&str, Mock> {
     }))
 }
 
-fn parse_and_mock(input: &str) -> IResult<&str, Mock> {
+fn parse_and_mock(input: Span) -> IResult<Span, Mock> {
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("and")(input)?;
     let (input, _) = multispace0(input)?;
@@ -1066,7 +1105,7 @@ fn parse_and_mock(input: &str) -> IResult<&str, Mock> {
     } else {
         // Handle existing single identifiers like "pg" or "pg.var"
         let (input2, target) = take_till1(|c: char| c == ' ' || c == '\n')(input)?;
-        (input2, target.to_string())
+        (input2, target.fragment().to_string())
     };
 
     let (input, _) = multispace0(input)?;
@@ -1080,7 +1119,7 @@ fn parse_and_mock(input: &str) -> IResult<&str, Mock> {
     }))
 }
 
-fn parse_let_binding(input: &str) -> IResult<&str, (String, String, LetValueFormat)> {
+fn parse_let_binding(input: Span) -> IResult<Span, (String, String, LetValueFormat)> {
     let (input, _) = tag("let")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, name) = parse_identifier(input)?;
@@ -1097,15 +1136,15 @@ fn parse_let_binding(input: &str) -> IResult<&str, (String, String, LetValueForm
         map(
             delimited(
                 char('"'),
-                map(take_until("\""), |s: &str| s.to_string()),
+                map(take_until("\""), |s: Span| s.fragment().to_string()),
                 char('"')
             ),
             |v| (v, LetValueFormat::Quoted)
         ),
         // Try null
-        map(tag("null"), |s: &str| (s.to_string(), LetValueFormat::Bare)),
+        map(tag("null"), |s: Span| (s.fragment().to_string(), LetValueFormat::Bare)),
         // Try boolean
-        map(alt((tag("true"), tag("false"))), |s: &str| (s.to_string(), LetValueFormat::Bare)),
+        map(alt((tag("true"), tag("false"))), |s: Span| (s.fragment().to_string(), LetValueFormat::Bare)),
         // Try float (must come before integer to match decimal point)
         map(
             recognize((
@@ -1113,26 +1152,26 @@ fn parse_let_binding(input: &str) -> IResult<&str, (String, String, LetValueForm
                 char('.'),
                 digit1,
             )),
-            |s: &str| (s.to_string(), LetValueFormat::Bare)
+            |s: Span| (s.fragment().to_string(), LetValueFormat::Bare)
         ),
         // Try integer
-        map(digit1, |s: &str| (s.to_string(), LetValueFormat::Bare)),
+        map(digit1, |s: Span| (s.fragment().to_string(), LetValueFormat::Bare)),
     )).parse(input)?;
 
     Ok((input, (name, value, format)))
 }
 
-fn parse_with_clause(input: &str) -> IResult<&str, (String, String)> {
+fn parse_with_clause(input: Span) -> IResult<Span, (String, String)> {
     let (input, _) = tag("with")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, kind) = alt((tag("input"), tag("body"), tag("headers"), tag("cookies"))).parse(input)?;
     let (input, _) = multispace0(input)?;
     let (input, value) = parse_multiline_string(input)?;
     let (input, _) = multispace0(input)?;
-    Ok((input, (kind.to_string(), value)))
+    Ok((input, (kind.fragment().to_string(), value)))
 }
 
-fn parse_and_with_clause(input: &str) -> IResult<&str, (String, String)> {
+fn parse_and_with_clause(input: Span) -> IResult<Span, (String, String)> {
     let (input, _) = tag("and")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = tag("with")(input)?;
@@ -1141,10 +1180,10 @@ fn parse_and_with_clause(input: &str) -> IResult<&str, (String, String)> {
     let (input, _) = multispace0(input)?;
     let (input, value) = parse_multiline_string(input)?;
     let (input, _) = multispace0(input)?;
-    Ok((input, (kind.to_string(), value)))
+    Ok((input, (kind.fragment().to_string(), value)))
 }
 
-fn parse_it(input: &str) -> IResult<&str, It> {
+fn parse_it(input: Span) -> IResult<Span, It> {
     let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("it")(input)?;
     let (input, _) = multispace0(input)?;
@@ -1220,7 +1259,7 @@ fn parse_it(input: &str) -> IResult<&str, It> {
     all_mocks.extend(extra_mocks);
 
     Ok((input, It {
-        name: name.to_string(),
+        name: name.fragment().to_string(),
         mocks: all_mocks,
         when,
         variables,
@@ -1232,7 +1271,7 @@ fn parse_it(input: &str) -> IResult<&str, It> {
     }))
 }
 
-fn parse_describe(input: &str) -> IResult<&str, Describe> {
+fn parse_describe(input: Span) -> IResult<Span, Describe> {
     let (input, _) = skip_ws_and_comments(input)?;
     let (input, _) = tag("describe")(input)?;
     let (input, _) = multispace0(input)?;
@@ -1282,7 +1321,7 @@ fn parse_describe(input: &str) -> IResult<&str, Describe> {
     }
 
     Ok((remaining, Describe {
-        name: name.to_string(),
+        name: name.fragment().to_string(),
         variables,
         mocks,
         tests
@@ -1291,7 +1330,10 @@ fn parse_describe(input: &str) -> IResult<&str, Describe> {
 
 // Top-level program parsing
 pub fn parse_program(input: &str) -> IResult<&str, Program> {
-    let (input, _) = multispace0(input)?;
+    // Wrap the input string in a Span to track location
+    let span_input = Span::new(input);
+    let (span_remaining, _) = multispace0::<Span, nom::error::Error<Span>>(span_input)
+        .map_err(|e| e.map_input(|s| *s.fragment()))?;
 
     let mut configs = Vec::new();
     let mut pipelines = Vec::new();
@@ -1304,11 +1346,12 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
     let mut resolvers = Vec::new();
     let mut feature_flags = None;
 
-    let mut remaining = input;
+    let mut remaining = span_remaining;
 
-    while !remaining.is_empty() {
-        let (new_remaining, _) = multispace0(remaining)?;
-        if new_remaining.is_empty() {
+    while !remaining.fragment().is_empty() {
+        let (new_remaining, _) = multispace0::<Span, nom::error::Error<Span>>(remaining)
+            .map_err(|e| e.map_input(|s| *s.fragment()))?;
+        if new_remaining.fragment().is_empty() {
             break;
         }
 
@@ -1345,7 +1388,7 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
             remaining = new_input;
         } else {
             // Skip unrecognized content
-            if let Ok((new_input, _)) = take_till1::<_, _, nom::error::Error<&str>>(|c| c == '\n').parse(new_remaining) {
+            if let Ok((new_input, _)) = take_till1::<_, _, nom::error::Error<_>>(|c| c == '\n').parse(new_remaining) {
                 remaining = new_input;
             } else {
                 break;
@@ -1353,7 +1396,8 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
         }
     }
 
-    Ok((remaining, Program { configs, pipelines, variables, routes, describes, graphql_schema, queries, mutations, resolvers, feature_flags }))
+    // Convert the Span back to &str for the IResult
+    Ok((remaining.fragment(), Program { configs, pipelines, variables, routes, describes, graphql_schema, queries, mutations, resolvers, feature_flags }))
 }
 
 #[cfg(test)]
@@ -1708,7 +1752,7 @@ GET /test-if
             assert_eq!(pipeline.steps.len(), 2); // jq + if
             
             // Verify the if step was parsed correctly
-            if let PipelineStep::If { condition, then_branch, else_branch } = &pipeline.steps[1] {
+            if let PipelineStep::If { condition, then_branch, else_branch, location: _ } = &pipeline.steps[1] {
                 assert_eq!(condition.steps.len(), 1);
                 assert_eq!(then_branch.steps.len(), 1);
                 assert!(else_branch.is_some());
@@ -1783,7 +1827,7 @@ GET /dashboard
         if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
             assert_eq!(pipeline.steps.len(), 1);
 
-            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+            if let PipelineStep::Dispatch { branches, default, location: _ } = &pipeline.steps[0] {
                 assert_eq!(branches.len(), 2);
 
                 // Check first case: @flag(experimental)
@@ -1828,7 +1872,7 @@ GET /test
         let (_rest, program) = parse_program(src).unwrap();
 
         if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
-            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+            if let PipelineStep::Dispatch { branches, default, location: _ } = &pipeline.steps[0] {
                 assert_eq!(branches.len(), 2);
                 assert!(default.is_none());
             } else {
@@ -1854,7 +1898,7 @@ GET /test
         if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
             assert_eq!(pipeline.steps.len(), 2); // dispatch + handlebars
 
-            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+            if let PipelineStep::Dispatch { branches, default, location: _ } = &pipeline.steps[0] {
                 assert_eq!(branches.len(), 1);
                 assert!(default.is_some());
             } else {
@@ -1879,7 +1923,7 @@ GET /complex
         let (_rest, program) = parse_program(src).unwrap();
 
         if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
-            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+            if let PipelineStep::Dispatch { branches, default, location: _ } = &pipeline.steps[0] {
                 // First branch has 3 steps
                 assert_eq!(branches[0].pipeline.steps.len(), 3);
                 // Default branch has 2 steps
@@ -1940,7 +1984,7 @@ GET /test
         assert_eq!(program.routes.len(), 1);
 
         if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
-            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+            if let PipelineStep::Dispatch { branches, default, location: _ } = &pipeline.steps[0] {
                 assert_eq!(branches.len(), 2);
                 assert!(default.is_some());
             } else {
@@ -1981,7 +2025,7 @@ GET /dash
         let (_rest, program) = parse_program(src).unwrap();
 
         if let PipelineRef::Inline(pipeline) = &program.routes[0].pipeline {
-            if let PipelineStep::Dispatch { branches, default } = &pipeline.steps[0] {
+            if let PipelineStep::Dispatch { branches, default, location: _ } = &pipeline.steps[0] {
                 assert_eq!(branches.len(), 2);
                 assert!(default.is_some());
                 if let TagExpr::Tag(tag0) = &branches[0].condition {

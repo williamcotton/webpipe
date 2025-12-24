@@ -1,4 +1,4 @@
-use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep};
+use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep, SourceLocation};
 use crate::middleware::MiddlewareRegistry;
 use crate::error::WebPipeError;
 use axum::{
@@ -77,7 +77,7 @@ fn pipeline_needs_flags(
                     }
                 }
             },
-            PipelineStep::Result { branches } => {
+            PipelineStep::Result { branches, .. } => {
                 // 4. Recursive Branching: |> result ...
                 for branch in branches {
                     if pipeline_needs_flags(&branch.pipeline, named_pipelines) {
@@ -85,7 +85,7 @@ fn pipeline_needs_flags(
                     }
                 }
             },
-            PipelineStep::If { condition, then_branch, else_branch } => {
+            PipelineStep::If { condition, then_branch, else_branch, .. } => {
                 // 5. If/Else blocks: check condition, then, and else branches
                 if pipeline_needs_flags(condition, named_pipelines) {
                     return true;
@@ -99,7 +99,7 @@ fn pipeline_needs_flags(
                     }
                 }
             }
-            PipelineStep::Dispatch { branches, default } => {
+            PipelineStep::Dispatch { branches, default, .. } => {
                 // 6. Dispatch blocks: check all case branches and tags
                 for branch in branches {
                     // Check if branch condition expression contains a flag tag
@@ -146,6 +146,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
                 config_type: ConfigType::Backtick,
                 condition: None,
                 parsed_join_targets: None,
+                location: SourceLocation { line: 0, column: 0, offset: 0 },
             },
             // Execute GraphQL with empty config (triggers dynamic mode)
             PipelineStep::Regular {
@@ -155,6 +156,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
                 config_type: ConfigType::Backtick,
                 condition: None,
                 parsed_join_targets: None,
+                location: SourceLocation { line: 0, column: 0, offset: 0 },
             },
         ],
     }
@@ -923,7 +925,7 @@ mod tests {
         };
         // Craft a tiny pipeline that sets cookies via jq
         let p_set_cookie = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "jq".to_string(), args: Vec::new(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
+            crate::ast::PipelineStep::Regular { name: "jq".to_string(), args: Vec::new(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0 } }
         ]});
         let resp = respond_with_pipeline(
             state.clone(),
@@ -942,7 +944,7 @@ mod tests {
 
         // Pipeline that renders HTML
         let p_html = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None }
+            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0 } }
         ]});
         let resp2 = respond_with_pipeline(
             state,

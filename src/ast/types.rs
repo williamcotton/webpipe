@@ -1,3 +1,21 @@
+/// Source location information for AST nodes
+/// Tracks line and column position in the original source file
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SourceLocation {
+    /// Line number (1-indexed)
+    pub line: usize,
+    /// Column number (1-indexed)
+    pub column: usize,
+    /// Byte offset from start of file
+    pub offset: usize,
+}
+
+impl SourceLocation {
+    pub fn new(line: usize, column: usize, offset: usize) -> Self {
+        Self { line, column, offset }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Program {
     pub configs: Vec<Config>,
@@ -142,16 +160,26 @@ pub enum PipelineStep {
         /// Pre-parsed join task names (only populated for "join" middleware)
         /// This avoids parsing the config string on every request in the hot path.
         parsed_join_targets: Option<Vec<String>>,
+        /// Source location for debugging and error reporting
+        location: SourceLocation,
     },
-    Result { branches: Vec<ResultBranch> },
+    Result {
+        branches: Vec<ResultBranch>,
+        /// Source location for debugging and error reporting
+        location: SourceLocation,
+    },
     If {
         condition: Pipeline,
         then_branch: Pipeline,
-        else_branch: Option<Pipeline>
+        else_branch: Option<Pipeline>,
+        /// Source location for debugging and error reporting
+        location: SourceLocation,
     },
     Dispatch {
         branches: Vec<DispatchBranch>,
-        default: Option<Pipeline>
+        default: Option<Pipeline>,
+        /// Source location for debugging and error reporting
+        location: SourceLocation,
     },
     /// A structural block that iterates over a JSON array
     /// Syntax: |> foreach data.rows
@@ -160,6 +188,8 @@ pub enum PipelineStep {
         selector: String,
         /// The inner pipeline to execute for each item
         pipeline: Pipeline,
+        /// Source location for debugging and error reporting
+        location: SourceLocation,
     },
 }
 
@@ -167,6 +197,8 @@ pub enum PipelineStep {
 pub struct DispatchBranch {
     pub condition: TagExpr,
     pub pipeline: Pipeline,
+    /// Source location for debugging and error reporting
+    pub location: SourceLocation,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +206,8 @@ pub struct ResultBranch {
     pub branch_type: ResultBranchType,
     pub status_code: u16,
     pub pipeline: Pipeline,
+    /// Source location for debugging and error reporting
+    pub location: SourceLocation,
 }
 
 #[derive(Debug, Clone)]
