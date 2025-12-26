@@ -719,6 +719,15 @@ async fn shutdown_signal() {
     }
 
     info!("Shutdown signal received, starting graceful shutdown");
+
+    // Spawn a task that forces the process to exit if graceful shutdown takes too long
+    // This prevents the server from hanging on open connections (e.g. keep-alive)
+    // and holding onto the ports, which blocks subsequent debug sessions.
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        warn!("Graceful shutdown timed out (2s), forcing exit to release ports");
+        std::process::exit(0);
+    });
 }
 
 // --- Static file serving (public/ directory) ---

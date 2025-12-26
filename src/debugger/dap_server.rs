@@ -10,8 +10,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicI64, Ordering};
 use dashmap::DashMap;
-use tokio::sync::{oneshot, Mutex};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{oneshot, Mutex, Notify};
+use tokio::net::TcpListener;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use serde_json::{Value as JsonValue, json};
@@ -81,7 +81,7 @@ pub struct DapServer {
     /// Paused threads: thread_id -> PausedState
     paused_threads: Arc<DashMap<u64, PausedState>>,
 
-    /// Threads in stepping mode with specific rules
+    /// Threads in stepping mode (should pause at next step)
     stepping_threads: Arc<DashMap<u64, SteppingMode>>,
 
     /// Threads we've announced to VS Code (to avoid duplicate thread events)
@@ -109,11 +109,14 @@ pub struct DapServer {
 
     /// Sequence number for DAP messages
     seq: Arc<AtomicI64>,
+
+    /// Notifier to signal when the debug session ends (client disconnects)
+    shutdown_notify: Option<Arc<Notify>>,
 }
 
 impl DapServer {
     /// Create a new DAP server
-    pub fn new(file_path: String, debug_port: u16) -> Self {
+    pub fn new(file_path: String, debug_port: u16, shutdown_notify: Option<Arc<Notify>>) -> Self {
         Self {
             breakpoints: Arc::new(DashMap::new()),
             breakpoint_ids: Arc::new(DashMap::new()),
@@ -128,6 +131,7 @@ impl DapServer {
             debug_port,
             client_writer: Arc::new(Mutex::new(None)),
             seq: Arc::new(AtomicI64::new(1)),
+            shutdown_notify,
         }
     }
 
@@ -174,8 +178,17 @@ impl DapServer {
         // Spawn task to handle DAP messages
         let server = self.clone();
         tokio::spawn(async move {
+            // Clone the shutdown notifier *before* server is moved into handle_messages
+            let shutdown_notify = server.shutdown_notify.clone();
+
             if let Err(e) = server.handle_messages(reader).await {
                 eprintln!("[DAP] Message handler error: {}", e);
+            }
+            
+            // Connection closed or error occurred - trigger shutdown
+            if let Some(notify) = shutdown_notify {
+                eprintln!("[DAP] Connection closed, triggering shutdown");
+                notify.notify_one();
             }
         });
 
@@ -585,7 +598,12 @@ impl DapServer {
 
         let thread_id = args.thread_id as u64;
 
+        // Continue thread execution
+
+        // Clear variable cache for this thread
         self.clear_thread_variables(thread_id);
+
+        // Clear stepping state (in case we were stepping)
         self.stepping_threads.remove(&thread_id);
 
         if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
@@ -595,6 +613,7 @@ impl DapServer {
         let body = ContinueResponseBody {
             all_threads_continued: Some(false),
         };
+
         self.send_response(request.seq, "continue", Some(serde_json::to_value(body).unwrap())).await
     }
 
@@ -604,6 +623,7 @@ impl DapServer {
 
         let thread_id = args.thread_id as u64;
 
+        // Step over to next statement
         self.clear_thread_variables(thread_id);
 
         let current_depth = if let Some(paused) = self.paused_threads.get(&thread_id) {
@@ -612,7 +632,7 @@ impl DapServer {
             1
         };
 
-        // StepOver: pause when stack_depth <= current_depth
+        // Mark thread as stepping over - pause when stack_depth <= current_depth
         self.stepping_threads.insert(thread_id, SteppingMode::StepOver { target_depth: current_depth });
 
         if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
@@ -630,7 +650,7 @@ impl DapServer {
 
         self.clear_thread_variables(thread_id);
 
-        // StepInto: always pause
+        // StepInto: always pause at next step
         self.stepping_threads.insert(thread_id, SteppingMode::StepInto);
 
         if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
@@ -701,7 +721,14 @@ impl DapServer {
         // Clear announced threads for next session
         self.announced_threads.clear();
 
-        self.send_response(request.seq, "disconnect", None).await
+        self.send_response(request.seq, "disconnect", None).await?;
+
+        // Trigger shutdown of the whole process
+        if let Some(notify) = &self.shutdown_notify {
+            notify.notify_one();
+        }
+
+        Ok(())
     }
 
     // ========================================================================

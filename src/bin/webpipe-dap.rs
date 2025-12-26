@@ -13,6 +13,7 @@
 use std::env;
 use std::sync::Arc;
 use std::net::SocketAddr;
+use tokio::sync::Notify;
 use webpipe::ast::parse_program;
 use webpipe::debugger::{DapServer, dap_server::DapDebuggerHook};
 use webpipe::server::WebPipeServer;
@@ -83,8 +84,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[DAP] Pipelines: {}", program.pipelines.len());
     eprintln!();
 
-    // Create DAP server
-    let dap_server = Arc::new(DapServer::new(file_path_str.clone(), debug_port));
+    // Create a notifier for shutdown signaling
+    let shutdown_notify = Arc::new(Notify::new());
+
+    // Create DAP server with shutdown notifier
+    let dap_server = Arc::new(DapServer::new(file_path_str.clone(), debug_port, Some(shutdown_notify.clone())));
 
     // Start DAP TCP listener (waits for VS Code connection)
     eprintln!("[DAP] Starting DAP server on 127.0.0.1:{}...", debug_port);
@@ -122,7 +126,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("  • Set breakpoints in your .wp file");
     eprintln!();
 
-    server.serve(addr).await?;
+    // Create a composite shutdown future that listens for OS signals OR DAP disconnect
+    let shutdown_future = async move {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\n[DAP] Ctrl+C received, shutting down...");
+            },
+            _ = shutdown_notify.notified() => {
+                eprintln!("\n[DAP] Debugger disconnected, shutting down...");
+            }
+        }
+        
+        // Safety net: Force exit if graceful shutdown hangs (e.g. keep-alive connections)
+        // This ensures the process actually dies and releases the ports.
+        tokio::spawn(async {
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            eprintln!("[DAP] Shutdown timed out (2s), forcing exit");
+            std::process::exit(0);
+        });
+    };
+
+    server.serve_with_shutdown(addr, shutdown_future).await?;
 
     Ok(())
 }
