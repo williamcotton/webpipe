@@ -181,6 +181,10 @@ impl RequestMetadata {
 pub enum StepMode {
     /// Stop at next step in same pipeline (don't enter nested pipelines)
     StepOver,
+    /// Stop at next step (enter nested pipelines)
+    StepIn,
+    /// Stop when returning to parent pipeline
+    StepOut,
 }
 
 /// Per-request mutable context (The Backpack)
@@ -1021,14 +1025,18 @@ async fn execute_step<'a>(
     // 2. Start Profiling
     ctx.profiler.push(&step_name);
     let start_time = std::time::Instant::now();
+    
+    #[cfg(feature = "debugger")]
+    #[allow(unused_variables)]
+    let stack_depth = ctx.profiler.stack.len();
 
     // Debugger Hook: before_step
     #[cfg(feature = "debugger")]
     if let Some(ref dbg) = env.debugger {
         let thread_id = ctx.debug_thread_id.unwrap_or(0);
         let location = step.location();
-        eprintln!("[EXEC] Calling before_step: thread={}, step={}, line={}", thread_id, step_name, location.line);
-        let action = dbg.before_step(thread_id, &step_name, location, &pipeline_ctx.state).await?;
+        eprintln!("[EXEC] Calling before_step: thread={}, step={}, line={}, depth={}", thread_id, step_name, location.line, stack_depth);
+        let action = dbg.before_step(thread_id, &step_name, location, &pipeline_ctx.state, stack_depth).await?;
 
         // Handle stepping actions
         match action {
@@ -1039,6 +1047,12 @@ async fn execute_step<'a>(
             crate::debugger::StepAction::StepOver => {
                 // Set step mode - pause at next step
                 ctx.debug_step_mode = Some(StepMode::StepOver);
+            }
+            crate::debugger::StepAction::StepIn => {
+                ctx.debug_step_mode = Some(StepMode::StepIn);
+            }
+            crate::debugger::StepAction::StepOut => {
+                ctx.debug_step_mode = Some(StepMode::StepOut);
             }
         }
     }
@@ -1247,7 +1261,7 @@ async fn execute_step<'a>(
     if let Some(ref dbg) = env.debugger {
         let thread_id = ctx.debug_thread_id.unwrap_or(0);
         let location = step.location();
-        dbg.after_step(thread_id, &step_name, location, &pipeline_ctx.state).await;
+        dbg.after_step(thread_id, &step_name, location, &pipeline_ctx.state, stack_depth).await;
     }
 
     // 4. End Profiling

@@ -412,6 +412,36 @@ pub struct NextArguments {
 }
 
 // ============================================================================
+// StepIn Request
+// ============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepInArguments {
+    pub thread_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub single_thread: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+}
+
+// ============================================================================
+// StepOut Request
+// ============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepOutArguments {
+    pub thread_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub single_thread: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub granularity: Option<String>,
+}
+
+// ============================================================================
 // Events
 // ============================================================================
 

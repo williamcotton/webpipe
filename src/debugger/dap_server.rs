@@ -29,6 +29,21 @@ pub enum StepCommand {
     Continue,
     /// Step over: pause at next step in same pipeline
     StepOver,
+    /// Step in: pause at next step (entering nested pipelines)
+    StepIn,
+    /// Step out: pause when returning to parent pipeline
+    StepOut,
+}
+
+/// Stepping mode for a running thread
+#[derive(Debug, Clone, Copy)]
+pub enum SteppingMode {
+    /// Pause at next instruction
+    StepInto,
+    /// Pause at next instruction where stack_depth <= target_depth
+    StepOver { target_depth: usize },
+    /// Pause at next instruction where stack_depth < target_depth
+    StepOut { target_depth: usize },
 }
 
 /// State of a paused thread (HTTP request)
@@ -47,6 +62,9 @@ pub struct PausedState {
 
     /// Timestamp when paused (for debugging)
     pub paused_at: std::time::Instant,
+
+    /// Stack depth when paused
+    pub stack_depth: usize,
 }
 
 /// DAP Server - manages debugging sessions
@@ -63,8 +81,8 @@ pub struct DapServer {
     /// Paused threads: thread_id -> PausedState
     paused_threads: Arc<DashMap<u64, PausedState>>,
 
-    /// Threads in stepping mode (should pause at next step)
-    stepping_threads: Arc<dashmap::DashSet<u64>>,
+    /// Threads in stepping mode with specific rules
+    stepping_threads: Arc<DashMap<u64, SteppingMode>>,
 
     /// Threads we've announced to VS Code (to avoid duplicate thread events)
     announced_threads: Arc<dashmap::DashSet<u64>>,
@@ -101,7 +119,7 @@ impl DapServer {
             breakpoint_ids: Arc::new(DashMap::new()),
             next_breakpoint_id: Arc::new(AtomicI64::new(1)),
             paused_threads: Arc::new(DashMap::new()),
-            stepping_threads: Arc::new(dashmap::DashSet::new()),
+            stepping_threads: Arc::new(DashMap::new()),
             announced_threads: Arc::new(dashmap::DashSet::new()),
             next_thread_id: Arc::new(AtomicU64::new(1)),
             variable_cache: Arc::new(DashMap::new()),
@@ -188,6 +206,8 @@ impl DapServer {
                 "variables" => self.handle_variables(request).await?,
                 "continue" => self.handle_continue(request).await?,
                 "next" => self.handle_next(request).await?,
+                "stepIn" => self.handle_step_in(request).await?,
+                "stepOut" => self.handle_step_out(request).await?,
                 "pause" => self.handle_pause(request).await?,
                 "source" => self.handle_source(request).await?,
                 "disconnect" => {
@@ -565,12 +585,7 @@ impl DapServer {
 
         let thread_id = args.thread_id as u64;
 
-        // Continue thread execution
-
-        // Clear variable cache for this thread
         self.clear_thread_variables(thread_id);
-
-        // Clear stepping state (in case we were stepping)
         self.stepping_threads.remove(&thread_id);
 
         if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
@@ -580,7 +595,6 @@ impl DapServer {
         let body = ContinueResponseBody {
             all_threads_continued: Some(false),
         };
-
         self.send_response(request.seq, "continue", Some(serde_json::to_value(body).unwrap())).await
     }
 
@@ -590,19 +604,62 @@ impl DapServer {
 
         let thread_id = args.thread_id as u64;
 
-        // Step over to next statement
-
-        // Clear variable cache for this thread
         self.clear_thread_variables(thread_id);
 
-        // Mark thread as stepping - will pause at next step
-        self.stepping_threads.insert(thread_id);
+        let current_depth = if let Some(paused) = self.paused_threads.get(&thread_id) {
+            paused.stack_depth
+        } else {
+            1
+        };
+
+        // StepOver: pause when stack_depth <= current_depth
+        self.stepping_threads.insert(thread_id, SteppingMode::StepOver { target_depth: current_depth });
 
         if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
             let _ = paused.resume_tx.send(StepCommand::StepOver);
         }
 
         self.send_response(request.seq, "next", None).await
+    }
+
+    async fn handle_step_in(&self, request: Request) -> Result<(), WebPipeError> {
+        let args: StepInArguments = serde_json::from_value(request.arguments.unwrap_or_default())
+            .map_err(|e| WebPipeError::DebuggerError(format!("Invalid stepIn arguments: {}", e)))?;
+
+        let thread_id = args.thread_id as u64;
+
+        self.clear_thread_variables(thread_id);
+
+        // StepInto: always pause
+        self.stepping_threads.insert(thread_id, SteppingMode::StepInto);
+
+        if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
+            let _ = paused.resume_tx.send(StepCommand::StepIn);
+        }
+        self.send_response(request.seq, "stepIn", None).await
+    }
+
+    async fn handle_step_out(&self, request: Request) -> Result<(), WebPipeError> {
+        let args: StepOutArguments = serde_json::from_value(request.arguments.unwrap_or_default())
+            .map_err(|e| WebPipeError::DebuggerError(format!("Invalid stepOut arguments: {}", e)))?;
+
+        let thread_id = args.thread_id as u64;
+
+        self.clear_thread_variables(thread_id);
+
+        let current_depth = if let Some(paused) = self.paused_threads.get(&thread_id) {
+            paused.stack_depth
+        } else {
+            1
+        };
+
+        // StepOut: pause when stack_depth < current_depth
+        self.stepping_threads.insert(thread_id, SteppingMode::StepOut { target_depth: current_depth });
+
+        if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
+            let _ = paused.resume_tx.send(StepCommand::StepOut);
+        }
+        self.send_response(request.seq, "stepOut", None).await
     }
 
     async fn handle_pause(&self, request: Request) -> Result<(), WebPipeError> {
@@ -852,12 +909,22 @@ impl DebuggerHook for DapDebuggerHook {
         step_name: &str,
         location: &SourceLocation,
         state: &serde_json::Value,
+        stack_depth: usize,
     ) -> Result<StepAction, WebPipeError> {
         // Check if we should pause (either breakpoint OR stepping mode)
         let at_breakpoint = self.server.has_breakpoint(location.line);
-        let is_stepping = self.server.stepping_threads.contains(&thread_id);
+        
+        let should_pause_step = if let Some(mode) = self.server.stepping_threads.get(&thread_id) {
+            match *mode {
+                SteppingMode::StepInto => true,
+                SteppingMode::StepOver { target_depth } => stack_depth <= target_depth,
+                SteppingMode::StepOut { target_depth } => stack_depth < target_depth,
+            }
+        } else {
+            false
+        };
 
-        if at_breakpoint || is_stepping {
+        if at_breakpoint || should_pause_step {
             // Ensure thread is announced to VS Code
             // If we don't do this, VS Code might ignore the stopped event for an unknown thread
             if !self.server.announced_threads.contains(&thread_id) {
@@ -889,6 +956,7 @@ impl DebuggerHook for DapDebuggerHook {
                 location: location.clone(),
                 step_name: step_name.to_string(),
                 paused_at: std::time::Instant::now(),
+                stack_depth,
             });
 
             // Send "stopped" event to VS Code with breakpoint ID
@@ -905,6 +973,8 @@ impl DebuggerHook for DapDebuggerHook {
             match command {
                 StepCommand::Continue => Ok(StepAction::Continue),
                 StepCommand::StepOver => Ok(StepAction::StepOver),
+                StepCommand::StepIn => Ok(StepAction::StepIn),
+                StepCommand::StepOut => Ok(StepAction::StepOut),
             }
         } else {
             // No breakpoint, continue normally
@@ -918,6 +988,7 @@ impl DebuggerHook for DapDebuggerHook {
         _step_name: &str,
         _location: &SourceLocation,
         _state: &serde_json::Value,
+        _stack_depth: usize,
     ) {
         // No-op for MVP (could be used for step-out logic later)
     }
