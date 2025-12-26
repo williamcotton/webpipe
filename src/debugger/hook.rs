@@ -19,7 +19,7 @@ pub trait DebuggerHook: Send + Sync {
     /// - thread_id: Unique ID for this HTTP request (from atomic counter)
     /// - step_name: Name of the step being executed (e.g., "jq", "pg", "fetch")
     /// - location: Source location of the step in the .wp file
-    /// - state: Current pipeline state (JSON value)
+    /// - state: Current pipeline state (JSON value) - MUTABLE to allow debugger updates
     /// - stack_depth: Current depth of the execution stack (for step-over/step-out)
     ///
     /// Returns StepAction indicating how execution should proceed
@@ -28,7 +28,7 @@ pub trait DebuggerHook: Send + Sync {
         thread_id: u64,
         step_name: &str,
         location: &SourceLocation,
-        state: &Value,
+        state: &mut Value,
         stack_depth: usize,
     ) -> Result<StepAction, WebPipeError>;
 

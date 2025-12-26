@@ -23,16 +23,16 @@ use super::hook::{DebuggerHook, StepAction};
 use super::protocol::*;
 
 /// Command to send to a paused thread
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum StepCommand {
-    /// Continue execution normally
-    Continue,
+    /// Continue execution normally, optionally updating state
+    Continue(Option<serde_json::Value>),
     /// Step over: pause at next step in same pipeline
-    StepOver,
+    StepOver(Option<serde_json::Value>),
     /// Step in: pause at next step (entering nested pipelines)
-    StepIn,
+    StepIn(Option<serde_json::Value>),
     /// Step out: pause when returning to parent pipeline
-    StepOut,
+    StepOut(Option<serde_json::Value>),
 }
 
 /// Stepping mode for a running thread
@@ -217,6 +217,7 @@ impl DapServer {
                 "stackTrace" => self.handle_stack_trace(request).await?,
                 "scopes" => self.handle_scopes(request).await?,
                 "variables" => self.handle_variables(request).await?,
+                "setVariable" => self.handle_set_variable(request).await?,
                 "continue" => self.handle_continue(request).await?,
                 "next" => self.handle_next(request).await?,
                 "stepIn" => self.handle_step_in(request).await?,
@@ -366,7 +367,7 @@ impl DapServer {
             supports_hit_conditional_breakpoints: Some(false),
             supports_evaluate_for_hovers: Some(false),
             supports_step_back: Some(false),
-            supports_set_variable: Some(false),
+            supports_set_variable: Some(true),
             supports_restart_frame: Some(false),
             supports_goto_targets_request: Some(false),
             supports_step_in_targets_request: Some(false),
@@ -592,28 +593,102 @@ impl DapServer {
         self.send_response(request.seq, "variables", Some(serde_json::to_value(body).unwrap())).await
     }
 
+    async fn handle_set_variable(&self, request: Request) -> Result<(), WebPipeError> {
+        let args: SetVariableArguments = serde_json::from_value(request.arguments.unwrap_or_default())
+            .map_err(|e| WebPipeError::DebuggerError(format!("Invalid setVariable arguments: {}", e)))?;
+
+        let var_ref = args.variables_reference;
+        // Logic to determine thread_id from var_ref (assuming simple range mapping from handle_variables)
+        // Root scope refs are: thread_id * 1000 + 1
+        let thread_id = (var_ref / 1000) as u64;
+        let is_root_scope = var_ref % 1000 == 1;
+
+        // Parse the new value (try JSON, then bool/number, fallback to string)
+        let new_val = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&args.value) {
+            parsed
+        } else {
+            // If it's just a bare string like "foo" (without quotes), from_str might fail or treat as unquoted?
+            // Actually serde_json::from_str("foo") fails. 
+            // We can try to parse; if it fails, assume it's a string literal.
+            serde_json::Value::String(args.value.clone())
+        };
+
+        let mut success = false;
+        let mut result_value = String::new();
+        let mut result_type = String::new();
+        let mut result_ref = 0;
+
+        if let Some(mut paused_entry) = self.paused_threads.get_mut(&thread_id) {
+            if is_root_scope {
+                // Update top-level state
+                if let Some(obj) = paused_entry.state.as_object_mut() {
+                    obj.insert(args.name.clone(), new_val.clone());
+                    success = true;
+                }
+            } else {
+                // Nested variable update
+                // Note: Updating nested variables in `variable_cache` won't automatically update the main `state`
+                // because `variable_cache` stores copies.
+                // For a robust implementation, we would need to track paths or pointers.
+                // For now, we will only support updating top-level variables or cached objects *if* they are referenced.
+                // But updating `variable_cache` alone is insufficient for the pipeline state to actually change
+                // for the *next* step.
+                //
+                // LIMITATION: Only top-level variable modification is fully supported for execution flow impact.
+                if let Some(mut cached_val) = self.variable_cache.get_mut(&var_ref) {
+                    if let Some(obj) = cached_val.as_object_mut() {
+                        obj.insert(args.name.clone(), new_val.clone());
+                        success = true;
+                        // Note: This only updates the view in the debugger, not the actual pipeline state
+                        // unless we implement write-back logic.
+                        eprintln!("[DAP] Warning: Modified nested variable {} in cache only (may not affect execution)", args.name);
+                    }
+                }
+            }
+
+            if success {
+                result_value = format_preview(&new_val);
+                result_type = type_name(&new_val);
+                
+                // If the new value is complex, we need to cache it so it can be expanded
+                if is_complex(&new_val) {
+                    result_ref = self.generate_var_ref();
+                    self.variable_cache.insert(result_ref, new_val);
+                }
+            }
+        }
+
+        if success {
+            let body = SetVariableResponseBody {
+                value: result_value,
+                type_: Some(result_type),
+                variables_reference: Some(result_ref),
+                named_variables: None, // Simplified
+                indexed_variables: None,
+            };
+            self.send_response(request.seq, "setVariable", Some(serde_json::to_value(body).unwrap())).await
+        } else {
+            self.send_error_response(request.seq, "setVariable", "Failed to set variable (scope not found or not modifiable)").await
+        }
+    }
+
     async fn handle_continue(&self, request: Request) -> Result<(), WebPipeError> {
         let args: ContinueArguments = serde_json::from_value(request.arguments.unwrap_or_default())
             .map_err(|e| WebPipeError::DebuggerError(format!("Invalid continue arguments: {}", e)))?;
 
         let thread_id = args.thread_id as u64;
 
-        // Continue thread execution
-
-        // Clear variable cache for this thread
         self.clear_thread_variables(thread_id);
-
-        // Clear stepping state (in case we were stepping)
         self.stepping_threads.remove(&thread_id);
 
         if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
-            let _ = paused.resume_tx.send(StepCommand::Continue);
+            // Pass the potentially modified state back to the hook
+            let _ = paused.resume_tx.send(StepCommand::Continue(Some(paused.state)));
         }
 
         let body = ContinueResponseBody {
             all_threads_continued: Some(false),
         };
-
         self.send_response(request.seq, "continue", Some(serde_json::to_value(body).unwrap())).await
     }
 
@@ -623,7 +698,6 @@ impl DapServer {
 
         let thread_id = args.thread_id as u64;
 
-        // Step over to next statement
         self.clear_thread_variables(thread_id);
 
         let current_depth = if let Some(paused) = self.paused_threads.get(&thread_id) {
@@ -632,11 +706,10 @@ impl DapServer {
             1
         };
 
-        // Mark thread as stepping over - pause when stack_depth <= current_depth
         self.stepping_threads.insert(thread_id, SteppingMode::StepOver { target_depth: current_depth });
 
         if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
-            let _ = paused.resume_tx.send(StepCommand::StepOver);
+            let _ = paused.resume_tx.send(StepCommand::StepOver(Some(paused.state)));
         }
 
         self.send_response(request.seq, "next", None).await
@@ -650,11 +723,10 @@ impl DapServer {
 
         self.clear_thread_variables(thread_id);
 
-        // StepInto: always pause at next step
         self.stepping_threads.insert(thread_id, SteppingMode::StepInto);
 
         if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
-            let _ = paused.resume_tx.send(StepCommand::StepIn);
+            let _ = paused.resume_tx.send(StepCommand::StepIn(Some(paused.state)));
         }
         self.send_response(request.seq, "stepIn", None).await
     }
@@ -673,11 +745,10 @@ impl DapServer {
             1
         };
 
-        // StepOut: pause when stack_depth < current_depth
         self.stepping_threads.insert(thread_id, SteppingMode::StepOut { target_depth: current_depth });
 
         if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
-            let _ = paused.resume_tx.send(StepCommand::StepOut);
+            let _ = paused.resume_tx.send(StepCommand::StepOut(Some(paused.state)));
         }
         self.send_response(request.seq, "stepOut", None).await
     }
@@ -710,24 +781,19 @@ impl DapServer {
     async fn handle_disconnect(&self, request: Request) -> Result<(), WebPipeError> {
         eprintln!("[DAP] Disconnecting...");
 
-        // Resume all paused threads by sending Continue command
         let thread_ids: Vec<u64> = self.paused_threads.iter().map(|entry| *entry.key()).collect();
         for thread_id in thread_ids {
             if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
-                let _ = paused.resume_tx.send(StepCommand::Continue);
+                // Return state as-is on disconnect
+                let _ = paused.resume_tx.send(StepCommand::Continue(Some(paused.state)));
             }
         }
-
-        // Clear announced threads for next session
+        // ... rest of handle_disconnect ...
         self.announced_threads.clear();
-
         self.send_response(request.seq, "disconnect", None).await?;
-
-        // Trigger shutdown of the whole process
         if let Some(notify) = &self.shutdown_notify {
             notify.notify_one();
         }
-
         Ok(())
     }
 
@@ -935,10 +1001,9 @@ impl DebuggerHook for DapDebuggerHook {
         thread_id: u64,
         step_name: &str,
         location: &SourceLocation,
-        state: &serde_json::Value,
+        state: &mut serde_json::Value, // Changed to mutable
         stack_depth: usize,
     ) -> Result<StepAction, WebPipeError> {
-        // Check if we should pause (either breakpoint OR stepping mode)
         let at_breakpoint = self.server.has_breakpoint(location.line);
         
         let should_pause_step = if let Some(mode) = self.server.stepping_threads.get(&thread_id) {
@@ -952,31 +1017,25 @@ impl DebuggerHook for DapDebuggerHook {
         };
 
         if at_breakpoint || should_pause_step {
-            // Ensure thread is announced to VS Code
-            // If we don't do this, VS Code might ignore the stopped event for an unknown thread
+            // ... announce thread logic ...
             if !self.server.announced_threads.contains(&thread_id) {
                 self.server.announced_threads.insert(thread_id);
-                // We MUST await this to ensure VS Code knows about the thread before we stop it
                 self.server.send_thread_event(thread_id, "started").await?;
             }
 
             let reason = if at_breakpoint { "breakpoint" } else { "step" };
             eprintln!("[DAP] Paused at line {} (thread {}, reason: {})", location.line, thread_id, reason);
 
-            // Get breakpoint ID if we're at a breakpoint
             let breakpoint_id = if at_breakpoint {
                 self.server.get_breakpoint_id(location.line)
             } else {
                 None
             };
 
-            // Clear stepping state now that we've paused
             self.server.stepping_threads.remove(&thread_id);
 
-            // Create oneshot channel for resume command
             let (tx, rx) = oneshot::channel();
 
-            // Store paused state
             self.server.paused_threads.insert(thread_id, PausedState {
                 resume_tx: tx,
                 state: state.clone(),
@@ -986,29 +1045,33 @@ impl DebuggerHook for DapDebuggerHook {
                 stack_depth,
             });
 
-            // Send "stopped" event to VS Code with breakpoint ID
-            // Note: We don't send "thread" events - VS Code discovers threads via the "threads" request
             self.server.send_stopped_event(thread_id, reason, breakpoint_id).await?;
 
-            // Block until resume command arrives
             let command = rx.await
                 .map_err(|_| WebPipeError::DebuggerError("Resume channel closed".to_string()))?;
 
             eprintln!("[DAP] Resuming thread {} with command {:?}", thread_id, command);
 
-            // Return action
-            match command {
-                StepCommand::Continue => Ok(StepAction::Continue),
-                StepCommand::StepOver => Ok(StepAction::StepOver),
-                StepCommand::StepIn => Ok(StepAction::StepIn),
-                StepCommand::StepOut => Ok(StepAction::StepOut),
+            // Extract the new state and action from the command
+            let (action, new_state) = match command {
+                StepCommand::Continue(s) => (StepAction::Continue, s),
+                StepCommand::StepOver(s) => (StepAction::StepOver, s),
+                StepCommand::StepIn(s) => (StepAction::StepIn, s),
+                StepCommand::StepOut(s) => (StepAction::StepOut, s),
+            };
+
+            // Write back the modified state if present
+            if let Some(s) = new_state {
+                *state = s;
             }
+
+            Ok(action)
         } else {
-            // No breakpoint, continue normally
             Ok(StepAction::Continue)
         }
     }
 
+    // ... after_step ...
     async fn after_step(
         &self,
         _thread_id: u64,
@@ -1017,7 +1080,6 @@ impl DebuggerHook for DapDebuggerHook {
         _state: &serde_json::Value,
         _stack_depth: usize,
     ) {
-        // No-op for MVP (could be used for step-out logic later)
     }
 }
 

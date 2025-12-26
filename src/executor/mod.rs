@@ -1036,8 +1036,7 @@ async fn execute_step<'a>(
         let thread_id = ctx.debug_thread_id.unwrap_or(0);
         let location = step.location();
         eprintln!("[EXEC] Calling before_step: thread={}, step={}, line={}, depth={}", thread_id, step_name, location.line, stack_depth);
-        let action = dbg.before_step(thread_id, &step_name, location, &pipeline_ctx.state, stack_depth).await?;
-
+        let action = dbg.before_step(thread_id, &step_name, location, &mut pipeline_ctx.state, stack_depth).await?;
         // Handle stepping actions
         match action {
             crate::debugger::StepAction::Continue => {
