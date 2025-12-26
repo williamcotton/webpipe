@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU64, AtomicI64, Ordering};
 use dashmap::DashMap;
 use tokio::sync::{oneshot, Mutex};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use serde_json::{Value as JsonValue, json};
 use async_trait::async_trait;
@@ -84,8 +85,9 @@ pub struct DapServer {
     /// DAP TCP port (default: 5858)
     debug_port: u16,
 
-    /// DAP client connection (VS Code)
-    client: Arc<Mutex<Option<TcpStream>>>,
+    /// DAP client writer (VS Code connection)
+    /// We split the stream so reading doesn't block writing
+    client_writer: Arc<Mutex<Option<OwnedWriteHalf>>>,
 
     /// Sequence number for DAP messages
     seq: Arc<AtomicI64>,
@@ -106,7 +108,7 @@ impl DapServer {
             next_var_ref: Arc::new(AtomicI64::new(1000)),
             file_path,
             debug_port,
-            client: Arc::new(Mutex::new(None)),
+            client_writer: Arc::new(Mutex::new(None)),
             seq: Arc::new(AtomicI64::new(1)),
         }
     }
@@ -145,12 +147,16 @@ impl DapServer {
 
         eprintln!("[DAP] Client connected from {}", addr);
 
-        *self.client.lock().await = Some(stream);
+        // Split stream into reader and writer
+        // This prevents the read loop from locking the writer, which caused deadlocks
+        let (reader, writer) = stream.into_split();
+
+        *self.client_writer.lock().await = Some(writer);
 
         // Spawn task to handle DAP messages
         let server = self.clone();
         tokio::spawn(async move {
-            if let Err(e) = server.handle_messages().await {
+            if let Err(e) = server.handle_messages(reader).await {
                 eprintln!("[DAP] Message handler error: {}", e);
             }
         });
@@ -159,9 +165,9 @@ impl DapServer {
     }
 
     /// Handle incoming DAP messages from VS Code
-    async fn handle_messages(self: Arc<Self>) -> Result<(), WebPipeError> {
+    async fn handle_messages(self: Arc<Self>, mut reader: OwnedReadHalf) -> Result<(), WebPipeError> {
         loop {
-            let msg = self.read_message().await?;
+            let msg = self.read_message(&mut reader).await?;
 
             // Parse the message
             let request: Request = serde_json::from_str(&msg)
@@ -199,17 +205,13 @@ impl DapServer {
     }
 
     /// Read a DAP message from the client (Content-Length header + JSON body)
-    async fn read_message(&self) -> Result<String, WebPipeError> {
-        let mut client_guard = self.client.lock().await;
-        let client = client_guard.as_mut()
-            .ok_or_else(|| WebPipeError::DebuggerError("No client connected".to_string()))?;
-
+    async fn read_message(&self, reader: &mut OwnedReadHalf) -> Result<String, WebPipeError> {
         // Read headers
         let mut headers = String::new();
         let mut buf = [0u8; 1];
 
         loop {
-            client.read_exact(&mut buf).await
+            reader.read_exact(&mut buf).await
                 .map_err(|e| WebPipeError::DebuggerError(format!("Failed to read: {}", e)))?;
             headers.push(buf[0] as char);
 
@@ -228,7 +230,7 @@ impl DapServer {
 
         // Read body
         let mut body = vec![0u8; content_length];
-        client.read_exact(&mut body).await
+        reader.read_exact(&mut body).await
             .map_err(|e| WebPipeError::DebuggerError(format!("Failed to read body: {}", e)))?;
 
         String::from_utf8(body)
@@ -237,7 +239,7 @@ impl DapServer {
 
     /// Send a DAP message to the client
     async fn send_message(&self, msg: &str) -> Result<(), WebPipeError> {
-        let mut client_guard = self.client.lock().await;
+        let mut client_guard = self.client_writer.lock().await;
         let client = client_guard.as_mut()
             .ok_or_else(|| WebPipeError::DebuggerError("No client connected".to_string()))?;
 
@@ -443,10 +445,15 @@ impl DapServer {
     }
 
     async fn handle_threads(&self, request: Request) -> Result<(), WebPipeError> {
-        let threads: Vec<Thread> = self.paused_threads.iter()
-            .map(|entry| Thread {
-                id: *entry.key() as i64,
-                name: format!("HTTP Request #{}", entry.key()),
+        // Return all announced threads, not just paused ones.
+        // This ensures VS Code knows about threads even when they are running (e.g. stepping).
+        let threads: Vec<Thread> = self.announced_threads.iter()
+            .map(|id_ref| {
+                let id = *id_ref;
+                Thread {
+                    id: id as i64,
+                    name: format!("HTTP Request #{}", id),
+                }
             })
             .collect();
 
@@ -784,11 +791,11 @@ impl DapServer {
     pub async fn send_stopped_event(&self, thread_id: u64, reason: &str, breakpoint_id: Option<i64>) -> Result<(), WebPipeError> {
         let body = StoppedEventBody {
             reason: reason.to_string(),
-            description: None,  // Let VS Code use the reason
+            description: Some(format!("Paused on {}", reason)),
             thread_id: Some(thread_id as i64),
-            preserve_focus_hint: None,  // Let VS Code decide
+            preserve_focus_hint: Some(false),  // Force VS Code to focus this thread
             text: None,
-            all_threads_stopped: None,  // Let VS Code handle thread state
+            all_threads_stopped: Some(true),  // Force VS Code to refresh all threads/stacks
             hit_breakpoint_ids: breakpoint_id.map(|id| vec![id]),
         };
 
@@ -797,12 +804,7 @@ impl DapServer {
         eprintln!("[DAP] Sending stopped event for thread {}: {:?}", thread_id, body.reason);
         eprintln!("[DAP] Stopped event body: {}", serde_json::to_string_pretty(&body_json).unwrap());
 
-        // Send output event first to trigger UI activation
-        let output_body = json!({
-            "category": "console",
-            "output": format!("Paused on {} (thread {})\n", reason, thread_id)
-        });
-        self.send_event("output", Some(output_body)).await?;
+        // Removed explicit output event to avoid potential race with stopped event
 
         self.send_event("stopped", Some(body_json)).await
     }
@@ -856,6 +858,14 @@ impl DebuggerHook for DapDebuggerHook {
         let is_stepping = self.server.stepping_threads.contains(&thread_id);
 
         if at_breakpoint || is_stepping {
+            // Ensure thread is announced to VS Code
+            // If we don't do this, VS Code might ignore the stopped event for an unknown thread
+            if !self.server.announced_threads.contains(&thread_id) {
+                self.server.announced_threads.insert(thread_id);
+                // We MUST await this to ensure VS Code knows about the thread before we stop it
+                self.server.send_thread_event(thread_id, "started").await?;
+            }
+
             let reason = if at_breakpoint { "breakpoint" } else { "step" };
             eprintln!("[DAP] Paused at line {} (thread {}, reason: {})", location.line, thread_id, reason);
 
