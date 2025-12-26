@@ -13,10 +13,28 @@
 use std::env;
 use std::sync::Arc;
 use std::net::SocketAddr;
+use std::path::Path;
 use tokio::sync::Notify;
 use webpipe::ast::parse_program;
 use webpipe::debugger::{DapServer, dap_server::DapDebuggerHook};
 use webpipe::server::WebPipeServer;
+
+fn load_env_files(env_dir: &Path) {
+    // Load .env files located next to the WebPipe file
+    // Priority: .env.local > .env
+    let files = [".env", ".env.local"];
+    for fname in files.iter() {
+        let p = env_dir.join(fname);
+        if p.exists() {
+            // We use from_filename (not override) to respect existing env vars
+            if let Err(e) = dotenvy::from_filename(&p) {
+                eprintln!("[DAP] Warning: Failed to load {}: {}", p.display(), e);
+            } else {
+                eprintln!("[DAP] Loaded environment from {}", p.display());
+            }
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -41,6 +59,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let file_path = &args[1];
+
+    // Load environment variables relative to the .wp file
+    // This matches the behavior of the main `webpipe` CLI
+    let env_dir = Path::new(file_path).parent().unwrap_or(Path::new("."));
+    load_env_files(env_dir);
+
+    // Point public dir to <webpipe_dir>/public if not explicitly set
+    if std::env::var("WEBPIPE_PUBLIC_DIR").is_err() {
+        let public_path = env_dir.join("public");
+        if let Some(s) = public_path.to_str() {
+            std::env::set_var("WEBPIPE_PUBLIC_DIR", s);
+        }
+    }
 
     // Convert to absolute path for breakpoint matching
     let absolute_path = std::fs::canonicalize(file_path)
