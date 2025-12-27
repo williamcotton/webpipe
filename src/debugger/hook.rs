@@ -20,7 +20,7 @@ pub trait DebuggerHook: Send + Sync {
     /// - step_name: Name of the step being executed (e.g., "jq", "pg", "fetch")
     /// - location: Source location of the step in the .wp file
     /// - state: Current pipeline state (JSON value) - MUTABLE to allow debugger updates
-    /// - stack_depth: Current depth of the execution stack (for step-over/step-out)
+    /// - stack: Full execution stack (e.g., ["GET /api", "pipeline:auth", "pg"])
     ///
     /// Returns StepAction indicating how execution should proceed
     async fn before_step(
@@ -29,7 +29,7 @@ pub trait DebuggerHook: Send + Sync {
         step_name: &str,
         location: &SourceLocation,
         state: &mut Value,
-        stack_depth: usize,
+        stack: Vec<String>,
     ) -> Result<StepAction, WebPipeError>;
 
     /// Called after executing a pipeline step
@@ -42,7 +42,7 @@ pub trait DebuggerHook: Send + Sync {
         step_name: &str,
         location: &SourceLocation,
         state: &Value,
-        stack_depth: usize,
+        stack: Vec<String>,
     );
 }
 

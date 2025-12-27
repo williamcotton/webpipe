@@ -163,6 +163,8 @@ mod tests {
             environment: None,
             cache: CacheStore::new(8, 60),
             rate_limit: RateLimitStore::new(1000),
+            #[cfg(feature = "debugger")]
+            debugger: None,
         }
     }
     use super::*;

@@ -1025,18 +1025,15 @@ async fn execute_step<'a>(
     // 2. Start Profiling
     ctx.profiler.push(&step_name);
     let start_time = std::time::Instant::now();
-    
-    #[cfg(feature = "debugger")]
-    #[allow(unused_variables)]
-    let stack_depth = ctx.profiler.stack.len();
 
     // Debugger Hook: before_step
     #[cfg(feature = "debugger")]
     if let Some(ref dbg) = env.debugger {
         let thread_id = ctx.debug_thread_id.unwrap_or(0);
         let location = step.location();
-        eprintln!("[EXEC] Calling before_step: thread={}, step={}, line={}, depth={}", thread_id, step_name, location.line, stack_depth);
-        let action = dbg.before_step(thread_id, &step_name, location, &mut pipeline_ctx.state, stack_depth).await?;
+        let stack = ctx.profiler.stack.clone();
+        eprintln!("[EXEC] Calling before_step: thread={}, step={}, line={}", thread_id, step_name, location.line);
+        let action = dbg.before_step(thread_id, &step_name, location, &mut pipeline_ctx.state, stack).await?;
         // Handle stepping actions
         match action {
             crate::debugger::StepAction::Continue => {
@@ -1260,7 +1257,8 @@ async fn execute_step<'a>(
     if let Some(ref dbg) = env.debugger {
         let thread_id = ctx.debug_thread_id.unwrap_or(0);
         let location = step.location();
-        dbg.after_step(thread_id, &step_name, location, &pipeline_ctx.state, stack_depth).await;
+        let stack = ctx.profiler.stack.clone();
+        dbg.after_step(thread_id, &step_name, location, &pipeline_ctx.state, stack).await;
     }
 
     // 4. End Profiling
@@ -1533,6 +1531,8 @@ mod tests {
 
             cache: CacheStore::new(8, 60),
             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
+            #[cfg(feature = "debugger")]
+            debugger: None,
         }
     }
 

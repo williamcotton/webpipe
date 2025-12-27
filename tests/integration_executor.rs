@@ -45,6 +45,8 @@ async fn build_env(program: &webpipe::ast::Program) -> ExecutionEnv {
         environment: None,
         cache: ctx.cache.clone(),
         rate_limit: ctx.rate_limit.clone(),
+        #[cfg(feature = "debugger")]
+        debugger: None,
     }
 }
 

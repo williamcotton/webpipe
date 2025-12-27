@@ -166,6 +166,8 @@ mod tests {
             environment: None,
             cache: crate::runtime::context::CacheStore::new(8, 60),
             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
+            #[cfg(feature = "debugger")]
+            debugger: None,
         };
         let mut req_ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());

@@ -83,6 +83,8 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
         environment: None,
         cache: ctx.cache.clone(),
         rate_limit: ctx.rate_limit.clone(),
+        #[cfg(feature = "debugger")]
+        debugger: None,
     };
     (env, ctx)
 }

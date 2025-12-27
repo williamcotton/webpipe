@@ -63,8 +63,8 @@ pub struct PausedState {
     /// Timestamp when paused (for debugging)
     pub paused_at: std::time::Instant,
 
-    /// Stack depth when paused
-    pub stack_depth: usize,
+    /// Full execution stack (e.g., ["GET /api", "pipeline:auth", "pg"])
+    pub stack: Vec<String>,
 }
 
 /// DAP Server - manages debugging sessions
@@ -503,35 +503,62 @@ impl DapServer {
         let thread_id = args.thread_id as u64;
 
         let stack_frames = if let Some(paused) = self.paused_threads.get(&thread_id) {
-            vec![StackFrame {
-                id: thread_id as i64,
-                name: paused.step_name.clone(),
-                source: Some(Source {
-                    name: None,
-                    path: Some(self.file_path.clone()),
-                    source_reference: None,
-                    presentation_hint: None,
-                    origin: None,
-                    sources: None,
-                    adapter_data: None,
-                    checksums: None,
-                }),
-                line: paused.location.line as i64,
-                column: paused.location.column as i64,
-                end_line: None,
-                end_column: None,
-                can_restart: None,
-                instruction_pointer_reference: None,
-                module_id: None,
-                presentation_hint: None,
-            }]
+            // Map the collected stack (Vec<String>) to DAP StackFrames
+            // We reverse it because DAP expects the "top" frame (current step) first
+            paused.stack.iter()
+                .rev()
+                .enumerate()
+                .map(|(i, name)| {
+                    // For the top frame (index 0), use the real source location
+                    // For parent frames, we don't track location yet, so use 0/None
+                    let (line, column, source) = if i == 0 {
+                        (
+                            paused.location.line as i64,
+                            paused.location.column as i64,
+                            Some(Source {
+                                name: None,
+                                path: Some(self.file_path.clone()),
+                                source_reference: None,
+                                presentation_hint: None,
+                                origin: None,
+                                sources: None,
+                                adapter_data: None,
+                                checksums: None,
+                            })
+                        )
+                    } else {
+                        (0, 0, None) // Parent frames are "de-emphasized" without source
+                    };
+
+                    // Encode both thread_id and stack_index into frame_id
+                    // frame_id = thread_id * 10000 + stack_index
+                    // This allows up to 10,000 stack frames per thread
+                    let frame_id = thread_id as i64 * 10000 + i as i64;
+
+                    StackFrame {
+                        id: frame_id,
+                        name: name.clone(),
+                        source,
+                        line,
+                        column,
+                        end_line: None,
+                        end_column: None,
+                        can_restart: None,
+                        instruction_pointer_reference: None,
+                        module_id: None,
+                        presentation_hint: if i == 0 { None } else { Some("label".to_string()) },
+                    }
+                })
+                .collect()
         } else {
             Vec::new()
         };
 
+        let total_frames = stack_frames.len();
+
         let body = StackTraceResponseBody {
             stack_frames,
-            total_frames: Some(1),
+            total_frames: Some(total_frames as i64),
         };
 
         self.send_response(request.seq, "stackTrace", Some(serde_json::to_value(body).unwrap())).await
@@ -541,7 +568,8 @@ impl DapServer {
         let args: ScopesArguments = serde_json::from_value(request.arguments.unwrap_or_default())
             .map_err(|e| WebPipeError::DebuggerError(format!("Invalid scopes arguments: {}", e)))?;
 
-        let thread_id = args.frame_id as u64;
+        // Decode thread_id from frame_id (frame_id = thread_id * 10000 + stack_index)
+        let thread_id = (args.frame_id / 10000) as u64;
 
         let scopes = vec![Scope {
             name: "Pipeline State".to_string(),
@@ -701,7 +729,7 @@ impl DapServer {
         self.clear_thread_variables(thread_id);
 
         let current_depth = if let Some(paused) = self.paused_threads.get(&thread_id) {
-            paused.stack_depth
+            paused.stack.len()
         } else {
             1
         };
@@ -740,7 +768,7 @@ impl DapServer {
         self.clear_thread_variables(thread_id);
 
         let current_depth = if let Some(paused) = self.paused_threads.get(&thread_id) {
-            paused.stack_depth
+            paused.stack.len()
         } else {
             1
         };
@@ -1002,10 +1030,11 @@ impl DebuggerHook for DapDebuggerHook {
         step_name: &str,
         location: &SourceLocation,
         state: &mut serde_json::Value, // Changed to mutable
-        stack_depth: usize,
+        stack: Vec<String>,
     ) -> Result<StepAction, WebPipeError> {
         let at_breakpoint = self.server.has_breakpoint(location.line);
-        
+        let stack_depth = stack.len();
+
         let should_pause_step = if let Some(mode) = self.server.stepping_threads.get(&thread_id) {
             match *mode {
                 SteppingMode::StepInto => true,
@@ -1042,7 +1071,7 @@ impl DebuggerHook for DapDebuggerHook {
                 location: location.clone(),
                 step_name: step_name.to_string(),
                 paused_at: std::time::Instant::now(),
-                stack_depth,
+                stack,
             });
 
             self.server.send_stopped_event(thread_id, reason, breakpoint_id).await?;
@@ -1078,7 +1107,7 @@ impl DebuggerHook for DapDebuggerHook {
         _step_name: &str,
         _location: &SourceLocation,
         _state: &serde_json::Value,
-        _stack_depth: usize,
+        _stack: Vec<String>,
     ) {
     }
 }
