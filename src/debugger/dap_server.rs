@@ -94,6 +94,9 @@ pub struct DapServer {
     /// This enables expanding nested objects/arrays in VS Code Variables panel
     variable_cache: Arc<DashMap<i64, serde_json::Value>>,
 
+    /// Maps variable reference -> JSON Pointer string (e.g. "/data/users/0")
+    variable_pointers: Arc<DashMap<i64, String>>,
+
     /// Next variable reference ID
     next_var_ref: Arc<AtomicI64>,
 
@@ -126,6 +129,7 @@ impl DapServer {
             announced_threads: Arc::new(dashmap::DashSet::new()),
             next_thread_id: Arc::new(AtomicU64::new(1)),
             variable_cache: Arc::new(DashMap::new()),
+            variable_pointers: Arc::new(DashMap::new()),
             next_var_ref: Arc::new(AtomicI64::new(1000)),
             file_path,
             debug_port,
@@ -145,6 +149,12 @@ impl DapServer {
         self.next_var_ref.fetch_add(1, Ordering::SeqCst)
     }
 
+    /// Escape keys for JSON Pointer (RFC 6901)
+    /// '~' becomes '~0' and '/' becomes '~1'
+    fn escape_json_pointer(key: &str) -> String {
+        key.replace('~', "~0").replace('/', "~1")
+    }
+
     /// Clear variable cache for a thread (called when thread resumes)
     fn clear_thread_variables(&self, thread_id: u64) {
         // Variable references for a thread are in the range [thread_id * 1000, thread_id * 1000 + 999]
@@ -153,6 +163,9 @@ impl DapServer {
 
         // Remove all cached variables for this thread
         self.variable_cache.retain(|k, _v| *k < start || *k > end);
+
+        // Clean up pointers too
+        self.variable_pointers.retain(|k, _v| *k < start || *k > end);
     }
 
     /// Start TCP listener and wait for VS Code connection
@@ -572,10 +585,15 @@ impl DapServer {
         // Decode thread_id from frame_id (frame_id = thread_id * 10000 + stack_index)
         let thread_id = (args.frame_id / 10000) as u64;
 
+        let root_ref = thread_id as i64 * 1000 + 1;
+
+        // Register root pointer (empty string = root of JSON document)
+        self.variable_pointers.insert(root_ref, "".to_string());
+
         let scopes = vec![Scope {
             name: "Pipeline State".to_string(),
             presentation_hint: None,
-            variables_reference: thread_id as i64 * 1000 + 1,
+            variables_reference: root_ref,
             named_variables: None,
             indexed_variables: None,
             expensive: false,
@@ -598,17 +616,22 @@ impl DapServer {
         let var_ref = args.variables_reference;
         let thread_id = (var_ref / 1000) as u64;
 
+        // Retrieve parent pointer
+        let parent_ptr = self.variable_pointers.get(&var_ref)
+            .map(|r| r.value().clone())
+            .unwrap_or_default();
+
         let variables = if var_ref % 1000 == 1 {
             // This is a scope reference - show top-level pipeline state
             if let Some(paused) = self.paused_threads.get(&thread_id) {
-                self.json_to_variables_cached(&paused.state, thread_id)
+                self.json_to_variables_cached(&paused.state, thread_id, &parent_ptr)
             } else {
                 Vec::new()
             }
         } else {
             // This is a nested variable reference - look up in cache
             if let Some(cached_value) = self.variable_cache.get(&var_ref) {
-                self.json_to_variables_cached(&cached_value, thread_id)
+                self.json_to_variables_cached(&cached_value, thread_id, &parent_ptr)
             } else {
                 eprintln!("[DAP] Warning: Variable reference {} not found in cache", var_ref);
                 Vec::new()
@@ -627,78 +650,66 @@ impl DapServer {
             .map_err(|e| WebPipeError::DebuggerError(format!("Invalid setVariable arguments: {}", e)))?;
 
         let var_ref = args.variables_reference;
-        // Logic to determine thread_id from var_ref (assuming simple range mapping from handle_variables)
-        // Root scope refs are: thread_id * 1000 + 1
         let thread_id = (var_ref / 1000) as u64;
-        let is_root_scope = var_ref % 1000 == 1;
 
-        // Parse the new value (try JSON, then bool/number, fallback to string)
-        let new_val = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&args.value) {
-            parsed
-        } else {
-            // If it's just a bare string like "foo" (without quotes), from_str might fail or treat as unquoted?
-            // Actually serde_json::from_str("foo") fails. 
-            // We can try to parse; if it fails, assume it's a string literal.
-            serde_json::Value::String(args.value.clone())
+        // Parse the new value (try JSON, fallback to string)
+        let new_val = match serde_json::from_str::<serde_json::Value>(&args.value) {
+            Ok(v) => v,
+            Err(_) => serde_json::Value::String(args.value.clone()),
         };
 
-        let mut success = false;
-        let mut result_value = String::new();
-        let mut result_type = String::new();
-        let mut result_ref = 0;
+        // Resolve the JSON Pointer path
+        // We need the pointer to the *container* (var_ref) + the child key (args.name)
+        let container_ptr = self.variable_pointers.get(&var_ref)
+            .map(|r| r.value().clone());
 
-        if let Some(mut paused_entry) = self.paused_threads.get_mut(&thread_id) {
-            if is_root_scope {
-                // Update top-level state
-                if let Some(obj) = paused_entry.state.as_object_mut() {
-                    obj.insert(args.name.clone(), new_val.clone());
-                    success = true;
-                }
-            } else {
-                // Nested variable update
-                // Note: Updating nested variables in `variable_cache` won't automatically update the main `state`
-                // because `variable_cache` stores copies.
-                // For a robust implementation, we would need to track paths or pointers.
-                // For now, we will only support updating top-level variables or cached objects *if* they are referenced.
-                // But updating `variable_cache` alone is insufficient for the pipeline state to actually change
-                // for the *next* step.
-                //
-                // LIMITATION: Only top-level variable modification is fully supported for execution flow impact.
-                if let Some(mut cached_val) = self.variable_cache.get_mut(&var_ref) {
-                    if let Some(obj) = cached_val.as_object_mut() {
-                        obj.insert(args.name.clone(), new_val.clone());
-                        success = true;
-                        // Note: This only updates the view in the debugger, not the actual pipeline state
-                        // unless we implement write-back logic.
-                        eprintln!("[DAP] Warning: Modified nested variable {} in cache only (may not affect execution)", args.name);
+        if let Some(parent_ptr) = container_ptr {
+            // Construct full pointer to the specific property being set
+            // e.g. parent="/users/0", name="name" -> "/users/0/name"
+            let target_ptr = format!("{}/{}", parent_ptr, Self::escape_json_pointer(&args.name));
+
+            if let Some(mut paused) = self.paused_threads.get_mut(&thread_id) {
+                // Patch the ROOT state using JSON Pointer
+                if let Some(target) = paused.state.pointer_mut(&target_ptr) {
+                    *target = new_val.clone();
+
+                    // Update the CACHE (Variable View) to keep UI in sync
+                    if let Some(mut cached_container) = self.variable_cache.get_mut(&var_ref) {
+                        if let Some(obj) = cached_container.as_object_mut() {
+                            obj.insert(args.name.clone(), new_val.clone());
+                        } else if let Some(arr) = cached_container.as_array_mut() {
+                            // Handle array index parsing if name is "[0]" or "0"
+                            if let Ok(idx) = args.name.trim_matches(|c| c == '[' || c == ']').parse::<usize>() {
+                                if idx < arr.len() {
+                                    arr[idx] = new_val.clone();
+                                }
+                            }
+                        }
                     }
-                }
-            }
 
-            if success {
-                result_value = format_preview(&new_val);
-                result_type = type_name(&new_val);
-                
-                // If the new value is complex, we need to cache it so it can be expanded
-                if is_complex(&new_val) {
-                    result_ref = self.generate_var_ref();
-                    self.variable_cache.insert(result_ref, new_val);
+                    // Build success response
+                    let body = SetVariableResponseBody {
+                        value: format_preview(&new_val),
+                        type_: Some(type_name(&new_val)),
+                        variables_reference: if is_complex(&new_val) {
+                            let ref_id = self.generate_var_ref();
+                            self.variable_cache.insert(ref_id, new_val.clone());
+                            // Store pointer for the new complex value
+                            self.variable_pointers.insert(ref_id, target_ptr.clone());
+                            Some(ref_id)
+                        } else {
+                            Some(0)
+                        },
+                        named_variables: None,
+                        indexed_variables: None,
+                    };
+
+                    return self.send_response(request.seq, "setVariable", Some(serde_json::to_value(body).unwrap())).await;
                 }
             }
         }
 
-        if success {
-            let body = SetVariableResponseBody {
-                value: result_value,
-                type_: Some(result_type),
-                variables_reference: Some(result_ref),
-                named_variables: None, // Simplified
-                indexed_variables: None,
-            };
-            self.send_response(request.seq, "setVariable", Some(serde_json::to_value(body).unwrap())).await
-        } else {
-            self.send_error_response(request.seq, "setVariable", "Failed to set variable (scope not found or not modifiable)").await
-        }
+        self.send_error_response(request.seq, "setVariable", "Failed to update variable").await
     }
 
     async fn handle_evaluate(&self, request: Request) -> Result<(), WebPipeError> {
@@ -897,7 +908,7 @@ impl DapServer {
     // ========================================================================
 
     /// Convert JSON value to DAP variables with caching for nested expansion
-    fn json_to_variables_cached(&self, value: &serde_json::Value, _thread_id: u64) -> Vec<Variable> {
+    fn json_to_variables_cached(&self, value: &serde_json::Value, _thread_id: u64, parent_ptr: &str) -> Vec<Variable> {
         match value {
             serde_json::Value::Object(map) => {
                 map.iter().map(|(k, v)| {
@@ -905,6 +916,11 @@ impl DapServer {
                         // Generate a new variable reference and cache the value
                         let ref_id = self.generate_var_ref();
                         self.variable_cache.insert(ref_id, v.clone());
+
+                        // Store pointer: parent + / + escaped_key
+                        let child_ptr = format!("{}/{}", parent_ptr, Self::escape_json_pointer(k));
+                        self.variable_pointers.insert(ref_id, child_ptr);
+
                         ref_id
                     } else {
                         0
@@ -937,6 +953,11 @@ impl DapServer {
                         // Generate a new variable reference and cache the value
                         let ref_id = self.generate_var_ref();
                         self.variable_cache.insert(ref_id, v.clone());
+
+                        // Store pointer: parent + / + index
+                        let child_ptr = format!("{}/{}", parent_ptr, i);
+                        self.variable_pointers.insert(ref_id, child_ptr);
+
                         ref_id
                     } else {
                         0
