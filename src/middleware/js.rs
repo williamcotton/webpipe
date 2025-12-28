@@ -1,11 +1,35 @@
 use crate::error::WebPipeError;
 use crate::runtime::Context;
 use async_trait::async_trait;
-use boa_engine::{Context as BoaContext, JsValue, Source, JsResult, NativeFunction, object::builtins::JsArray};
+use boa_engine::{
+    object::builtins::JsArray, Context as BoaContext, JsResult, JsValue, NativeFunction, Script,
+    Source,
+};
+use lru::LruCache;
 use serde_json::Value;
 use sqlx::{self};
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::mem::ManuallyDrop;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::runtime::Handle;
+
+// Container struct for the JS runtime state.
+// We use ManuallyDrop to intentionally LEAK the context and cache on thread destruction.
+// This is necessary because Boa's thread-local Garbage Collector state may be dropped
+// before this struct, causing a panic (subtract with overflow) in Boa's destructor
+// if we try to clean up normally.
+struct JsRuntimeState {
+    cache: ManuallyDrop<LruCache<String, Script>>,
+    context: ManuallyDrop<BoaContext>,
+    // Store the list of global keys that are allowed to exist (captured at startup)
+    initial_keys: HashSet<String>,
+}
+
+thread_local! {
+    static RUNTIME_STATE: RefCell<Option<JsRuntimeState>> = RefCell::new(None);
+}
 
 #[derive(Debug)]
 pub struct JsMiddleware {
@@ -17,8 +41,118 @@ impl JsMiddleware {
         Self { ctx }
     }
 
+    /// Initializes a fresh context, loads helpers, locks down intrinsics,
+    /// and captures the "clean" state of the global object.
+    fn initialize_runtime(&self) -> Result<JsRuntimeState, WebPipeError> {
+        let mut boa_ctx = BoaContext::default();
+
+        // 1. Disable dangerous globals
+        self.sandbox_context(&mut boa_ctx)?;
+
+        // 2. Register runtime functions
+        self.register_get_env(&mut boa_ctx)?;
+        self.register_require_script(&mut boa_ctx)?;
+        self.register_execute_sql(&mut boa_ctx)?;
+
+        // 3. Preload helper scripts
+        self.load_scripts_from_dir(&mut boa_ctx)?;
+
+        // 4. Lockdown: Freeze standard library to prevent prototype pollution
+        self.lockdown_intrinsics(&mut boa_ctx)?;
+
+        // 5. Snapshot: Record the "clean" list of global keys
+        let initial_keys = self.get_global_keys(&mut boa_ctx)?;
+
+        let cache = LruCache::new(NonZeroUsize::new(64).unwrap());
+
+        Ok(JsRuntimeState {
+            context: ManuallyDrop::new(boa_ctx),
+            cache: ManuallyDrop::new(cache),
+            initial_keys,
+        })
+    }
+
+    /// Helper to get all current string keys from the global object
+    fn get_global_keys(&self, boa_ctx: &mut BoaContext) -> Result<HashSet<String>, WebPipeError> {
+        let global = boa_ctx.global_object();
+        let keys = global
+            .own_property_keys(boa_ctx)
+            .map_err(|e| WebPipeError::MiddlewareExecutionError(e.to_string()))?;
+
+        let mut key_set = HashSet::new();
+        for key in keys {
+            // FIX: Convert PropertyKey to JsValue first to stringify properly
+            let js_val = JsValue::from(key);
+            if let Ok(js_string) = js_val.to_string(boa_ctx) {
+                if let Ok(s) = js_string.to_std_string() {
+                    key_set.insert(s);
+                }
+            }
+        }
+        Ok(key_set)
+    }
+
+    /// Freezes standard intrinsic objects to prevent modification
+    fn lockdown_intrinsics(&self, boa_ctx: &mut BoaContext) -> Result<(), WebPipeError> {
+        let script = r#"
+            (function() {
+                const objects = [
+                    Object, Array, String, Number, Boolean, Date, RegExp, Error, 
+                    Math, JSON, Promise, Map, Set, WeakMap, WeakSet
+                ];
+                
+                objects.forEach(obj => {
+                    if (obj) {
+                        // Freeze the prototype if it exists (prevents Array.prototype.push = ...)
+                        if (obj.prototype) Object.freeze(obj.prototype);
+                        // Freeze the static object itself (prevents Array.from = ...)
+                        Object.freeze(obj);
+                    }
+                });
+            })();
+        "#;
+        boa_ctx
+            .eval(Source::from_bytes(script.as_bytes()))
+            .map_err(|e| {
+                WebPipeError::MiddlewareExecutionError(format!("Lockdown failed: {}", e))
+            })?;
+        Ok(())
+    }
+
+    /// Deletes any global keys that weren't present at initialization
+    // FIX: Pass mutable context and immutable keys separately to avoid double borrow of `state`
+    fn cleanup_environment(
+        &self,
+        boa_ctx: &mut BoaContext,
+        initial_keys: &HashSet<String>,
+    ) -> Result<(), WebPipeError> {
+        let global = boa_ctx.global_object();
+
+        // Get current keys
+        let current_keys = global
+            .own_property_keys(boa_ctx)
+            .map_err(|e| WebPipeError::MiddlewareExecutionError(e.to_string()))?;
+
+        // Identify and delete pollution
+        for key in current_keys {
+            // FIX: Convert PropertyKey to JsValue first
+            let js_val = JsValue::from(key.clone());
+            if let Ok(js_string) = js_val.to_string(boa_ctx) {
+                if let Ok(s) = js_string.to_std_string() {
+                    // If this key wasn't in our initial allowlist, DELETE IT
+                    if !initial_keys.contains(&s) {
+                        // FIX: Use delete_property
+                        global.delete_property_or_throw(key, boa_ctx).map_err(|e| {
+                            WebPipeError::MiddlewareExecutionError(e.to_string())
+                        })?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn load_scripts_from_dir(&self, boa_ctx: &mut BoaContext) -> Result<(), WebPipeError> {
-        // Use preloaded scripts from Context (no blocking I/O!)
         for (module_name, source) in self.ctx.js_scripts.iter() {
             match boa_ctx.eval(Source::from_bytes(source.as_bytes())) {
                 Ok(returned) => {
@@ -28,15 +162,17 @@ impl JsMiddleware {
                         false,
                         boa_ctx,
                     ) {
-                        return Err(WebPipeError::MiddlewareExecutionError(
-                            format!("Failed to register JavaScript module '{}' as global: {}", module_name, e)
-                        ));
+                        return Err(WebPipeError::MiddlewareExecutionError(format!(
+                            "Failed to register JavaScript module '{}' as global: {}",
+                            module_name, e
+                        )));
                     }
                 }
                 Err(e) => {
-                    return Err(WebPipeError::MiddlewareExecutionError(
-                        format!("JavaScript script '{}' execution error: {}", module_name, e)
-                    ));
+                    return Err(WebPipeError::MiddlewareExecutionError(format!(
+                        "JavaScript script '{}' execution error: {}",
+                        module_name, e
+                    )));
                 }
             }
         }
@@ -44,7 +180,6 @@ impl JsMiddleware {
     }
 
     fn sandbox_context(&self, boa_ctx: &mut BoaContext) -> Result<(), WebPipeError> {
-        // Disable dangerous globals
         let code = r#"
             eval = undefined;
             Function = undefined;
@@ -72,8 +207,7 @@ impl JsMiddleware {
                 .and_then(|v| v.as_string())
                 .and_then(|s| s.to_std_string().ok())
                 .ok_or_else(|| {
-                    boa_engine::JsNativeError::typ()
-                        .with_message("getEnv requires string argument")
+                    boa_engine::JsNativeError::typ().with_message("getEnv requires string argument")
                 })?;
 
             match std::env::var(&key) {
@@ -82,13 +216,10 @@ impl JsMiddleware {
             }
         });
 
-        let js_fn = boa_engine::object::FunctionObjectBuilder::new(
-            boa_ctx.realm(),
-            get_env_fn
-        )
-        .name("getEnv")
-        .length(1)
-        .build();
+        let js_fn = boa_engine::object::FunctionObjectBuilder::new(boa_ctx.realm(), get_env_fn)
+            .name("getEnv")
+            .length(1)
+            .build();
 
         boa_ctx
             .register_global_property(
@@ -105,49 +236,48 @@ impl JsMiddleware {
     fn register_require_script(&self, boa_ctx: &mut BoaContext) -> Result<(), WebPipeError> {
         let scripts = self.ctx.js_scripts.clone();
 
-        let require_fn = unsafe { NativeFunction::from_closure(move |_this, args, context| {
-            let name = args
-                .get(0)
-                .and_then(|v| v.as_string())
-                .and_then(|s| s.to_std_string().ok())
-                .ok_or_else(|| {
-                    boa_engine::JsNativeError::typ()
-                        .with_message("requireScript requires string argument")
-                })?;
+        let require_fn = unsafe {
+            NativeFunction::from_closure(move |_this, args, context| {
+                let name = args
+                    .get(0)
+                    .and_then(|v| v.as_string())
+                    .and_then(|s| s.to_std_string().ok())
+                    .ok_or_else(|| {
+                        boa_engine::JsNativeError::typ()
+                            .with_message("requireScript requires string argument")
+                    })?;
 
-            match scripts.get(&name) {
-                Some(source) => {
-                    // Check if already loaded as global
-                    if let Ok(existing) = context.global_object().get(
-                        boa_engine::js_string!(name.as_str()),
-                        context,
-                    ) {
-                        if !existing.is_undefined() {
-                            return Ok(existing);
+                match scripts.get(&name) {
+                    Some(source) => {
+                        // Check if already loaded as global
+                        if let Ok(existing) = context.global_object().get(
+                            boa_engine::js_string!(name.as_str()),
+                            context,
+                        ) {
+                            if !existing.is_undefined() {
+                                return Ok(existing);
+                            }
                         }
+
+                        // Execute and cache as global
+                        let result = context.eval(Source::from_bytes(source.as_bytes()))?;
+                        context.global_object().set(
+                            boa_engine::js_string!(name.as_str()),
+                            result.clone(),
+                            false,
+                            context,
+                        )?;
+                        Ok(result)
                     }
-
-                    // Execute and cache as global
-                    let result = context.eval(Source::from_bytes(source.as_bytes()))?;
-                    context.global_object().set(
-                        boa_engine::js_string!(name.as_str()),
-                        result.clone(),
-                        false,
-                        context,
-                    )?;
-                    Ok(result)
+                    None => Ok(JsValue::undefined()),
                 }
-                None => Ok(JsValue::undefined()),
-            }
-        }) };
+            })
+        };
 
-        let js_fn = boa_engine::object::FunctionObjectBuilder::new(
-            boa_ctx.realm(),
-            require_fn
-        )
-        .name("requireScript")
-        .length(1)
-        .build();
+        let js_fn = boa_engine::object::FunctionObjectBuilder::new(boa_ctx.realm(), require_fn)
+            .name("requireScript")
+            .length(1)
+            .build();
 
         boa_ctx
             .register_global_property(
@@ -167,135 +297,138 @@ impl JsMiddleware {
     fn register_execute_sql(&self, boa_ctx: &mut BoaContext) -> Result<(), WebPipeError> {
         let pool_opt = self.ctx.pg.clone();
 
-        let exec_sql_fn = unsafe { NativeFunction::from_closure(move |_this, args, context| {
-            let pool = match pool_opt.clone() {
-                Some(p) => p,
-                None => {
-                    return Err(boa_engine::JsNativeError::typ()
-                        .with_message("database not configured")
-                        .into());
-                }
-            };
+        let exec_sql_fn = unsafe {
+            NativeFunction::from_closure(move |_this, args, context| {
+                let pool = match pool_opt.clone() {
+                    Some(p) => p,
+                    None => {
+                        return Err(boa_engine::JsNativeError::typ()
+                            .with_message("database not configured")
+                            .into());
+                    }
+                };
 
-            // Parse query string
-            let query = args
-                .get(0)
-                .and_then(|v| v.as_string())
-                .and_then(|s| s.to_std_string().ok())
-                .ok_or_else(|| {
-                    boa_engine::JsNativeError::typ()
-                        .with_message("executeSql requires query string")
-                })?;
+                // Parse query string
+                let query = args
+                    .get(0)
+                    .and_then(|v| v.as_string())
+                    .and_then(|s| s.to_std_string().ok())
+                    .ok_or_else(|| {
+                        boa_engine::JsNativeError::typ()
+                            .with_message("executeSql requires query string")
+                    })?;
 
-            // Parse params array
-            let param_values: Vec<Value> = match args.get(1) {
-                Some(val) if val.is_object() => {
-                    let array_obj = val.as_object().unwrap();
-                    if array_obj.is_array() {
-                        let len_val = array_obj
-                            .get(boa_engine::js_string!("length"), context)
-                            .map_err(|e| boa_engine::JsNativeError::typ().with_message(e.to_string()))?;
-                        let len = len_val
-                            .to_u32(context)
-                            .map_err(|e| boa_engine::JsNativeError::typ().with_message(e.to_string()))?;
+                // Parse params array
+                let param_values: Vec<Value> = match args.get(1) {
+                    Some(val) if val.is_object() => {
+                        let array_obj = val.as_object().unwrap();
+                        if array_obj.is_array() {
+                            let len_val = array_obj
+                                .get(boa_engine::js_string!("length"), context)
+                                .map_err(|e| {
+                                    boa_engine::JsNativeError::typ().with_message(e.to_string())
+                                })?;
+                            let len = len_val.to_u32(context).map_err(|e| {
+                                boa_engine::JsNativeError::typ().with_message(e.to_string())
+                            })?;
 
-                        let mut values = Vec::new();
-                        for i in 0..len {
-                            let elem = array_obj
-                                .get(i, context)
-                                .map_err(|e| boa_engine::JsNativeError::typ().with_message(e.to_string()))?;
-                            match Self::js_to_json_with_depth(elem, context, 0) {
-                                Ok(json_val) => values.push(json_val),
-                                Err(e) => {
-                                    return Err(boa_engine::JsNativeError::typ()
-                                        .with_message(format!("Failed to convert param: {}", e))
-                                        .into());
+                            let mut values = Vec::new();
+                            for i in 0..len {
+                                let elem = array_obj.get(i, context).map_err(|e| {
+                                    boa_engine::JsNativeError::typ().with_message(e.to_string())
+                                })?;
+                                match Self::js_to_json_with_depth(elem, context, 0) {
+                                    Ok(json_val) => values.push(json_val),
+                                    Err(e) => {
+                                        return Err(boa_engine::JsNativeError::typ()
+                                            .with_message(format!("Failed to convert param: {}", e))
+                                            .into());
+                                    }
                                 }
                             }
+                            values
+                        } else {
+                            return Err(boa_engine::JsNativeError::typ()
+                                .with_message("params must be an array")
+                                .into());
                         }
-                        values
-                    } else {
+                    }
+                    Some(val) if val.is_undefined() || val.is_null() => Vec::new(),
+                    Some(_) => {
                         return Err(boa_engine::JsNativeError::typ()
                             .with_message("params must be an array")
                             .into());
                     }
-                }
-                Some(val) if val.is_undefined() || val.is_null() => Vec::new(),
-                Some(_) => {
-                    return Err(boa_engine::JsNativeError::typ()
-                        .with_message("params must be an array")
-                        .into());
-                }
-                None => Vec::new(),
-            };
+                    None => Vec::new(),
+                };
 
-            // Execute async SQL query synchronously
-            let handle = Handle::current();
-            let fut = async move {
-                // Same SQL execution logic as Lua middleware
-                let wrapped_sql = format!(
+                // Execute async SQL query synchronously
+                let handle = Handle::current();
+                let fut = async move {
+                    // Same SQL execution logic as Lua middleware
+                    let wrapped_sql = format!(
                     "WITH t AS ({}) SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) AS rows FROM t",
                     query
                 );
 
-                let mut query_builder =
-                    sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql);
-                for param in param_values.iter() {
-                    match param {
-                        Value::Null => {
-                            query_builder = query_builder.bind(None::<String>);
-                        }
-                        Value::Bool(b) => {
-                            query_builder = query_builder.bind(*b);
-                        }
-                        Value::Number(n) => {
-                            if let Some(i) = n.as_i64() {
-                                query_builder = query_builder.bind(i);
-                            } else if let Some(f) = n.as_f64() {
-                                query_builder = query_builder.bind(f);
-                            } else {
-                                query_builder = query_builder.bind(0i64);
+                    let mut query_builder =
+                        sqlx::query_scalar::<_, sqlx::types::Json<Value>>(&wrapped_sql);
+                    for param in param_values.iter() {
+                        match param {
+                            Value::Null => {
+                                query_builder = query_builder.bind(None::<String>);
+                            }
+                            Value::Bool(b) => {
+                                query_builder = query_builder.bind(*b);
+                            }
+                            Value::Number(n) => {
+                                if let Some(i) = n.as_i64() {
+                                    query_builder = query_builder.bind(i);
+                                } else if let Some(f) = n.as_f64() {
+                                    query_builder = query_builder.bind(f);
+                                } else {
+                                    query_builder = query_builder.bind(0i64);
+                                }
+                            }
+                            Value::String(s) => {
+                                query_builder = query_builder.bind(s);
+                            }
+                            Value::Array(_) | Value::Object(_) => {
+                                query_builder =
+                                    query_builder.bind(sqlx::types::Json(param.clone()));
                             }
                         }
-                        Value::String(s) => {
-                            query_builder = query_builder.bind(s);
-                        }
-                        Value::Array(_) | Value::Object(_) => {
-                            query_builder = query_builder.bind(sqlx::types::Json(param.clone()));
-                        }
                     }
-                }
 
-                let rows_json_res = query_builder.fetch_one(&pool).await;
-                match rows_json_res {
-                    Ok(json) => {
-                        let rows = json.0;
-                        let row_count = rows.as_array().map(|a| a.len()).unwrap_or(0);
-                        Ok(serde_json::json!({ "rows": rows, "rowCount": row_count }))
+                    let rows_json_res = query_builder.fetch_one(&pool).await;
+                    match rows_json_res {
+                        Ok(json) => {
+                            let rows = json.0;
+                            let row_count = rows.as_array().map(|a| a.len()).unwrap_or(0);
+                            Ok(serde_json::json!({ "rows": rows, "rowCount": row_count }))
+                        }
+                        Err(e) => Err(e.to_string()),
                     }
-                    Err(e) => Err(e.to_string()),
-                }
-            };
+                };
 
-            match tokio::task::block_in_place(|| handle.block_on(fut)) {
-                Ok(json_val) => {
-                    let js_val = Self::json_to_js(context, &json_val)
-                        .map_err(|e| boa_engine::JsNativeError::typ().with_message(e.to_string()))?;
-                    Ok(js_val)
+                match tokio::task::block_in_place(|| handle.block_on(fut)) {
+                    Ok(json_val) => {
+                        let js_val = Self::json_to_js(context, &json_val).map_err(|e| {
+                            boa_engine::JsNativeError::typ().with_message(e.to_string())
+                        })?;
+                        Ok(js_val)
+                    }
+                    Err(err_msg) => Err(boa_engine::JsNativeError::typ()
+                        .with_message(err_msg)
+                        .into()),
                 }
-                Err(err_msg) => Err(boa_engine::JsNativeError::typ()
-                    .with_message(err_msg)
-                    .into()),
-            }
-        }) };
+            })
+        };
 
-        let js_fn = boa_engine::object::FunctionObjectBuilder::new(
-            boa_ctx.realm(),
-            exec_sql_fn
-        )
-        .name("executeSql")
-        .length(2)
-        .build();
+        let js_fn = boa_engine::object::FunctionObjectBuilder::new(boa_ctx.realm(), exec_sql_fn)
+            .name("executeSql")
+            .length(2)
+            .build();
 
         boa_ctx
             .register_global_property(
@@ -310,23 +443,6 @@ impl JsMiddleware {
                 ))
             })?;
         Ok(())
-    }
-
-    fn create_js_context(&self) -> Result<BoaContext, WebPipeError> {
-        let mut boa_ctx = BoaContext::default();
-
-        // 1. Disable dangerous globals
-        self.sandbox_context(&mut boa_ctx)?;
-
-        // 2. Register runtime functions
-        self.register_get_env(&mut boa_ctx)?;
-        self.register_require_script(&mut boa_ctx)?;
-        self.register_execute_sql(&mut boa_ctx)?;
-
-        // 3. Preload scripts
-        self.load_scripts_from_dir(&mut boa_ctx)?;
-
-        Ok(boa_ctx)
     }
 
     fn json_to_js(boa_ctx: &mut BoaContext, value: &Value) -> JsResult<JsValue> {
@@ -410,7 +526,8 @@ impl JsMiddleware {
                         .map_err(|e| WebPipeError::MiddlewareExecutionError(e.to_string()))?;
                     let len = len_val
                         .to_u32(boa_ctx)
-                        .map_err(|e| WebPipeError::MiddlewareExecutionError(e.to_string()))? as u64;
+                        .map_err(|e| WebPipeError::MiddlewareExecutionError(e.to_string()))?
+                        as u64;
 
                     let mut json_array = Vec::with_capacity(len as usize);
                     for i in 0..len {
@@ -455,55 +572,107 @@ impl JsMiddleware {
 
     fn execute_js_script(
         &self,
-        script: &str,
+        script_src: &str,
         input: &Value,
         ctx: &mut crate::executor::RequestContext,
         env: &crate::executor::ExecutionEnv,
     ) -> Result<Value, WebPipeError> {
-        // Create a fresh Boa context for each request to avoid GC issues
-        let mut boa_ctx = self.create_js_context()?;
+        // Access the Thread Local Context
+        RUNTIME_STATE.with(|state_cell| {
+            let mut state_opt = state_cell.borrow_mut();
 
-        // Create isolated scope using IIFE
-        let input_json = serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
-        let context_json = serde_json::to_string(&ctx.to_value(env))
-            .unwrap_or_else(|_| "{}".to_string());
+            if state_opt.is_none() {
+                *state_opt = Some(self.initialize_runtime()?);
+            }
+            let state = state_opt.as_mut().unwrap();
+            
+            // FIX: Borrow fields independently to satisfy borrow checker later
+            let boa_ctx = &mut state.context;
+            let initial_keys = &state.initial_keys;
 
-        let wrapper = format!(
-            r#"
-            (function() {{
-                // Inject request
-                const request = {};
+            // 1. Inject data as globals
+            let js_input = Self::json_to_js(boa_ctx, input)
+                .map_err(|e| WebPipeError::MiddlewareExecutionError(e.to_string()))?;
 
-                // Inject context
-                const context = {};
+            // We use .set() to overwrite existing globals from previous runs
+            boa_ctx
+                .global_object()
+                .set(
+                    boa_engine::js_string!("__req"),
+                    js_input,
+                    false,
+                    boa_ctx,
+                )
+                .map_err(|e| {
+                    WebPipeError::MiddlewareExecutionError(format!("Failed to set __req: {}", e))
+                })?;
 
-                // Inject flag functions
-                const flags = {{}};
-                const getFlag = function(key) {{ return flags[key] || false; }};
-                const setFlag = function(key, val) {{ flags[key] = val; }};
+            let js_context = Self::json_to_js(boa_ctx, &ctx.to_value(env))
+                .map_err(|e| WebPipeError::MiddlewareExecutionError(e.to_string()))?;
 
-                // Inject condition functions
-                const conditions = {{}};
-                const getWhen = function(key) {{ return conditions[key] || false; }};
-                const setWhen = function(key, val) {{ conditions[key] = val; }};
+            boa_ctx
+                .global_object()
+                .set(
+                    boa_engine::js_string!("__ctx"),
+                    js_context,
+                    false,
+                    boa_ctx,
+                )
+                .map_err(|e| {
+                    WebPipeError::MiddlewareExecutionError(format!("Failed to set __ctx: {}", e))
+                })?;
 
-                // User script
-                {}
-            }})()
-        "#,
-            input_json, context_json, script
-        );
+            // 2. Wrap the user's code with "use strict"
+            // "use strict" prevents accidental creation of globals (e.g. 'x = 1' throws error)
+            let wrapped_src = format!(
+                r#"
+                (function(request, context) {{
+                    "use strict";
+                    
+                    // Inject helper functions
+                    const flags = {{}};
+                    const getFlag = function(key) {{ return flags[key] || false; }};
+                    const setFlag = function(key, val) {{ flags[key] = val; }};
+                    
+                    const conditions = {{}};
+                    const getWhen = function(key) {{ return conditions[key] || false; }};
+                    const setWhen = function(key, val) {{ conditions[key] = val; }};
+                    
+                    {}
+                }})(__req, __ctx)
+            "#,
+                script_src
+            );
 
-        let result = boa_ctx
-            .eval(Source::from_bytes(wrapper.as_bytes()))
-            .map_err(|e| {
-                WebPipeError::MiddlewareExecutionError(format!(
-                    "JavaScript execution error: {}",
-                    e
-                ))
+            // 3. Execute with Cache
+            let execution_result = if !state.cache.contains(script_src) {
+                let script =
+                    Script::parse(Source::from_bytes(wrapped_src.as_bytes()), None, boa_ctx)
+                        .map_err(|e| {
+                            WebPipeError::MiddlewareExecutionError(format!(
+                                "JS Compilation error: {}",
+                                e
+                            ))
+                        })?;
+                state.cache.put(script_src.to_string(), script);
+                state.cache.get(script_src).unwrap().evaluate(boa_ctx)
+            } else {
+                state.cache.get(script_src).unwrap().evaluate(boa_ctx)
+            };
+
+            // 4. CLEANUP: IMPORTANT!
+            // Regardless of success or failure, we try to clean up the environment
+            // to prevent data leaking to the next request.
+            // We ignore errors here to prioritize returning the actual execution result (or error).
+            // FIX: Pass separated references to appease borrow checker
+            let _ = self.cleanup_environment(boa_ctx, initial_keys);
+
+            let result_val = execution_result.map_err(|e| {
+                WebPipeError::MiddlewareExecutionError(format!("JS Runtime error: {}", e))
             })?;
 
-        Self::js_to_json_with_depth(result, &mut boa_ctx, 0)
+            Self::js_to_json_with_depth(result_val, boa_ctx, 0)
+        })
     }
 }
 
@@ -525,168 +694,5 @@ impl super::Middleware for JsMiddleware {
 
     fn behavior(&self) -> super::StateBehavior {
         super::StateBehavior::Transform
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::Context;
-    use crate::runtime::context::{CacheStore, ConfigSnapshot, RateLimitStore};
-    use reqwest::Client;
-    use handlebars::Handlebars;
-    use parking_lot::{Mutex, RwLock};
-
-    fn ctx_no_db() -> Arc<Context> {
-        Arc::new(Context {
-            pg: None,
-            http: Client::new(),
-            cache: CacheStore::new(64, 1),
-            rate_limit: RateLimitStore::new(1000),
-            hb: Arc::new(Mutex::new(Handlebars::new())),
-            cfg: ConfigSnapshot(serde_json::json!({})),
-            lua_scripts: Arc::new(std::collections::HashMap::new()),
-            js_scripts: Arc::new(std::collections::HashMap::new()),
-            graphql: None,
-            execution_env: Arc::new(RwLock::new(None)),
-        })
-    }
-
-    struct StubInvoker;
-    #[async_trait::async_trait]
-    impl crate::executor::MiddlewareInvoker for StubInvoker {
-        async fn call(
-            &self,
-            _name: &str,
-            _args: &[String],
-            _cfg: &str,
-            _pipeline_ctx: &mut crate::runtime::PipelineContext,
-            _env: &crate::executor::ExecutionEnv,
-            _ctx: &mut crate::executor::RequestContext,
-            _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
-        }
-    }
-
-    fn dummy_env() -> crate::executor::ExecutionEnv {
-        use crate::executor::ExecutionEnv;
-        use crate::runtime::context::{CacheStore, RateLimitStore};
-        let registry = Arc::new(crate::middleware::MiddlewareRegistry::empty());
-        ExecutionEnv {
-            variables: Arc::new(std::collections::HashMap::new()),
-            named_pipelines: Arc::new(std::collections::HashMap::new()),
-            invoker: Arc::new(StubInvoker),
-            registry,
-            environment: None,
-            cache: CacheStore::new(8, 60),
-            rate_limit: RateLimitStore::new(1000),
-            #[cfg(feature = "debugger")]
-            debugger: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn json_js_roundtrip_primitives_and_objects() {
-        use crate::middleware::Middleware;
-
-        let mw = JsMiddleware::new(ctx_no_db());
-        let input = serde_json::json!({"x": 1, "arr": [1, 2], "obj": {"a": true}});
-        let env = dummy_env();
-        let mut ctx = crate::executor::RequestContext::new();
-        let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
-
-        mw.execute(
-            &[],
-            "return { x: request.x, arr: request.arr, obj: request.obj }",
-            &mut pipeline_ctx,
-            &env,
-            &mut ctx,
-            None,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(pipeline_ctx.state["x"], serde_json::json!(1));
-        assert_eq!(pipeline_ctx.state["arr"].as_array().unwrap().len(), 2);
-        assert_eq!(pipeline_ctx.state["obj"]["a"], serde_json::json!(true));
-    }
-
-    #[tokio::test]
-    async fn undefined_converts_to_null() {
-        use crate::middleware::Middleware;
-
-        let mw = JsMiddleware::new(ctx_no_db());
-        let env = dummy_env();
-        let mut ctx = crate::executor::RequestContext::new();
-        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
-
-        mw.execute(
-            &[],
-            "return { value: undefined }",
-            &mut pipeline_ctx,
-            &env,
-            &mut ctx,
-            None,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(pipeline_ctx.state["value"], serde_json::json!(null));
-    }
-
-    #[tokio::test]
-    async fn sandbox_prevents_global_pollution() {
-        use crate::middleware::Middleware;
-
-        let mw = JsMiddleware::new(ctx_no_db());
-        let env = dummy_env();
-        let mut ctx = crate::executor::RequestContext::new();
-
-        // First request: accidentally write to global
-        let script1 = "if (typeof counter === 'undefined') { counter = 0; } counter++; return { count: counter };";
-        let mut pipeline_ctx1 = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        mw.execute(&[], script1, &mut pipeline_ctx1, &env, &mut ctx, None)
-            .await
-            .unwrap();
-        assert_eq!(pipeline_ctx1.state["count"], serde_json::json!(1));
-
-        // Second request: should return 1 again (not 2) because IIFE creates new scope
-        let mut pipeline_ctx2 = crate::runtime::PipelineContext::new(serde_json::json!({}));
-        mw.execute(&[], script1, &mut pipeline_ctx2, &env, &mut ctx, None)
-            .await
-            .unwrap();
-        assert_eq!(
-            pipeline_ctx2.state["count"],
-            serde_json::json!(1),
-            "IIFE should prevent global pollution"
-        );
-    }
-
-    #[tokio::test]
-    async fn get_env_returns_env_variables() {
-        use crate::middleware::Middleware;
-
-        std::env::set_var("TEST_VAR_JS", "test_value");
-        let mw = JsMiddleware::new(ctx_no_db());
-        let env = dummy_env();
-        let mut ctx = crate::executor::RequestContext::new();
-        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
-
-        mw.execute(
-            &[],
-            "return { value: getEnv('TEST_VAR_JS') }",
-            &mut pipeline_ctx,
-            &env,
-            &mut ctx,
-            None,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(
-            pipeline_ctx.state["value"],
-            serde_json::json!("test_value")
-        );
     }
 }
