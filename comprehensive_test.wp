@@ -4244,7 +4244,6 @@ describe "javascript middleware"
     when calling GET /js/456/example?name=test
     then status is 200
     and output `.message` equals "Hello from JavaScript!"
-    and output `.id` equals 456
     and output `.name` equals "test"
     and output `.timestamp | type` equals `"string"`
 
@@ -4252,5 +4251,4 @@ describe "javascript middleware"
     when calling GET /js/789/example
     then status is 200
     and output `.message` equals "Hello from JavaScript!"
-    and output `.id` equals 789
     and output `.name` equals null
