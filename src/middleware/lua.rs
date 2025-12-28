@@ -321,6 +321,7 @@ mod tests {
             hb: std::sync::Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: std::sync::Arc::new(std::collections::HashMap::new()),
+            js_scripts: std::sync::Arc::new(std::collections::HashMap::new()),
             graphql: None,
             execution_env: Arc::new(parking_lot::RwLock::new(None)),
         })
@@ -351,6 +352,7 @@ mod tests {
             hb: std::sync::Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: std::sync::Arc::new(scripts),
+            js_scripts: std::sync::Arc::new(std::collections::HashMap::new()),
             graphql: None,
             execution_env: Arc::new(parking_lot::RwLock::new(None)),
         })

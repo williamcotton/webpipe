@@ -278,6 +278,7 @@ pub struct Context {
     pub hb: Arc<Mutex<Handlebars<'static>>>,
     pub cfg: ConfigSnapshot,
     pub lua_scripts: Arc<std::collections::HashMap<String, String>>,
+    pub js_scripts: Arc<std::collections::HashMap<String, String>>,
     pub graphql: Option<Arc<crate::graphql::GraphQLRuntime>>,
     pub execution_env: Arc<RwLock<Option<Arc<crate::executor::ExecutionEnv>>>>,
 }
@@ -344,6 +345,57 @@ impl Context {
         }
 
         tracing::info!("Preloaded {} Lua script(s)", scripts.len());
+        scripts
+    }
+
+    /// Load all JavaScript scripts from the scripts directory into memory
+    fn load_js_scripts() -> std::collections::HashMap<String, String> {
+        let scripts_dir = std::env::var("WEBPIPE_SCRIPTS_DIR").unwrap_or_else(|_| "scripts".to_string());
+        let dir_path = std::path::Path::new(&scripts_dir);
+        let mut scripts = std::collections::HashMap::new();
+
+        if !dir_path.is_dir() {
+            tracing::debug!("JavaScript scripts directory '{}' not found, skipping preload", scripts_dir);
+            return scripts;
+        }
+
+        match std::fs::read_dir(dir_path) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let is_js = path.extension()
+                            .and_then(|ext| ext.to_str())
+                            .map(|ext| ext.eq_ignore_ascii_case("js"))
+                            .unwrap_or(false);
+
+                        if !is_js { continue; }
+
+                        let module_name = path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        if module_name.is_empty() { continue; }
+
+                        match std::fs::read_to_string(&path) {
+                            Ok(source) => {
+                                tracing::debug!("Preloaded JavaScript script: {}", module_name);
+                                scripts.insert(module_name, source);
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to read JavaScript script '{}': {}", path.display(), e);
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to read scripts directory '{}': {}", scripts_dir, e);
+            }
+        }
+
+        tracing::info!("Preloaded {} JavaScript script(s)", scripts.len());
         scripts
     }
 
@@ -427,6 +479,7 @@ impl Context {
 
         // Preload all Lua scripts at startup (non-blocking since we're in async context)
         let lua_scripts = Arc::new(Self::load_lua_scripts());
+        let js_scripts = Arc::new(Self::load_js_scripts());
 
         // Configure rate limit store
         let rate_limit_cfg = cfg_mgr.resolve_config_as_json("rateLimit");
@@ -449,6 +502,7 @@ impl Context {
             hb: Arc::new(Mutex::new(hb)),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts,
+            js_scripts,
             graphql: None,
             execution_env: Arc::new(RwLock::new(None)),
         })

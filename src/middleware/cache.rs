@@ -213,6 +213,7 @@ mod tests {
             hb: Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: Arc::new(std::collections::HashMap::new()),
+            js_scripts: Arc::new(std::collections::HashMap::new()),
             graphql: None,
             execution_env: Arc::new(parking_lot::RwLock::new(None)),
         })

@@ -12,6 +12,7 @@ mod handlebars;
 mod fetch;
 mod cache;
 mod lua;
+mod js;
 mod log;
 mod debug;
 mod join;
@@ -26,6 +27,7 @@ pub use handlebars::HandlebarsMiddleware;
 pub use fetch::FetchMiddleware;
 pub use cache::CacheMiddleware;
 pub use lua::LuaMiddleware;
+pub use js::JsMiddleware;
 pub use log::LogMiddleware;
 pub use debug::DebugMiddleware;
 pub use join::JoinMiddleware;
@@ -100,6 +102,7 @@ impl MiddlewareRegistry {
         registry.register("fetch", Box::new(FetchMiddleware { ctx: ctx.clone() }));
         registry.register("cache", Box::new(CacheMiddleware { ctx: ctx.clone() }));
         registry.register("lua", Box::new(LuaMiddleware::new(ctx.clone())));
+        registry.register("js", Box::new(JsMiddleware::new(ctx.clone())));
         registry.register("log", Box::new(LogMiddleware));
         registry.register("debug", Box::new(DebugMiddleware));
         registry.register("join", Box::new(JoinMiddleware));
@@ -153,6 +156,7 @@ mod tests {
             hb: std::sync::Arc::new(parking_lot::Mutex::new(Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: std::sync::Arc::new(std::collections::HashMap::new()),
+            js_scripts: std::sync::Arc::new(std::collections::HashMap::new()),
             graphql: None,
             execution_env: Arc::new(parking_lot::RwLock::new(None)),
         })

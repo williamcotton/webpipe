@@ -4225,3 +4225,32 @@ describe "Calling GraphQL endpoints"
     then status is 200
     and output `.data.teams | type` equals `"array"`
     and output `.data.teams[0].name | type` equals `"string"`
+
+# JavaScript middleware test
+GET /js/:id/example
+  |> js: `
+    const id = request.params.id;
+    const name = request.query.name;
+    return {
+      message: "Hello from JavaScript!",
+      id: parseInt(id),
+      name: name,
+      timestamp: new Date().toISOString()
+    };
+  `
+
+describe "javascript middleware"
+  it "transforms data with javascript"
+    when calling GET /js/456/example?name=test
+    then status is 200
+    and output `.message` equals "Hello from JavaScript!"
+    and output `.id` equals 456
+    and output `.name` equals "test"
+    and output `.timestamp | type` equals `"string"`
+
+  it "supports undefined to null conversion"
+    when calling GET /js/789/example
+    then status is 200
+    and output `.message` equals "Hello from JavaScript!"
+    and output `.id` equals 789
+    and output `.name` equals null
