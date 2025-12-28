@@ -877,6 +877,12 @@ fn spawn_async_step(
         // Create a new RequestContext for the async task
         let mut async_ctx = RequestContext::new();
 
+        // [FIX] Allocate unique debug thread ID for async task
+        #[cfg(feature = "debugger")]
+        if let Some(ref dbg) = env_clone.debugger {
+            async_ctx.debug_thread_id = Some(dbg.allocate_thread_id());
+        }
+
         if name_clone == "pipeline" {
             let pipeline_name = effective_config.trim();
             if let Some(p) = env_clone.named_pipelines.get(pipeline_name) {
