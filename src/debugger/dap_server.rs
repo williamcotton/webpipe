@@ -218,6 +218,7 @@ impl DapServer {
                 "scopes" => self.handle_scopes(request).await?,
                 "variables" => self.handle_variables(request).await?,
                 "setVariable" => self.handle_set_variable(request).await?,
+                "evaluate" => self.handle_evaluate(request).await?,
                 "continue" => self.handle_continue(request).await?,
                 "next" => self.handle_next(request).await?,
                 "stepIn" => self.handle_step_in(request).await?,
@@ -365,7 +366,7 @@ impl DapServer {
             supports_function_breakpoints: Some(false),
             supports_conditional_breakpoints: Some(false),
             supports_hit_conditional_breakpoints: Some(false),
-            supports_evaluate_for_hovers: Some(false),
+            supports_evaluate_for_hovers: Some(true),
             supports_step_back: Some(false),
             supports_set_variable: Some(true),
             supports_restart_frame: Some(false),
@@ -697,6 +698,72 @@ impl DapServer {
             self.send_response(request.seq, "setVariable", Some(serde_json::to_value(body).unwrap())).await
         } else {
             self.send_error_response(request.seq, "setVariable", "Failed to set variable (scope not found or not modifiable)").await
+        }
+    }
+
+    async fn handle_evaluate(&self, request: Request) -> Result<(), WebPipeError> {
+        let args: EvaluateArguments = serde_json::from_value(request.arguments.unwrap_or_default())
+            .map_err(|e| WebPipeError::DebuggerError(format!("Invalid evaluate arguments: {}", e)))?;
+
+        // 1. Resolve Scope
+        // DAP gives us a frameId (which we mapped to thread_id in handle_stack_trace)
+        // If frameId is missing, we can't evaluate contextually.
+        let thread_id = args.frame_id.map(|id| (id / 10000) as u64).unwrap_or(0);
+
+        if let Some(paused) = self.paused_threads.get(&thread_id) {
+            // 2. Prepare the Expression
+            // VS Code sends raw text. Since WebPipe uses JQ, we try to interpret it as a JQ filter.
+            // If the user hovers "user", we might want to treat it as ".user".
+            let expr = if args.expression.starts_with('.') {
+                args.expression.clone()
+            } else {
+                format!(".{}", args.expression)
+            };
+
+            // 3. Evaluate using the existing JQ runtime
+            // We use the paused state as the input context
+            let eval_result = crate::runtime::jq::evaluate(&expr, &paused.state);
+
+            match eval_result {
+                Ok(value) => {
+                    // 4. Format Result (Reuse existing variable logic)
+                    // If it's a complex object, we cache it so it can be expanded in the UI
+                    let var_ref = if is_complex(&value) {
+                        let ref_id = self.generate_var_ref();
+                        self.variable_cache.insert(ref_id, value.clone());
+                        ref_id
+                    } else {
+                        0
+                    };
+
+                    let response_body = EvaluateResponseBody {
+                        result: format_preview(&value),
+                        type_: Some(type_name(&value)),
+                        variables_reference: var_ref,
+                        named_variables: if matches!(&value, serde_json::Value::Object(m) if !m.is_empty()) {
+                            Some(value.as_object().unwrap().len() as i64)
+                        } else {
+                            None
+                        },
+                        indexed_variables: if matches!(&value, serde_json::Value::Array(a) if !a.is_empty()) {
+                            Some(value.as_array().unwrap().len() as i64)
+                        } else {
+                            None
+                        },
+                        presentation_hint: None,
+                    };
+
+                    self.send_response(request.seq, "evaluate", Some(serde_json::to_value(response_body).unwrap())).await
+                }
+                Err(e) => {
+                    // Evaluation failed (e.g. invalid path).
+                    // This is common for hovers over keywords or non-variables.
+                    // We return a failure so VS Code doesn't show a popup.
+                    self.send_error_response(request.seq, "evaluate", &format!("Evaluation failed: {}", e)).await
+                }
+            }
+        } else {
+            self.send_error_response(request.seq, "evaluate", "Thread not paused").await
         }
     }
 

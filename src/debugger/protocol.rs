@@ -470,6 +470,37 @@ pub struct SetVariableResponseBody {
 }
 
 // ============================================================================
+// Evaluate Request/Response
+// ============================================================================
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluateArguments {
+    pub expression: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>, // "watch", "repl", "hover", etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ValueFormat>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvaluateResponseBody {
+    pub result: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presentation_hint: Option<VariablePresentationHint>,
+    pub variables_reference: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub named_variables: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexed_variables: Option<i64>,
+}
+
+// ============================================================================
 // Events
 // ============================================================================
 
