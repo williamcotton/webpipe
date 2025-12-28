@@ -65,6 +65,9 @@ pub struct PausedState {
 
     /// Full execution stack (e.g., ["GET /api", "pipeline:auth", "pg"])
     pub stack: Vec<String>,
+
+    /// Counter for generating unique variable references for this thread
+    pub var_ref_index: i64,
 }
 
 /// DAP Server - manages debugging sessions
@@ -97,9 +100,6 @@ pub struct DapServer {
     /// Maps variable reference -> JSON Pointer string (e.g. "/data/users/0")
     variable_pointers: Arc<DashMap<i64, String>>,
 
-    /// Next variable reference ID
-    next_var_ref: Arc<AtomicI64>,
-
     /// File path being debugged
     file_path: String,
 
@@ -117,6 +117,11 @@ pub struct DapServer {
     shutdown_notify: Option<Arc<Notify>>,
 }
 
+/// Stride for variable references to avoid collision between threads
+/// Thread 1: 100,000 - 199,999
+/// Thread 2: 200,000 - 299,999
+const VAR_REF_STRIDE: i64 = 100_000;
+
 impl DapServer {
     /// Create a new DAP server
     pub fn new(file_path: String, debug_port: u16, shutdown_notify: Option<Arc<Notify>>) -> Self {
@@ -130,7 +135,6 @@ impl DapServer {
             next_thread_id: Arc::new(AtomicU64::new(1)),
             variable_cache: Arc::new(DashMap::new()),
             variable_pointers: Arc::new(DashMap::new()),
-            next_var_ref: Arc::new(AtomicI64::new(1000)),
             file_path,
             debug_port,
             client_writer: Arc::new(Mutex::new(None)),
@@ -144,11 +148,6 @@ impl DapServer {
         self.next_thread_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// Generate a new variable reference ID
-    fn generate_var_ref(&self) -> i64 {
-        self.next_var_ref.fetch_add(1, Ordering::SeqCst)
-    }
-
     /// Escape keys for JSON Pointer (RFC 6901)
     /// '~' becomes '~0' and '/' becomes '~1'
     fn escape_json_pointer(key: &str) -> String {
@@ -157,9 +156,9 @@ impl DapServer {
 
     /// Clear variable cache for a thread (called when thread resumes)
     fn clear_thread_variables(&self, thread_id: u64) {
-        // Variable references for a thread are in the range [thread_id * 1000, thread_id * 1000 + 999]
-        let start = thread_id as i64 * 1000;
-        let end = start + 999;
+        // Variable references for a thread are in the range [thread_id * STRIDE, (thread_id + 1) * STRIDE - 1]
+        let start = thread_id as i64 * VAR_REF_STRIDE;
+        let end = start + VAR_REF_STRIDE - 1;
 
         // Remove all cached variables for this thread
         self.variable_cache.retain(|k, _v| *k < start || *k > end);
@@ -585,7 +584,8 @@ impl DapServer {
         // Decode thread_id from frame_id (frame_id = thread_id * 10000 + stack_index)
         let thread_id = (args.frame_id / 10000) as u64;
 
-        let root_ref = thread_id as i64 * 1000 + 1;
+        // Root scope is always at offset 1 for the thread
+        let root_ref = thread_id as i64 * VAR_REF_STRIDE + 1;
 
         // Register root pointer (empty string = root of JSON document)
         self.variable_pointers.insert(root_ref, "".to_string());
@@ -614,24 +614,36 @@ impl DapServer {
             .map_err(|e| WebPipeError::DebuggerError(format!("Invalid variables arguments: {}", e)))?;
 
         let var_ref = args.variables_reference;
-        let thread_id = (var_ref / 1000) as u64;
+        let thread_id = (var_ref / VAR_REF_STRIDE) as u64;
 
         // Retrieve parent pointer
         let parent_ptr = self.variable_pointers.get(&var_ref)
             .map(|r| r.value().clone())
             .unwrap_or_default();
 
-        let variables = if var_ref % 1000 == 1 {
+        // Need mutable access to thread state to generate new reference IDs
+        // even if we are just reading variables
+        let variables = if var_ref % VAR_REF_STRIDE == 1 {
             // This is a scope reference - show top-level pipeline state
-            if let Some(paused) = self.paused_threads.get(&thread_id) {
-                self.json_to_variables_cached(&paused.state, thread_id, &parent_ptr)
+            if let Some(mut paused) = self.paused_threads.get_mut(&thread_id) {
+                // We must clone state to avoid holding lock while calling json_to_variables_cached?
+                // Actually json_to_variables_cached takes &self so it's fine,
+                // BUT it also modifies variable_cache and variable_pointers.
+                // We hold 'paused' (RefMut) here.
+                let state = paused.state.clone();
+                self.json_to_variables_cached(&state, thread_id, &parent_ptr, &mut paused.var_ref_index)
             } else {
                 Vec::new()
             }
         } else {
-            // This is a nested variable reference - look up in cache
-            if let Some(cached_value) = self.variable_cache.get(&var_ref) {
-                self.json_to_variables_cached(&cached_value, thread_id, &parent_ptr)
+            // This is a nested variable reference
+            // Clone value from cache to avoid deadlock (reading cache while json_to_variables_cached writes to it)
+            if let Some(cached_value) = self.variable_cache.get(&var_ref).map(|r| r.clone()) {
+                if let Some(mut paused) = self.paused_threads.get_mut(&thread_id) {
+                    self.json_to_variables_cached(&cached_value, thread_id, &parent_ptr, &mut paused.var_ref_index)
+                } else {
+                    Vec::new()
+                }
             } else {
                 eprintln!("[DAP] Warning: Variable reference {} not found in cache", var_ref);
                 Vec::new()
@@ -639,8 +651,6 @@ impl DapServer {
         };
 
         let body = VariablesResponseBody { variables };
-
-        // Variables retrieved successfully
 
         self.send_response(request.seq, "variables", Some(serde_json::to_value(body).unwrap())).await
     }
@@ -650,7 +660,7 @@ impl DapServer {
             .map_err(|e| WebPipeError::DebuggerError(format!("Invalid setVariable arguments: {}", e)))?;
 
         let var_ref = args.variables_reference;
-        let thread_id = (var_ref / 1000) as u64;
+        let thread_id = (var_ref / VAR_REF_STRIDE) as u64;
 
         // Parse the new value (try JSON, fallback to string)
         let new_val = match serde_json::from_str::<serde_json::Value>(&args.value) {
@@ -692,7 +702,10 @@ impl DapServer {
                         value: format_preview(&new_val),
                         type_: Some(type_name(&new_val)),
                         variables_reference: if is_complex(&new_val) {
-                            let ref_id = self.generate_var_ref();
+                            // Generate thread-local variable reference
+                            paused.var_ref_index += 1;
+                            let ref_id = thread_id as i64 * VAR_REF_STRIDE + paused.var_ref_index;
+                            
                             self.variable_cache.insert(ref_id, new_val.clone());
                             // Store pointer for the new complex value
                             self.variable_pointers.insert(ref_id, target_ptr.clone());
@@ -721,7 +734,7 @@ impl DapServer {
         // If frameId is missing, we can't evaluate contextually.
         let thread_id = args.frame_id.map(|id| (id / 10000) as u64).unwrap_or(0);
 
-        if let Some(paused) = self.paused_threads.get(&thread_id) {
+        if let Some(mut paused) = self.paused_threads.get_mut(&thread_id) {
             // 2. Prepare the Expression
             // VS Code sends raw text. Since WebPipe uses JQ, we try to interpret it as a JQ filter.
             // If the user hovers "user", we might want to treat it as ".user".
@@ -740,7 +753,9 @@ impl DapServer {
                     // 4. Format Result (Reuse existing variable logic)
                     // If it's a complex object, we cache it so it can be expanded in the UI
                     let var_ref = if is_complex(&value) {
-                        let ref_id = self.generate_var_ref();
+                        paused.var_ref_index += 1;
+                        let ref_id = thread_id as i64 * VAR_REF_STRIDE + paused.var_ref_index;
+
                         self.variable_cache.insert(ref_id, value.clone());
                         ref_id
                     } else {
@@ -908,13 +923,16 @@ impl DapServer {
     // ========================================================================
 
     /// Convert JSON value to DAP variables with caching for nested expansion
-    fn json_to_variables_cached(&self, value: &serde_json::Value, _thread_id: u64, parent_ptr: &str) -> Vec<Variable> {
+    /// Generates thread-local variable references using the provided counter.
+    fn json_to_variables_cached(&self, value: &serde_json::Value, thread_id: u64, parent_ptr: &str, var_ref_counter: &mut i64) -> Vec<Variable> {
         match value {
             serde_json::Value::Object(map) => {
                 map.iter().map(|(k, v)| {
                     let var_ref = if is_complex(v) {
-                        // Generate a new variable reference and cache the value
-                        let ref_id = self.generate_var_ref();
+                        // Generate a new variable reference relative to thread
+                        *var_ref_counter += 1;
+                        let ref_id = thread_id as i64 * VAR_REF_STRIDE + *var_ref_counter;
+                        
                         self.variable_cache.insert(ref_id, v.clone());
 
                         // Store pointer: parent + / + escaped_key
@@ -950,8 +968,10 @@ impl DapServer {
             serde_json::Value::Array(arr) => {
                 arr.iter().enumerate().map(|(i, v)| {
                     let var_ref = if is_complex(v) {
-                        // Generate a new variable reference and cache the value
-                        let ref_id = self.generate_var_ref();
+                        // Generate a new variable reference relative to thread
+                        *var_ref_counter += 1;
+                        let ref_id = thread_id as i64 * VAR_REF_STRIDE + *var_ref_counter;
+
                         self.variable_cache.insert(ref_id, v.clone());
 
                         // Store pointer: parent + / + index
@@ -1160,6 +1180,7 @@ impl DebuggerHook for DapDebuggerHook {
                 step_name: step_name.to_string(),
                 paused_at: std::time::Instant::now(),
                 stack,
+                var_ref_index: 1, // Start index at 1 (0 reserved/unused, root uses index 1 explicitly in handle_scopes)
             });
 
             self.server.send_stopped_event(thread_id, reason, breakpoint_id).await?;
