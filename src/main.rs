@@ -1,8 +1,9 @@
-use std::{env, error::Error, net::SocketAddr, path::Path, sync::mpsc as std_mpsc, time::Duration};
+use std::{error::Error, net::SocketAddr, path::Path, sync::mpsc as std_mpsc, time::Duration};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::{sync::{mpsc as tokio_mpsc, oneshot}, signal};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use webpipe::{ast::parse_program, WebPipeServer, run_tests};
+use clap::Parser;
 
 #[cfg(feature = "debugger")]
 use std::sync::Arc;
@@ -10,6 +11,10 @@ use std::sync::Arc;
 use webpipe::debugger::{DapServer, dap_server::DapDebuggerHook};
 #[cfg(feature = "debugger")]
 use tokio::sync::Notify;
+
+mod cli;
+mod scaffold;
+mod migrations;
 
 fn load_env_files(env_dir: &Path, override_existing: bool, debug: bool) {
     // Load .env files located next to the WebPipe file
@@ -41,52 +46,58 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let args: Vec<String> = env::args().collect();
-    
-    if args.len() < 2 {
-        eprintln!("Usage: {} <webpipe_file> [host:port] [--test] [--verbose] [--trace] [--inspect] [--inspect-port PORT] [--port PORT]", args[0]);
-        std::process::exit(1);
-    }
-
-    let file_path = &args[1];
-    // Determine if test mode, verbose mode, and trace mode
-    let test_mode = args.iter().any(|a| a == "--test");
-    let verbose_mode = args.iter().any(|a| a == "--verbose");
-    let trace_mode = args.iter().any(|a| a == "--trace");
-
-    // Parse --inspect flag
-    #[cfg(feature = "debugger")]
-    let inspect_mode = args.iter().any(|a| a == "--inspect");
-    #[cfg(not(feature = "debugger"))]
-    let inspect_mode = false;
+    let cli = cli::Cli::parse();
 
     // Validate incompatible flags
-    if test_mode && inspect_mode {
-        eprintln!("Error: --test and --inspect cannot be used together");
-        std::process::exit(1);
-    }
-
-    // Error if inspect mode requested but debugger feature not enabled
-    #[cfg(not(feature = "debugger"))]
-    if inspect_mode {
-        eprintln!("Error: --inspect requires webpipe to be built with the debugger feature");
-        eprintln!("Rebuild with: cargo build --features debugger");
-        std::process::exit(1);
-    }
-
-    // Parse --inspect-port (only if debugger feature enabled)
     #[cfg(feature = "debugger")]
-    let inspect_port: u16 = args.iter()
-        .position(|a| a == "--inspect-port")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(5858);
+    {
+        if cli.test && cli.inspect {
+            eprintln!("Error: --test and --inspect cannot be used together");
+            std::process::exit(1);
+        }
+    }
+
+    match cli.mode() {
+        cli::OperationMode::Scaffold => {
+            scaffold::handle_new(&cli).await?;
+        }
+        cli::OperationMode::Migrate => {
+            migrations::handle_migrate(&cli).await?;
+        }
+        cli::OperationMode::Serve(file_path) => {
+            serve_mode(&file_path, &cli).await?;
+        }
+        cli::OperationMode::Test(file_path) => {
+            test_mode(&file_path, &cli).await?;
+        }
+        #[cfg(feature = "debugger")]
+        cli::OperationMode::Inspect(file_path) => {
+            inspect_mode(&file_path, &cli).await?;
+        }
+        cli::OperationMode::Help => {
+            eprintln!("Error: No subcommand or file provided");
+            eprintln!();
+            eprintln!("Usage:");
+            eprintln!("  wp <FILE> [OPTIONS]         Run WebPipe file");
+            eprintln!("  wp new <NAME>               Create new project");
+            eprintln!("  wp migrate <COMMAND>        Manage database migrations");
+            eprintln!();
+            eprintln!("Run 'wp --help' for more information");
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
+async fn serve_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Error>> {
+    let trace_mode = cli.trace;
 
     // Determine the directory for .env files (same directory as the WebPipe file)
-    let env_dir = Path::new(file_path).parent().unwrap_or(Path::new("."));
+    let env_dir = file_path.parent().unwrap_or(Path::new("."));
 
     // Initial load of .env files (do not override already-set process vars)
-    load_env_files(env_dir, false, verbose_mode);
+    load_env_files(env_dir, false, cli.verbose);
 
     // Point public dir to <webpipe_dir>/public if not explicitly set
     if std::env::var("WEBPIPE_PUBLIC_DIR").is_err() {
@@ -98,29 +109,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let default_addr = "127.0.0.1:7770".to_string();
 
-    // If --port is explicitly provided, use it
-    let explicit_port_flag = args.iter()
-        .position(|a| a == "--port")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|s| s.parse::<u16>().ok());
-
-    // If explicit CLI addr is provided (and not a flag), use it. Otherwise, if PORT env is set (Heroku), bind 0.0.0.0:PORT.
-    let explicit_cli_addr = args.get(2).filter(|v| {
-        let s = v.as_str();
-        s != "--test" && s != "--trace" && s != "--verbose"
-            && s != "--inspect" && s != "--inspect-port" && s != "--port"
-    }).cloned();
-
-    let addr_str = if let Some(port) = explicit_port_flag {
+    // Determine address from CLI options or environment
+    let addr_str = if let Some(port) = cli.port {
         format!("127.0.0.1:{}", port)
-    } else if let Some(a) = explicit_cli_addr {
-        a
+    } else if let Some(ref addr) = cli.address {
+        addr.clone()
     } else if let Ok(port) = std::env::var("PORT") {
         format!("0.0.0.0:{}", port)
     } else {
         default_addr.clone()
     };
-    
+
     // Parse the address
     let addr: SocketAddr = addr_str.parse()?;
 
@@ -135,17 +134,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
-    // Set up watcher (only for serve mode, not test or inspect mode)
-    let mut _watcher: Option<RecommendedWatcher> = None;
-    if !test_mode && !inspect_mode {
+    // Set up file watcher
+    let mut _watcher: Option<RecommendedWatcher> = {
         let mut w: RecommendedWatcher = notify::recommended_watcher(move |res| {
             let _ = raw_tx.send(res);
         })?;
-        w.watch(Path::new(file_path), RecursiveMode::NonRecursive)?;
+        w.watch(file_path, RecursiveMode::NonRecursive)?;
         // Also watch the directory for .env changes (creation/modification)
         let _ = w.watch(env_dir, RecursiveMode::NonRecursive);
-        _watcher = Some(w);
-    }
+        Some(w)
+    };
 
     loop {
         // Reload .env files each iteration so edits take effect on hot-reload
@@ -156,64 +154,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let (_leftover_input, program) = parse_program(&input)
             .map_err(|e| format!("Parse error: {}", e))?;
 
-        if test_mode {
-            // Run tests once and exit
-            match run_tests(program, verbose_mode).await {
-                Ok(summary) => {
-                    println!("Test Results: {}/{} passed ({} failed)", summary.passed, summary.total, summary.failed);
-                    for o in summary.outcomes {
-                        if o.passed {
-                            println!("[PASS] {} :: {}", o.describe, o.test);
-                        } else {
-                            println!("[FAIL] {} :: {} -> {}", o.describe, o.test, o.message);
-                        }
-                    }
-                    if summary.failed > 0 { std::process::exit(1); } else { std::process::exit(0); }
-                }
-                Err(e) => {
-                    eprintln!("Test runner error: {}", e);
-                    std::process::exit(1);
-                }
+        // Create and start the server with a shutdown signal
+        let server = match WebPipeServer::from_program(program, trace_mode).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Failed to build server: {}", e);
+                std::process::exit(1);
             }
-        } else if inspect_mode {
-            // Run in inspect/debug mode
-            #[cfg(feature = "debugger")]
-            {
-                return run_inspect_mode(file_path, program, addr, inspect_port, trace_mode).await;
-            }
-        } else {
-            // Create and start the server with a shutdown signal
-            let server = match WebPipeServer::from_program(program, trace_mode).await {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Failed to build server: {}", e);
-                    std::process::exit(1);
-                }
-            };
-            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-            let mut serve_fut = Box::pin(server.serve_with_shutdown(addr, async move { let _ = shutdown_rx.await; }));
+        };
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let mut serve_fut = Box::pin(server.serve_with_shutdown(addr, async move { let _ = shutdown_rx.await; }));
 
-            tokio::select! {
-                res = &mut serve_fut => {
-                    if let Err(e) = res { eprintln!("Server error: {}", e); }
-                    // If the server ended (e.g., bind failure), exit.
-                    break;
-                }
-                _ = change_rx.recv() => {
-                    // Debounce a bit and drain queued events
-                    tokio::time::sleep(Duration::from_millis(150)).await;
-                    while change_rx.try_recv().is_ok() {}
-                    let _ = shutdown_tx.send(());
-                    // Ensure the server stops before we restart
-                    let _ = serve_fut.await;
-                    // Loop will reparse and restart
-                    continue;
-                }
-                _ = signal::ctrl_c() => {
-                    let _ = shutdown_tx.send(());
-                    let _ = serve_fut.await;
-                    break;
-                }
+        tokio::select! {
+            res = &mut serve_fut => {
+                if let Err(e) = res { eprintln!("Server error: {}", e); }
+                // If the server ended (e.g., bind failure), exit.
+                break;
+            }
+            _ = change_rx.recv() => {
+                // Debounce a bit and drain queued events
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                while change_rx.try_recv().is_ok() {}
+                let _ = shutdown_tx.send(());
+                // Ensure the server stops before we restart
+                let _ = serve_fut.await;
+                // Loop will reparse and restart
+                continue;
+            }
+            _ = signal::ctrl_c() => {
+                let _ = shutdown_tx.send(());
+                let _ = serve_fut.await;
+                break;
             }
         }
     }
@@ -221,9 +192,77 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+async fn test_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Error>> {
+    let verbose_mode = cli.verbose;
+
+    // Determine the directory for .env files (same directory as the WebPipe file)
+    let env_dir = file_path.parent().unwrap_or(Path::new("."));
+
+    // Load .env files
+    load_env_files(env_dir, false, verbose_mode);
+
+    // Parse the WebPipe file
+    let input = std::fs::read_to_string(file_path)?;
+    let (_leftover_input, program) = parse_program(&input)
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    // Run tests once and exit
+    match run_tests(program, verbose_mode).await {
+        Ok(summary) => {
+            println!("Test Results: {}/{} passed ({} failed)", summary.passed, summary.total, summary.failed);
+            for o in summary.outcomes {
+                if o.passed {
+                    println!("[PASS] {} :: {}", o.describe, o.test);
+                } else {
+                    println!("[FAIL] {} :: {} -> {}", o.describe, o.test, o.message);
+                }
+            }
+            if summary.failed > 0 {
+                std::process::exit(1);
+            } else {
+                std::process::exit(0);
+            }
+        }
+        Err(e) => {
+            eprintln!("Test runner error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(feature = "debugger")]
+async fn inspect_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Error>> {
+    let trace_mode = cli.trace;
+    let inspect_port = cli.inspect_port;
+
+    // Determine the directory for .env files
+    let env_dir = file_path.parent().unwrap_or(Path::new("."));
+    load_env_files(env_dir, false, cli.verbose);
+
+    // Determine address
+    let default_addr = "127.0.0.1:7770".to_string();
+    let addr_str = if let Some(port) = cli.port {
+        format!("127.0.0.1:{}", port)
+    } else if let Some(ref addr) = cli.address {
+        addr.clone()
+    } else if let Ok(port) = std::env::var("PORT") {
+        format!("0.0.0.0:{}", port)
+    } else {
+        default_addr.clone()
+    };
+    let addr: SocketAddr = addr_str.parse()?;
+
+    // Parse the WebPipe file
+    let input = std::fs::read_to_string(file_path)?;
+    let (_leftover_input, program) = parse_program(&input)
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    run_inspect_mode(file_path, program, addr, inspect_port, trace_mode).await
+}
+
 #[cfg(feature = "debugger")]
 async fn run_inspect_mode(
-    file_path: &str,
+    file_path: &Path,
     program: webpipe::ast::Program,
     addr: SocketAddr,
     inspect_port: u16,
@@ -233,7 +272,7 @@ async fn run_inspect_mode(
 
     // Convert to absolute path for breakpoint matching
     let absolute_path = std::fs::canonicalize(file_path)
-        .map_err(|e| format!("Failed to resolve absolute path for {}: {}", file_path, e))?;
+        .map_err(|e| format!("Failed to resolve absolute path for {}: {}", file_path.display(), e))?;
     let file_path_str = absolute_path.to_str()
         .ok_or_else(|| format!("Path contains invalid UTF-8: {:?}", absolute_path))?
         .to_string();

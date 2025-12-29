@@ -1,0 +1,84 @@
+## {{PROJECT_NAME}} - WebPipe Application
+
+## Configuration
+config pg {
+  host: $WP_PG_HOST || "localhost"
+  port: $WP_PG_PORT || "5432"
+  database: $WP_PG_DATABASE || "{{PROJECT_NAME}}"
+  user: $WP_PG_USER || "postgres"
+  password: $WP_PG_PASSWORD || "postgres"
+  ssl: false
+  initialPoolSize: 5
+  maxPoolSize: 20
+}
+
+config auth {
+  sessionTtl: 604800
+  cookieName: "wp_session"
+  cookieSecure: false
+  cookieHttpOnly: true
+  cookieSameSite: "Lax"
+}
+
+config cache {
+  enabled: true
+  defaultTtl: 60
+}
+
+config log {
+  enabled: true
+  level: "info"
+}
+
+## Variables
+pg listUsers = `SELECT id, login, email, created_at FROM users ORDER BY created_at DESC`
+
+handlebars layout = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>{{title}}</title>
+</head>
+<body>
+  {{>content}}
+</body>
+</html>
+`
+
+## Routes
+GET /
+  |> jq: `{ title: "{{PROJECT_NAME}}", message: "Welcome to WebPipe!" }`
+  |> handlebars: `
+    {{#*inline "content"}}
+      <h1>{{title}}</h1>
+      <p>{{message}}</p>
+    {{/inline}}
+    {{>layout}}
+  `
+
+GET /api/health
+  |> jq: `{ status: "ok", timestamp: now }`
+
+GET /api/users
+  |> pg: listUsers @result(users)
+  |> jq: `{ users: .data.users.rows }`
+  |> result
+    ok(200):
+      |> jq: `{ success: true, data: . }`
+    sqlError(500):
+      |> jq: `{ error: "Database error", message: .errors[0].message }`
+
+## Tests
+describe "health endpoint"
+  it "returns ok status"
+    when calling GET /api/health
+    then status is 200
+    and output contains `{ "status": "ok" }`
+
+describe "users endpoint"
+  with mock pg.listUsers returning `{ "rows": [{ "id": 1, "login": "admin" }] }`
+
+  it "returns user list"
+    when calling GET /api/users
+    then status is 200
+    and output `.users[0].login` equals "admin"
