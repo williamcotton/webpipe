@@ -48,8 +48,3 @@ dashmap = "6.1"
 [features]
 pg_tests = []
 debugger = []
-
-[[bin]]
-name = "webpipe-dap"
-path = "src/bin/webpipe-dap.rs"
-required-features = ["debugger"]
