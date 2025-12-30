@@ -1043,7 +1043,7 @@ async fn execute_step<'a>(
     current_output: &mut PipelineOutput,
 ) -> Result<StepOutcome, WebPipeError> {
     // 1. Determine stack frame label
-    let step_name = match step {
+    let base_name = match step {
         PipelineStep::Regular { name, config, .. } => {
             if name == "pipeline" {
                 // Format: "pipeline:myPipelineName"
@@ -1056,6 +1056,19 @@ async fn execute_step<'a>(
         PipelineStep::Result { .. } => "result".to_string(),
         PipelineStep::Dispatch { .. } => "dispatch".to_string(),
         PipelineStep::Foreach { .. } => "foreach".to_string(),
+    };
+
+    // Add file context to stack frame for multi-file profiling
+    let location = step.location();
+    let step_name = if let Some(ref file_path) = location.file_path {
+        // Extract just the filename for cleaner flamegraphs
+        let filename = std::path::Path::new(file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(file_path);
+        format!("{}@{}", base_name, filename)
+    } else {
+        base_name
     };
 
     // 2. Start Profiling
