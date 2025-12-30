@@ -163,6 +163,44 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
     }
 }
 
+/// Helper function to update all SourceLocations in a pipeline with a file path
+fn set_pipeline_file_path(pipeline: &mut Pipeline, file_path: &str) {
+    for step in &mut pipeline.steps {
+        match step {
+            PipelineStep::Regular { location, .. } => {
+                location.file_path = Some(file_path.to_string());
+            }
+            PipelineStep::Result { location, branches, .. } => {
+                location.file_path = Some(file_path.to_string());
+                for branch in branches {
+                    set_pipeline_file_path(&mut branch.pipeline, file_path);
+                }
+            }
+            PipelineStep::If { location, condition, then_branch, else_branch, .. } => {
+                location.file_path = Some(file_path.to_string());
+                set_pipeline_file_path(condition, file_path);
+                set_pipeline_file_path(then_branch, file_path);
+                if let Some(else_pipe) = else_branch {
+                    set_pipeline_file_path(else_pipe, file_path);
+                }
+            }
+            PipelineStep::Dispatch { location, branches, default, .. } => {
+                location.file_path = Some(file_path.to_string());
+                for branch in branches {
+                    set_pipeline_file_path(&mut branch.pipeline, file_path);
+                }
+                if let Some(default_pipe) = default {
+                    set_pipeline_file_path(default_pipe, file_path);
+                }
+            }
+            PipelineStep::Foreach { location, pipeline, .. } => {
+                location.file_path = Some(file_path.to_string());
+                set_pipeline_file_path(pipeline, file_path);
+            }
+        }
+    }
+}
+
 pub struct WebPipeServer {
     program: Program,
     file_path: Option<PathBuf>,  // Path to the main .wp file (for resolving imports)
@@ -345,11 +383,16 @@ impl WebPipeServer {
                             // Load the imported program
                             match loader.load_module(&resolved_path) {
                                 Ok(imported_program) => {
+                                    let imported_file_path = resolved_path.to_string_lossy().to_string();
+
                                     // Register imported pipelines with namespace = Some(alias)
                                     for p in &imported_program.pipelines {
+                                        let mut pipeline = p.pipeline.clone();
+                                        // Update all SourceLocations in the pipeline to include the imported file path
+                                        set_pipeline_file_path(&mut pipeline, &imported_file_path);
                                         named_pipelines.insert(
                                             (Some(import.alias.clone()), p.name.clone()),
-                                            Arc::new(p.pipeline.clone())
+                                            Arc::new(pipeline)
                                         );
                                     }
 

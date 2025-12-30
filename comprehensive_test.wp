@@ -4252,3 +4252,9 @@ describe "javascript middleware"
     then status is 200
     and output `.message` equals "Hello from JavaScript!"
     and output `.name` equals null
+
+import "./test.wp" as test
+
+GET /testtest
+  |> pipeline: test::test
+  |> jq: `.`

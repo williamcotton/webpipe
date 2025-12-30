@@ -516,12 +516,17 @@ impl DapServer {
                     // For the top frame (index 0), use the real source location
                     // For parent frames, we don't track location yet, so use 0/None
                     let (line, column, source) = if i == 0 {
+                        // Use the file_path from the location if available, otherwise default to main file
+                        let source_file = paused.location.file_path.as_ref()
+                            .map(|s| s.as_str())
+                            .unwrap_or(&self.file_path);
+
                         (
                             paused.location.line as i64,
                             paused.location.column as i64,
                             Some(Source {
                                 name: None,
-                                path: Some(self.file_path.clone()),
+                                path: Some(source_file.to_string()),
                                 source_reference: None,
                                 presentation_hint: None,
                                 origin: None,
@@ -1046,14 +1051,14 @@ impl DapServer {
     }
 
     /// Get breakpoint ID for a given line (if breakpoint exists)
-    pub fn get_breakpoint_id(&self, line: usize) -> Option<i64> {
-        self.breakpoint_ids.get(&self.file_path)
+    pub fn get_breakpoint_id(&self, file_path: &str, line: usize) -> Option<i64> {
+        self.breakpoint_ids.get(file_path)
             .and_then(|map| map.get(&line).copied())
     }
 
-    /// Check if there's a breakpoint at the given line
-    pub fn has_breakpoint(&self, line: usize) -> bool {
-        self.breakpoints.get(&self.file_path)
+    /// Check if there's a breakpoint at the given file and line
+    pub fn has_breakpoint(&self, file_path: &str, line: usize) -> bool {
+        self.breakpoints.get(file_path)
             .map(|lines| lines.contains(&line))
             .unwrap_or(false)
     }
@@ -1125,7 +1130,10 @@ impl DebuggerHook for DapDebuggerHook {
         state: &mut serde_json::Value, // Changed to mutable
         stack: Vec<String>,
     ) -> Result<StepAction, WebPipeError> {
-        let at_breakpoint = self.server.has_breakpoint(location.line);
+        // Determine which file this step is in (default to main file if not specified)
+        let source_file = location.file_path.as_deref().unwrap_or(&self.server.file_path);
+
+        let at_breakpoint = self.server.has_breakpoint(source_file, location.line);
         let stack_depth = stack.len();
 
         let should_pause_step = if let Some(mode) = self.server.stepping_threads.get(&thread_id) {
@@ -1148,7 +1156,7 @@ impl DebuggerHook for DapDebuggerHook {
             let reason = if at_breakpoint { "breakpoint" } else { "step" };
 
             let breakpoint_id = if at_breakpoint {
-                self.server.get_breakpoint_id(location.line)
+                self.server.get_breakpoint_id(source_file, location.line)
             } else {
                 None
             };

@@ -1,0 +1,2 @@
+pipeline test =
+  |> jq: `{ one: "one"}`
