@@ -418,21 +418,24 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             );
 
                             // Build shared ExecutionEnv with MockingInvoker
-                            let named: HashMap<String, Arc<Pipeline>> = program
+                            // Key: (namespace, name) where namespace is None for local symbols
+                            let named: HashMap<(Option<String>, String), Arc<Pipeline>> = program
                                 .pipelines
                                 .iter()
-                                .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
+                                .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
                                 .collect();
 
                             // Convert variables Vec to HashMap for O(1) lookup
-                            let variables_map: HashMap<(String, String), crate::ast::Variable> = program.variables
+                            // Key: (namespace, var_type, name) where namespace is None for local symbols
+                            let variables_map: HashMap<(Option<String>, String, String), crate::ast::Variable> = program.variables
                                 .iter()
-                                .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+                                .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
                                 .collect();
 
                             let env = ExecutionEnv {
                                 variables: Arc::new(variables_map),
                                 named_pipelines: Arc::new(named),
+                                imports: Arc::new(HashMap::new()),
                                 invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                                 registry: registry.clone(),
                                 environment: None,
@@ -480,21 +483,24 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             .iter()
                             .find(|p| p.name == *name)
                             .ok_or_else(|| WebPipeError::PipelineNotFound(name.clone()))?;
-                        let named: HashMap<String, Arc<Pipeline>> = program
+                        // Key: (namespace, name) where namespace is None for local symbols
+                        let named: HashMap<(Option<String>, String), Arc<Pipeline>> = program
                             .pipelines
                             .iter()
-                            .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
+                            .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
                             .collect();
 
                         // Convert variables Vec to HashMap for O(1) lookup
-                        let variables_map: HashMap<(String, String), crate::ast::Variable> = program.variables
+                        // Key: (namespace, var_type, name) where namespace is None for local symbols
+                        let variables_map: HashMap<(Option<String>, String, String), crate::ast::Variable> = program.variables
                             .iter()
-                            .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+                            .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
                             .collect();
 
                         let env = ExecutionEnv {
                             variables: Arc::new(variables_map),
                             named_pipelines: Arc::new(named),
+                            imports: Arc::new(HashMap::new()),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             registry: registry.clone(),
                             environment: None,
@@ -526,21 +532,24 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                     } else {
                         // Single-step pipeline invoking the variable's middleware
                         let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), args: Vec::new(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None, location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None } }] };
-                        let named: HashMap<String, Arc<Pipeline>> = program
+                        // Key: (namespace, name) where namespace is None for local symbols
+                        let named: HashMap<(Option<String>, String), Arc<Pipeline>> = program
                             .pipelines
                             .iter()
-                            .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
+                            .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
                             .collect();
 
                         // Convert variables Vec to HashMap for O(1) lookup
-                        let variables_map: HashMap<(String, String), crate::ast::Variable> = program.variables
+                        // Key: (namespace, var_type, name) where namespace is None for local symbols
+                        let variables_map: HashMap<(Option<String>, String, String), crate::ast::Variable> = program.variables
                             .iter()
-                            .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+                            .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
                             .collect();
-                        
+
                         let env = ExecutionEnv {
                             variables: Arc::new(variables_map),
                             named_pipelines: Arc::new(named),
+                            imports: Arc::new(HashMap::new()),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             registry: registry.clone(),
                             environment: None,

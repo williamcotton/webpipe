@@ -1,4 +1,4 @@
-use std::{collections::HashMap, pin::Pin, sync::Arc, future::Future};
+use std::{collections::HashMap, path::PathBuf, pin::Pin, sync::Arc, future::Future};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -336,10 +336,15 @@ impl Profiler {
 #[derive(Clone)]
 pub struct ExecutionEnv {
     /// Variables for resolution and auto-naming
-    pub variables: Arc<HashMap<(String, String), Variable>>,
+    /// Key: (namespace, var_type, name) where namespace is None for local symbols
+    pub variables: Arc<HashMap<(Option<String>, String, String), Variable>>,
 
     /// Named pipelines registry
-    pub named_pipelines: Arc<HashMap<String, Arc<Pipeline>>>,
+    /// Key: (namespace, name) where namespace is None for local symbols
+    pub named_pipelines: Arc<HashMap<(Option<String>, String), Arc<Pipeline>>>,
+
+    /// Import map: alias -> resolved file path
+    pub imports: Arc<HashMap<String, PathBuf>>,
 
     /// Middleware invoker
     pub invoker: Arc<dyn MiddlewareInvoker>,
@@ -388,13 +393,15 @@ impl MiddlewareInvoker for RealInvoker {
 }
 
 fn resolve_config_and_autoname(
-    variables: &HashMap<(String, String), Variable>,
+    variables: &HashMap<(Option<String>, String, String), Variable>,
     middleware_name: &str,
     step_config: &str,
     input: &Value,
 ) -> (String, Value, bool) {
-    let key = (middleware_name.to_string(), step_config.to_string());
-    
+    // For now, only look up local variables (namespace = None)
+    // Phase 2.4 will add scoped resolution logic
+    let key = (None, middleware_name.to_string(), step_config.to_string());
+
     if let Some(var) = variables.get(&key) {
         let resolved_config = var.value.clone();
         let mut new_input = input.clone();
@@ -885,7 +892,8 @@ fn spawn_async_step(
 
         if name_clone == "pipeline" {
             let pipeline_name = effective_config.trim();
-            if let Some(p) = env_clone.named_pipelines.get(pipeline_name) {
+            let key = (None, pipeline_name.to_string());
+            if let Some(p) = env_clone.named_pipelines.get(&key) {
                 // If args are provided, evaluate and merge into input
                 let pipeline_input = if !args_clone.is_empty() {
                     // Evaluate arg[0] as jq expression
@@ -935,7 +943,10 @@ fn handle_recursive_pipeline<'a>(
 ) -> Pin<Box<dyn Future<Output = Result<StepResult, WebPipeError>> + Send + 'a>> {
     Box::pin(async move {
         let pipeline_name = config.trim();
-        if let Some(pipeline) = env.named_pipelines.get(pipeline_name) {
+        // For now, only look up local pipelines (namespace = None)
+        // Phase 2.4 will add scoped resolution logic
+        let key = (None, pipeline_name.to_string());
+        if let Some(pipeline) = env.named_pipelines.get(&key) {
             // If args are provided, evaluate and merge into input
             let pipeline_input = if !args.is_empty() {
                 // Evaluate arg[0] as jq expression
@@ -1530,6 +1541,7 @@ mod tests {
         ExecutionEnv {
             variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(HashMap::new()),
+            imports: Arc::new(HashMap::new()),
             invoker: Arc::new(StubInvoker),
             registry,
             environment: None,

@@ -50,7 +50,7 @@ fn tag_expr_has_needs_flags(expr: &crate::ast::TagExpr) -> bool {
 /// Recursive function to detect if a pipeline requires feature flags
 fn pipeline_needs_flags(
     pipeline: &Pipeline,
-    named_pipelines: &HashMap<String, Arc<Pipeline>>
+    named_pipelines: &HashMap<(Option<String>, String), Arc<Pipeline>>
 ) -> bool {
     for step in &pipeline.steps {
         match step {
@@ -70,7 +70,8 @@ fn pipeline_needs_flags(
                 // 3. Recursive Reference: |> pipeline: name
                 if name == "pipeline" {
                     let target = config.trim();
-                    if let Some(sub) = named_pipelines.get(target) {
+                    let key = (None, target.to_string());
+                    if let Some(sub) = named_pipelines.get(&key) {
                         if pipeline_needs_flags(sub, named_pipelines) {
                             return true;
                         }
@@ -296,16 +297,17 @@ impl WebPipeServer {
         let mut router = Router::new().route("/health", get(health_check));
 
         // Build named_pipelines first for static analysis
-        let mut named_pipelines: HashMap<String, Arc<Pipeline>> = self.program
+        // Key: (namespace, name) where namespace is None for local symbols
+        let mut named_pipelines: HashMap<(Option<String>, String), Arc<Pipeline>> = self.program
             .pipelines
             .iter()
-            .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
+            .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
             .collect();
 
         // Add GraphQL query resolvers to named_pipelines
         for query in &self.program.queries {
             named_pipelines.insert(
-                format!("query::{}", query.name),
+                (None, format!("query::{}", query.name)),
                 Arc::new(query.pipeline.clone())
             );
         }
@@ -313,7 +315,7 @@ impl WebPipeServer {
         // Add GraphQL mutation resolvers to named_pipelines
         for mutation in &self.program.mutations {
             named_pipelines.insert(
-                format!("mutation::{}", mutation.name),
+                (None, format!("mutation::{}", mutation.name)),
                 Arc::new(mutation.pipeline.clone())
             );
         }
@@ -406,14 +408,16 @@ impl WebPipeServer {
         }
 
         // Convert variables Vec to HashMap for O(1) lookup
-        let variables_map: HashMap<(String, String), crate::ast::Variable> = self.program.variables
+        // Key: (namespace, var_type, name) where namespace is None for local symbols
+        let variables_map: HashMap<(Option<String>, String, String), crate::ast::Variable> = self.program.variables
             .iter()
-            .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+            .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
             .collect();
 
         let env = Arc::new(ExecutionEnv {
             variables: Arc::new(variables_map),
             named_pipelines: Arc::new(named_pipelines),
+            imports: Arc::new(HashMap::new()), // TODO: Phase 2.5 will populate this
             invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
             registry: self.middleware_registry.clone(),
             environment: std::env::var("WEBPIPE_ENV").ok(),
@@ -954,6 +958,7 @@ mod tests {
         let env = ExecutionEnv {
             variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(HashMap::new()),
+            imports: Arc::new(HashMap::new()),
             invoker: Arc::new(RealInvoker::new(registry.clone())),
             registry: registry.clone(),
             environment: None,

@@ -73,7 +73,9 @@ impl Loader<LoaderKey> for PipelineLoader {
             });
 
             // Find the pipeline in the named pipelines registry
-            let pipeline = self.env.named_pipelines.get(&pipeline_name)
+            // Look up local pipelines (namespace = None)
+            let key = (None, pipeline_name.clone());
+            let pipeline = self.env.named_pipelines.get(&key)
                 .ok_or_else(|| Arc::new(WebPipeError::PipelineNotFound(
                     format!("{}", pipeline_name)
                 )))?;
