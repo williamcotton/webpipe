@@ -173,13 +173,9 @@ impl DapServer {
             .await
             .map_err(|e| WebPipeError::DebuggerError(format!("Failed to bind to port {}: {}", self.debug_port, e)))?;
 
-        eprintln!("[DAP] Listening on 127.0.0.1:{}", self.debug_port);
-
         // Accept connection from VS Code
-        let (stream, addr) = listener.accept().await
+        let (stream, _addr) = listener.accept().await
             .map_err(|e| WebPipeError::DebuggerError(format!("Failed to accept connection: {}", e)))?;
-
-        eprintln!("[DAP] Client connected from {}", addr);
 
         // Split stream into reader and writer
         // This prevents the read loop from locking the writer, which caused deadlocks
@@ -199,7 +195,6 @@ impl DapServer {
             
             // Connection closed or error occurred - trigger shutdown
             if let Some(notify) = shutdown_notify {
-                eprintln!("[DAP] Connection closed, triggering shutdown");
                 notify.notify_one();
             }
         });
@@ -217,7 +212,6 @@ impl DapServer {
                 .map_err(|e| WebPipeError::DebuggerError(format!("Failed to parse request: {}", e)))?;
 
             // Log all commands to see complete protocol flow
-            eprintln!("[DAP] {} (seq: {})", request.command, request.seq);
 
             // Dispatch to handler
             match request.command.as_str() {
@@ -242,7 +236,6 @@ impl DapServer {
                     break;
                 }
                 _ => {
-                    eprintln!("[DAP] Unhandled command: {}", request.command);
                     self.send_error_response(request.seq, &request.command, "Command not supported").await?;
                 }
             }
@@ -438,8 +431,6 @@ impl DapServer {
         } else {
             Vec::new()
         };
-
-        eprintln!("[DAP] Set breakpoints on file {}: {:?}", file_path, lines);
 
         // Update breakpoints and assign IDs
         let mut bp_id_map = std::collections::HashMap::new();
@@ -645,7 +636,6 @@ impl DapServer {
                     Vec::new()
                 }
             } else {
-                eprintln!("[DAP] Warning: Variable reference {} not found in cache", var_ref);
                 Vec::new()
             }
         };
@@ -878,7 +868,6 @@ impl DapServer {
         // VS Code sends pause when it thinks execution is running
         // If we're already paused, just acknowledge
         // This shouldn't happen in normal flow, but handle it gracefully
-        eprintln!("[DAP] Pause command received (already paused or no active threads)");
         self.send_response(request.seq, "pause", None).await
     }
 
@@ -893,15 +882,12 @@ impl DapServer {
                 self.send_response(request.seq, "source", Some(body)).await
             }
             Err(e) => {
-                eprintln!("[DAP] Failed to read source file {}: {}", self.file_path, e);
                 self.send_error_response(request.seq, "source", &format!("Failed to read source: {}", e)).await
             }
         }
     }
 
     async fn handle_disconnect(&self, request: Request) -> Result<(), WebPipeError> {
-        eprintln!("[DAP] Disconnecting...");
-
         let thread_ids: Vec<u64> = self.paused_threads.iter().map(|entry| *entry.key()).collect();
         for thread_id in thread_ids {
             if let Some((_, paused)) = self.paused_threads.remove(&thread_id) {
@@ -909,7 +895,6 @@ impl DapServer {
                 let _ = paused.resume_tx.send(StepCommand::Continue(Some(paused.state)));
             }
         }
-        // ... rest of handle_disconnect ...
         self.announced_threads.clear();
         self.send_response(request.seq, "disconnect", None).await?;
         if let Some(notify) = &self.shutdown_notify {
@@ -1161,7 +1146,6 @@ impl DebuggerHook for DapDebuggerHook {
             }
 
             let reason = if at_breakpoint { "breakpoint" } else { "step" };
-            eprintln!("[DAP] Paused at line {} (thread {}, reason: {})", location.line, thread_id, reason);
 
             let breakpoint_id = if at_breakpoint {
                 self.server.get_breakpoint_id(location.line)
@@ -1187,8 +1171,6 @@ impl DebuggerHook for DapDebuggerHook {
 
             let command = rx.await
                 .map_err(|_| WebPipeError::DebuggerError("Resume channel closed".to_string()))?;
-
-            eprintln!("[DAP] Resuming thread {} with command {:?}", thread_id, command);
 
             // Extract the new state and action from the command
             let (action, new_state) = match command {

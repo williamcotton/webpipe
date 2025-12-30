@@ -1038,7 +1038,6 @@ async fn execute_step<'a>(
         let thread_id = ctx.debug_thread_id.unwrap_or(0);
         let location = step.location();
         let stack = ctx.profiler.stack.clone();
-        eprintln!("[EXEC] Calling before_step: thread={}, step={}, line={}", thread_id, step_name, location.line);
         let action = dbg.before_step(thread_id, &step_name, location, &mut pipeline_ctx.state, stack).await?;
         // Handle stepping actions
         match action {

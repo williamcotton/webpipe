@@ -2,7 +2,7 @@ use crate::cli::{Cli, Commands, MigrateAction};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 use std::time::Duration;
 use chrono::Utc;
 
@@ -229,8 +229,7 @@ async fn force_version(version: &str) -> Result<(), Box<dyn Error>> {
 struct Migration {
     version: String,    // YYYYMMDDHHMMSS
     name: String,       // e.g., "create_users_table"
-    filename: String,   // Full filename
-    filepath: PathBuf,
+    filename: String,   // Full filenameq
     up_sql: String,
     down_sql: String,
 }
@@ -280,7 +279,6 @@ fn scan_migration_files() -> Result<Vec<Migration>, Box<dyn Error>> {
             version,
             name,
             filename,
-            filepath: path,
             up_sql,
             down_sql,
         });

@@ -268,7 +268,6 @@ async fn run_inspect_mode(
     inspect_port: u16,
     trace_mode: bool,
 ) -> Result<(), Box<dyn Error>> {
-    use webpipe::ast::Program;
 
     // Convert to absolute path for breakpoint matching
     let absolute_path = std::fs::canonicalize(file_path)
