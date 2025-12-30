@@ -1,2 +1,5 @@
 pipeline one =
-  |> jq: `{ one: "one"}`
+  |> jq: `{ one: "one" }`
+
+pipeline two =
+  |> jq: `{ two: "two" }`
