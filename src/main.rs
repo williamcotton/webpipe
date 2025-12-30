@@ -207,7 +207,7 @@ async fn test_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Error
         .map_err(|e| format!("Parse error: {}", e))?;
 
     // Run tests once and exit
-    match run_tests(program, verbose_mode).await {
+    match run_tests(program, Some(file_path.to_path_buf()), verbose_mode).await {
         Ok(summary) => {
             println!("Test Results: {}/{} passed ({} failed)", summary.passed, summary.total, summary.failed);
             for o in summary.outcomes {

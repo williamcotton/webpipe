@@ -170,7 +170,7 @@ mod tests {
             and output `.s` matches `^<p>x</p>$`
         "#;
         let (_rest, program) = crate::ast::parse_program(program_src).unwrap();
-        let summary = run_tests(program, false).await.unwrap();
+        let summary = run_tests(program, None, false).await.unwrap();
         assert_eq!(summary.total, 1);
         assert_eq!(summary.failed, 0);
     }
@@ -249,7 +249,81 @@ fn find_variable<'a>(variables: &'a [Variable], var_type: &str, name: &str) -> O
     variables.iter().find(|v| v.var_type == var_type && v.name == name)
 }
 
-pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, WebPipeError> {
+/// Load imports and build complete symbol tables for testing
+fn load_imports_for_tests(
+    program: &Program,
+    file_path: Option<std::path::PathBuf>,
+) -> Result<(
+    HashMap<(Option<String>, String), Arc<Pipeline>>,
+    HashMap<(Option<String>, String, String), Variable>,
+    HashMap<String, std::path::PathBuf>,
+), WebPipeError> {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tracing::warn;
+
+    let mut named_pipelines: HashMap<(Option<String>, String), Arc<Pipeline>> = HashMap::new();
+    let mut variables_map: HashMap<(Option<String>, String, String), Variable> = HashMap::new();
+    let mut imports_map: HashMap<String, std::path::PathBuf> = HashMap::new();
+
+    // Register local symbols first
+    for p in &program.pipelines {
+        named_pipelines.insert((None, p.name.clone()), Arc::new(p.pipeline.clone()));
+    }
+
+    for v in &program.variables {
+        variables_map.insert((None, v.var_type.clone(), v.name.clone()), v.clone());
+    }
+
+    // Load and register imported symbols if file_path is available
+    if let Some(ref file_path) = file_path {
+        if !program.imports.is_empty() {
+            let mut loader = crate::loader::ModuleLoader::new();
+
+            // Build import map and load each imported file
+            for import in &program.imports {
+                match loader.resolve_import_path(file_path, &import.path) {
+                    Ok(resolved_path) => {
+                        imports_map.insert(import.alias.clone(), resolved_path.clone());
+
+                        // Load the imported program
+                        match loader.load_module(&resolved_path) {
+                            Ok(imported_program) => {
+                                // Register imported pipelines with namespace = Some(alias)
+                                for p in &imported_program.pipelines {
+                                    named_pipelines.insert(
+                                        (Some(import.alias.clone()), p.name.clone()),
+                                        Arc::new(p.pipeline.clone())
+                                    );
+                                }
+
+                                // Register imported variables with namespace = Some(alias)
+                                for v in &imported_program.variables {
+                                    variables_map.insert(
+                                        (Some(import.alias.clone()), v.var_type.clone(), v.name.clone()),
+                                        v.clone()
+                                    );
+                                }
+                            },
+                            Err(e) => {
+                                warn!("Failed to load imported module '{}' from '{}': {}",
+                                    import.alias, import.path, e);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to resolve import '{}' from '{}': {}",
+                            import.alias, import.path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok((named_pipelines, variables_map, imports_map))
+}
+
+pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, verbose: bool) -> Result<TestSummary, WebPipeError> {
     // Initialize global config (Context builder will also set globals and register partials)
     config::init_global(program.configs.clone());
 
@@ -263,6 +337,10 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
     }
 
     let registry: Arc<MiddlewareRegistry> = Arc::new(MiddlewareRegistry::with_builtins(std::sync::Arc::new(ctx)));
+
+    // Load imports and build complete symbol tables
+    let (named_pipelines_with_imports, variables_with_imports, imports_map) =
+        load_imports_for_tests(&program, file_path)?;
 
     let mut outcomes: Vec<TestOutcome> = Vec::new();
 
@@ -417,25 +495,11 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                                 test_body
                             );
 
-                            // Build shared ExecutionEnv with MockingInvoker
-                            // Key: (namespace, name) where namespace is None for local symbols
-                            let named: HashMap<(Option<String>, String), Arc<Pipeline>> = program
-                                .pipelines
-                                .iter()
-                                .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
-                                .collect();
-
-                            // Convert variables Vec to HashMap for O(1) lookup
-                            // Key: (namespace, var_type, name) where namespace is None for local symbols
-                            let variables_map: HashMap<(Option<String>, String, String), crate::ast::Variable> = program.variables
-                                .iter()
-                                .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
-                                .collect();
-
+                            // Build shared ExecutionEnv with MockingInvoker using preloaded symbols
                             let env = ExecutionEnv {
-                                variables: Arc::new(variables_map),
-                                named_pipelines: Arc::new(named),
-                                imports: Arc::new(std::collections::HashMap::new()),
+                                variables: Arc::new(variables_with_imports.clone()),
+                                named_pipelines: Arc::new(named_pipelines_with_imports.clone()),
+                                imports: Arc::new(imports_map.clone()),
                                 invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                                 registry: registry.clone(),
                                 environment: None,
@@ -483,24 +547,11 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             .iter()
                             .find(|p| p.name == *name)
                             .ok_or_else(|| WebPipeError::PipelineNotFound(name.clone()))?;
-                        // Key: (namespace, name) where namespace is None for local symbols
-                        let named: HashMap<(Option<String>, String), Arc<Pipeline>> = program
-                            .pipelines
-                            .iter()
-                            .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
-                            .collect();
-
-                        // Convert variables Vec to HashMap for O(1) lookup
-                        // Key: (namespace, var_type, name) where namespace is None for local symbols
-                        let variables_map: HashMap<(Option<String>, String, String), crate::ast::Variable> = program.variables
-                            .iter()
-                            .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
-                            .collect();
-
+                        // Build ExecutionEnv using preloaded symbols
                         let env = ExecutionEnv {
-                            variables: Arc::new(variables_map),
-                            named_pipelines: Arc::new(named),
-                            imports: Arc::new(std::collections::HashMap::new()),
+                            variables: Arc::new(variables_with_imports.clone()),
+                            named_pipelines: Arc::new(named_pipelines_with_imports.clone()),
+                            imports: Arc::new(imports_map.clone()),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             registry: registry.clone(),
                             environment: None,
@@ -532,24 +583,11 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                     } else {
                         // Single-step pipeline invoking the variable's middleware
                         let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), args: Vec::new(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None, location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None } }] };
-                        // Key: (namespace, name) where namespace is None for local symbols
-                        let named: HashMap<(Option<String>, String), Arc<Pipeline>> = program
-                            .pipelines
-                            .iter()
-                            .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
-                            .collect();
-
-                        // Convert variables Vec to HashMap for O(1) lookup
-                        // Key: (namespace, var_type, name) where namespace is None for local symbols
-                        let variables_map: HashMap<(Option<String>, String, String), crate::ast::Variable> = program.variables
-                            .iter()
-                            .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
-                            .collect();
-
+                        // Build ExecutionEnv using preloaded symbols
                         let env = ExecutionEnv {
-                            variables: Arc::new(variables_map),
-                            named_pipelines: Arc::new(named),
-                            imports: Arc::new(std::collections::HashMap::new()),
+                            variables: Arc::new(variables_with_imports.clone()),
+                            named_pipelines: Arc::new(named_pipelines_with_imports.clone()),
+                            imports: Arc::new(imports_map.clone()),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             registry: registry.clone(),
                             environment: None,

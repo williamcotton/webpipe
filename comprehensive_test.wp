@@ -4255,6 +4255,12 @@ describe "javascript middleware"
 
 import "./test.wp" as test
 
-GET /testtest
-  |> pipeline: test::test
+GET /test-import
+  |> pipeline: test::one
   |> jq: `.`
+
+describe "import test"
+  it "gets one"
+    when calling GET /test-import
+    then status is 200
+    and output `.one` equals "one"
