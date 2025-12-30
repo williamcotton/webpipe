@@ -146,7 +146,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
                 config_type: ConfigType::Backtick,
                 condition: None,
                 parsed_join_targets: None,
-                location: SourceLocation { line: 0, column: 0, offset: 0 },
+                location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None },
             },
             // Execute GraphQL with empty config (triggers dynamic mode)
             PipelineStep::Regular {
@@ -156,7 +156,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
                 config_type: ConfigType::Backtick,
                 condition: None,
                 parsed_join_targets: None,
-                location: SourceLocation { line: 0, column: 0, offset: 0 },
+                location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None },
             },
         ],
     }
@@ -973,7 +973,7 @@ mod tests {
         };
         // Craft a tiny pipeline that sets cookies via jq
         let p_set_cookie = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "jq".to_string(), args: Vec::new(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0 } }
+            crate::ast::PipelineStep::Regular { name: "jq".to_string(), args: Vec::new(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0, file_path: None } }
         ]});
         let resp = respond_with_pipeline(
             state.clone(),
@@ -992,7 +992,7 @@ mod tests {
 
         // Pipeline that renders HTML
         let p_html = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0 } }
+            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0, file_path: None } }
         ]});
         let resp2 = respond_with_pipeline(
             state,

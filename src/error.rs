@@ -77,6 +77,18 @@ pub enum WebPipeError {
     #[error("Rate limit exceeded: {0}")]
     RateLimitExceeded(String),
 
+    #[error("Import not found: {0}")]
+    ImportNotFound(String),
+
+    #[error("Circular import detected: {0}")]
+    CircularImport(String),
+
+    #[error("Duplicate import alias: {0}")]
+    DuplicateAlias(String),
+
+    #[error("Undefined scoped reference: {0}")]
+    UndefinedScopedReference(String),
+
     #[cfg(feature = "debugger")]
     #[error("Debugger error: {0}")]
     DebuggerError(String),
@@ -108,6 +120,10 @@ impl WebPipeError {
             WebPipeError::MethodNotAllowed(_) => StatusCode::METHOD_NOT_ALLOWED,
             WebPipeError::Timeout(_) => StatusCode::REQUEST_TIMEOUT,
             WebPipeError::RateLimitExceeded(_) => StatusCode::TOO_MANY_REQUESTS,
+            WebPipeError::ImportNotFound(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            WebPipeError::CircularImport(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            WebPipeError::DuplicateAlias(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            WebPipeError::UndefinedScopedReference(_) => StatusCode::INTERNAL_SERVER_ERROR,
             #[cfg(feature = "debugger")]
             WebPipeError::DebuggerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -138,6 +154,10 @@ impl WebPipeError {
             WebPipeError::MethodNotAllowed(_) => "method_not_allowed",
             WebPipeError::Timeout(_) => "timeout",
             WebPipeError::RateLimitExceeded(_) => "rate_limit_exceeded",
+            WebPipeError::ImportNotFound(_) => "import_not_found",
+            WebPipeError::CircularImport(_) => "circular_import",
+            WebPipeError::DuplicateAlias(_) => "duplicate_alias",
+            WebPipeError::UndefinedScopedReference(_) => "undefined_scoped_reference",
             #[cfg(feature = "debugger")]
             WebPipeError::DebuggerError(_) => "debugger_error",
         }

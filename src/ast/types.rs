@@ -8,17 +8,36 @@ pub struct SourceLocation {
     pub column: usize,
     /// Byte offset from start of file
     pub offset: usize,
+    /// Source file path (for multi-file debugging and error reporting)
+    pub file_path: Option<String>,
 }
 
 impl SourceLocation {
     pub fn new(line: usize, column: usize, offset: usize) -> Self {
-        Self { line, column, offset }
+        Self { line, column, offset, file_path: None }
     }
+
+    pub fn with_file(line: usize, column: usize, offset: usize, file_path: String) -> Self {
+        Self { line, column, offset, file_path: Some(file_path) }
+    }
+}
+
+/// Import statement for file-based modules
+/// Syntax: import "./path/to/file.wp" as alias
+#[derive(Debug, Clone)]
+pub struct Import {
+    /// Import path (e.g., "./lib/auth.wp")
+    pub path: String,
+    /// Import alias (e.g., "auth")
+    pub alias: String,
+    /// Source location for error reporting
+    pub location: SourceLocation,
 }
 
 #[derive(Debug, Clone)]
 pub struct Program {
     pub configs: Vec<Config>,
+    pub imports: Vec<Import>,
     pub pipelines: Vec<NamedPipeline>,
     pub variables: Vec<Variable>,
     pub routes: Vec<Route>,

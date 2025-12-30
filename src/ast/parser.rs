@@ -21,6 +21,7 @@ fn location_from_span(span: Span) -> SourceLocation {
         line: span.location_line() as usize,
         column: span.get_column(),
         offset: span.location_offset(),
+        file_path: None,
     }
 }
 
@@ -81,8 +82,8 @@ fn parse_step_config(input: Span) -> IResult<Span, (String, ConfigType)> {
             ),
             |s| (s, ConfigType::Quoted)
         ),
-        // Bare identifier (variable reference like: pg: getUserQuery)
-        map(parse_identifier, |s| (s, ConfigType::Identifier))
+        // Bare identifier (variable reference like: pg: getUserQuery or scoped: auth::login)
+        map(parse_scoped_identifier_string, |s| (s, ConfigType::Identifier))
     )).parse(input)
 }
 
@@ -693,6 +694,45 @@ fn parse_pipeline_ref(input: Span) -> IResult<Span, PipelineRef> {
 }
 
 // Variable parsing
+// Import parsing
+// Syntax: import "./path/to/file.wp" as alias
+fn parse_import(input: Span) -> IResult<Span, Import> {
+    let start_location = location_from_span(input);
+    let (input, _) = tag("import")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, path) = delimited(
+        char('"'),
+        map(take_until("\""), |s: Span| s.fragment().to_string()),
+        char('"')
+    ).parse(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("as")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, alias) = parse_identifier(input)?;
+    let (input, _) = multispace0(input)?;
+
+    Ok((input, Import {
+        path,
+        alias,
+        location: start_location,
+    }))
+}
+
+// Parse scoped identifier (namespace::name) or simple identifier
+fn parse_scoped_identifier_string(input: Span) -> IResult<Span, String> {
+    let (input, first_part) = parse_identifier(input)?;
+
+    // Try to parse :: and second part
+    if let Ok((input2, _)) = tag::<&str, Span, nom::error::Error<Span>>("::")(input) {
+        if let Ok((input3, second_part)) = parse_identifier(input2) {
+            return Ok((input3, format!("{}::{}", first_part, second_part)));
+        }
+    }
+
+    // Just a simple identifier
+    Ok((input, first_part))
+}
+
 fn parse_variable(input: Span) -> IResult<Span, Variable> {
     let (input, var_type) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
@@ -1336,6 +1376,7 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
         .map_err(|e| e.map_input(|s| *s.fragment()))?;
 
     let mut configs = Vec::new();
+    let mut imports = Vec::new();
     let mut pipelines = Vec::new();
     let mut variables = Vec::new();
     let mut routes = Vec::new();
@@ -1358,6 +1399,17 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
         // Try parsing each type of top-level element
         if let Ok((new_input, config)) = parse_config(new_remaining) {
             configs.push(config);
+            remaining = new_input;
+        } else if let Ok((new_input, import)) = parse_import(new_remaining) {
+            // Check for duplicate aliases
+            if imports.iter().any(|i: &Import| i.alias == import.alias) {
+                // Duplicate alias found - return error
+                return Err(nom::Err::Failure(nom::error::Error::new(
+                    *new_input.fragment(),
+                    nom::error::ErrorKind::Verify
+                )));
+            }
+            imports.push(import);
             remaining = new_input;
         } else if let Ok((new_input, flags)) = parse_feature_flags(new_remaining) {
             feature_flags = Some(flags);
@@ -1397,7 +1449,7 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
     }
 
     // Convert the Span back to &str for the IResult
-    Ok((remaining.fragment(), Program { configs, pipelines, variables, routes, describes, graphql_schema, queries, mutations, resolvers, feature_flags }))
+    Ok((remaining.fragment(), Program { configs, imports, pipelines, variables, routes, describes, graphql_schema, queries, mutations, resolvers, feature_flags }))
 }
 
 #[cfg(test)]
