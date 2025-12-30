@@ -392,15 +392,28 @@ impl MiddlewareInvoker for RealInvoker {
     }
 }
 
+/// Parse a scoped reference: "namespace::name" OR "name"
+/// Returns (namespace, name) where namespace is None for local references
+fn parse_scoped_ref(config: &str) -> (Option<String>, String) {
+    if let Some(idx) = config.find("::") {
+        let namespace = config[..idx].to_string();
+        let name = config[idx+2..].to_string();
+        (Some(namespace), name)
+    } else {
+        (None, config.to_string())
+    }
+}
+
 fn resolve_config_and_autoname(
     variables: &HashMap<(Option<String>, String, String), Variable>,
     middleware_name: &str,
     step_config: &str,
     input: &Value,
 ) -> (String, Value, bool) {
-    // For now, only look up local variables (namespace = None)
-    // Phase 2.4 will add scoped resolution logic
-    let key = (None, middleware_name.to_string(), step_config.to_string());
+    // Parse step_config for scoped references: namespace::name
+    let (namespace, name) = parse_scoped_ref(step_config);
+
+    let key = (namespace.clone(), middleware_name.to_string(), name.clone());
 
     if let Some(var) = variables.get(&key) {
         let resolved_config = var.value.clone();
@@ -414,6 +427,9 @@ fn resolve_config_and_autoname(
         }
         return (resolved_config, new_input, auto_named);
     }
+
+    // If scoped reference not found and it was scoped, return as-is (will likely error downstream)
+    // If it was local and not found, also return as-is (backward compatibility)
     (step_config.to_string(), input.clone(), false)
 }
 
@@ -892,7 +908,9 @@ fn spawn_async_step(
 
         if name_clone == "pipeline" {
             let pipeline_name = effective_config.trim();
-            let key = (None, pipeline_name.to_string());
+            // Parse for scoped references: namespace::name
+            let (namespace, name) = parse_scoped_ref(pipeline_name);
+            let key = (namespace, name);
             if let Some(p) = env_clone.named_pipelines.get(&key) {
                 // If args are provided, evaluate and merge into input
                 let pipeline_input = if !args_clone.is_empty() {
@@ -943,9 +961,10 @@ fn handle_recursive_pipeline<'a>(
 ) -> Pin<Box<dyn Future<Output = Result<StepResult, WebPipeError>> + Send + 'a>> {
     Box::pin(async move {
         let pipeline_name = config.trim();
-        // For now, only look up local pipelines (namespace = None)
-        // Phase 2.4 will add scoped resolution logic
-        let key = (None, pipeline_name.to_string());
+        // Parse for scoped references: namespace::name
+        let (namespace, name) = parse_scoped_ref(pipeline_name);
+        let key = (namespace, name);
+
         if let Some(pipeline) = env.named_pipelines.get(&key) {
             // If args are provided, evaluate and merge into input
             let pipeline_input = if !args.is_empty() {
@@ -1541,7 +1560,7 @@ mod tests {
         ExecutionEnv {
             variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(HashMap::new()),
-            imports: Arc::new(HashMap::new()),
+            imports: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(StubInvoker),
             registry,
             environment: None,

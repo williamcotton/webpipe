@@ -162,6 +162,7 @@ mod tests {
         let env = crate::executor::ExecutionEnv {
             variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(std::collections::HashMap::new()),
+            imports: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(crate::executor::RealInvoker::new(registry.clone())),
             registry: registry.clone(),
             environment: None,

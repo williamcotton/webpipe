@@ -165,6 +165,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
 
 pub struct WebPipeServer {
     program: Program,
+    file_path: Option<PathBuf>,  // Path to the main .wp file (for resolving imports)
     middleware_registry: Arc<MiddlewareRegistry>,
     ctx: Arc<Context>,
     trace_enabled: bool,
@@ -245,18 +246,20 @@ impl WebPipeServer {
     #[cfg(feature = "debugger")]
     pub async fn from_program_with_debugger(
         program: Program,
+        file_path: Option<PathBuf>,
         trace_enabled: bool,
         debugger: Option<std::sync::Arc<dyn crate::debugger::DebuggerHook>>,
     ) -> Result<Self, WebPipeError> {
-        Self::from_program_internal(program, trace_enabled, debugger).await
+        Self::from_program_internal(program, file_path, trace_enabled, debugger).await
     }
 
-    pub async fn from_program(program: Program, trace_enabled: bool) -> Result<Self, WebPipeError> {
-        Self::from_program_internal(program, trace_enabled, None).await
+    pub async fn from_program(program: Program, file_path: Option<PathBuf>, trace_enabled: bool) -> Result<Self, WebPipeError> {
+        Self::from_program_internal(program, file_path, trace_enabled, None).await
     }
 
     async fn from_program_internal(
         program: Program,
+        file_path: Option<PathBuf>,
         trace_enabled: bool,
         #[cfg(feature = "debugger")]
         debugger: Option<std::sync::Arc<dyn crate::debugger::DebuggerHook>>,
@@ -285,6 +288,7 @@ impl WebPipeServer {
 
         Ok(Self {
             program,
+            file_path,
             middleware_registry,
             ctx: ctx_arc,
             trace_enabled,
@@ -296,13 +300,20 @@ impl WebPipeServer {
     pub fn router(self) -> Router {
         let mut router = Router::new().route("/health", get(health_check));
 
-        // Build named_pipelines first for static analysis
+        // Build named_pipelines and variables_map with import support
         // Key: (namespace, name) where namespace is None for local symbols
-        let mut named_pipelines: HashMap<(Option<String>, String), Arc<Pipeline>> = self.program
-            .pipelines
-            .iter()
-            .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
-            .collect();
+        let mut named_pipelines: HashMap<(Option<String>, String), Arc<Pipeline>> = HashMap::new();
+        let mut variables_map: HashMap<(Option<String>, String, String), crate::ast::Variable> = HashMap::new();
+        let mut imports_map: HashMap<String, PathBuf> = HashMap::new();
+
+        // Register local symbols first
+        for p in &self.program.pipelines {
+            named_pipelines.insert((None, p.name.clone()), Arc::new(p.pipeline.clone()));
+        }
+
+        for v in &self.program.variables {
+            variables_map.insert((None, v.var_type.clone(), v.name.clone()), v.clone());
+        }
 
         // Add GraphQL query resolvers to named_pipelines
         for query in &self.program.queries {
@@ -318,6 +329,54 @@ impl WebPipeServer {
                 (None, format!("mutation::{}", mutation.name)),
                 Arc::new(mutation.pipeline.clone())
             );
+        }
+
+        // Load and register imported symbols if file_path is available
+        if let Some(ref file_path) = self.file_path {
+            if !self.program.imports.is_empty() {
+                let mut loader = crate::loader::ModuleLoader::new();
+
+                // Build import map and load each imported file
+                for import in &self.program.imports {
+                    match loader.resolve_import_path(file_path, &import.path) {
+                        Ok(resolved_path) => {
+                            imports_map.insert(import.alias.clone(), resolved_path.clone());
+
+                            // Load the imported program
+                            match loader.load_module(&resolved_path) {
+                                Ok(imported_program) => {
+                                    // Register imported pipelines with namespace = Some(alias)
+                                    for p in &imported_program.pipelines {
+                                        named_pipelines.insert(
+                                            (Some(import.alias.clone()), p.name.clone()),
+                                            Arc::new(p.pipeline.clone())
+                                        );
+                                    }
+
+                                    // Register imported variables with namespace = Some(alias)
+                                    for v in &imported_program.variables {
+                                        variables_map.insert(
+                                            (Some(import.alias.clone()), v.var_type.clone(), v.name.clone()),
+                                            v.clone()
+                                        );
+                                    }
+
+                                    // Note: GraphQL queries/mutations from imported files are NOT exposed
+                                    // Only pipelines and variables can be imported
+                                },
+                                Err(e) => {
+                                    warn!("Failed to load imported module '{}' from '{}': {}",
+                                        import.alias, import.path, e);
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            warn!("Failed to resolve import '{}' from '{}': {}",
+                                import.alias, import.path, e);
+                        }
+                    }
+                }
+            }
         }
 
         // Build method-specific matchers with RoutePayload
@@ -407,17 +466,11 @@ impl WebPipeServer {
             }
         }
 
-        // Convert variables Vec to HashMap for O(1) lookup
-        // Key: (namespace, var_type, name) where namespace is None for local symbols
-        let variables_map: HashMap<(Option<String>, String, String), crate::ast::Variable> = self.program.variables
-            .iter()
-            .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
-            .collect();
-
+        // Build ExecutionEnv with loaded symbols and imports
         let env = Arc::new(ExecutionEnv {
             variables: Arc::new(variables_map),
             named_pipelines: Arc::new(named_pipelines),
-            imports: Arc::new(HashMap::new()), // TODO: Phase 2.5 will populate this
+            imports: Arc::new(imports_map),
             invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
             registry: self.middleware_registry.clone(),
             environment: std::env::var("WEBPIPE_ENV").ok(),
@@ -958,7 +1011,7 @@ mod tests {
         let env = ExecutionEnv {
             variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(HashMap::new()),
-            imports: Arc::new(HashMap::new()),
+            imports: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(RealInvoker::new(registry.clone())),
             registry: registry.clone(),
             environment: None,

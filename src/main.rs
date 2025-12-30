@@ -155,7 +155,7 @@ async fn serve_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Erro
             .map_err(|e| format!("Parse error: {}", e))?;
 
         // Create and start the server with a shutdown signal
-        let server = match WebPipeServer::from_program(program, trace_mode).await {
+        let server = match WebPipeServer::from_program(program, Some(file_path.to_path_buf()), trace_mode).await {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Failed to build server: {}", e);
@@ -314,6 +314,7 @@ async fn run_inspect_mode(
     eprintln!("[HTTP] Building server...");
     let server = WebPipeServer::from_program_with_debugger(
         program,
+        Some(absolute_path),
         trace_mode,
         Some(debugger_hook)
     ).await?;

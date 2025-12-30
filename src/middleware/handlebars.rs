@@ -162,6 +162,7 @@ mod tests {
         ExecutionEnv {
             variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(HashMap::new()),
+            imports: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(StubInvoker),
             registry,
             environment: None,

@@ -40,6 +40,7 @@ async fn build_env(program: &webpipe::ast::Program) -> ExecutionEnv {
     ExecutionEnv {
         variables: Arc::new(variables_map),
         named_pipelines: Arc::new(named),
+            imports: Arc::new(std::collections::HashMap::new()),
         invoker: Arc::new(RealInvoker::new(registry.clone())),
         registry: registry.clone(),
         environment: None,

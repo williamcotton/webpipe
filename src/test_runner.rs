@@ -435,7 +435,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                             let env = ExecutionEnv {
                                 variables: Arc::new(variables_map),
                                 named_pipelines: Arc::new(named),
-                                imports: Arc::new(HashMap::new()),
+                                imports: Arc::new(std::collections::HashMap::new()),
                                 invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                                 registry: registry.clone(),
                                 environment: None,
@@ -500,7 +500,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                         let env = ExecutionEnv {
                             variables: Arc::new(variables_map),
                             named_pipelines: Arc::new(named),
-                            imports: Arc::new(HashMap::new()),
+                            imports: Arc::new(std::collections::HashMap::new()),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             registry: registry.clone(),
                             environment: None,
@@ -549,7 +549,7 @@ pub async fn run_tests(program: Program, verbose: bool) -> Result<TestSummary, W
                         let env = ExecutionEnv {
                             variables: Arc::new(variables_map),
                             named_pipelines: Arc::new(named),
-                            imports: Arc::new(HashMap::new()),
+                            imports: Arc::new(std::collections::HashMap::new()),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             registry: registry.clone(),
                             environment: None,
