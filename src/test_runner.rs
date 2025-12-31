@@ -70,8 +70,25 @@ impl MockResolver {
     fn get_middleware_mock<'a>(&'a self, middleware: &str, input: &Value) -> Option<&'a Value> {
         // Prefer variable-specific mock if resultName hints at variable name
         if let Some(var_name) = input.get("resultName").and_then(|v| v.as_str()) {
+            // Try exact match first
             if let Some(v) = self.variable_mocks.get(&(middleware.to_string(), var_name.to_string())) {
                 return Some(v);
+            }
+
+            // If no exact match, try scoped references (namespace::name format)
+            // When a mock is defined as "pg.db::listUsers", it's stored with key ("pg", "db::listUsers")
+            // But when the step executes, resultName is just "listUsers"
+            // So we need to check all mocks for this middleware to find one with scoped reference ending in ::var_name
+            for ((mw, mock_var_name), val) in &self.variable_mocks {
+                if mw == middleware {
+                    // Check if mock_var_name is a scoped reference ending with ::var_name
+                    if let Some(scope_sep_pos) = mock_var_name.rfind("::") {
+                        let simple_name = &mock_var_name[scope_sep_pos + 2..];
+                        if simple_name == var_name {
+                            return Some(val);
+                        }
+                    }
+                }
             }
         }
         self.middleware_mocks.get(middleware)
