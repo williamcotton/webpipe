@@ -34,7 +34,13 @@ impl GraphQLRuntime {
         for r in &program.resolvers { pipelines.insert(format!("{}.{}", r.type_name, r.field_name), r.pipeline.clone()); }
         let pipeline_registry = Arc::new(pipelines);
 
-        let mut schema_builder = Schema::build("Query", Some("Mutation"), None)
+        let mutation_type = if program.mutations.is_empty() {
+            None
+        } else {
+            Some("Mutation")
+        };
+
+        let mut schema_builder = Schema::build("Query", mutation_type, None)
             .register(Scalar::new("JSON"));
 
         fn convert_type(ty: &ast::Type) -> TypeRef {
