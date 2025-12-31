@@ -238,6 +238,54 @@ fn load_imported_configs(
     all_configs
 }
 
+/// Load Handlebars/Mustache variables from imports with namespace prefixes
+fn load_imported_handlebars_variables(
+    program: &Program,
+    file_path: Option<&PathBuf>,
+) -> Vec<crate::ast::Variable> {
+    use tracing::warn;
+
+    let mut all_variables: Vec<crate::ast::Variable> = Vec::new();
+
+    if let Some(file_path) = file_path {
+        if !program.imports.is_empty() {
+            let mut loader = crate::loader::ModuleLoader::new();
+
+            for import in &program.imports {
+                match loader.resolve_import_path(file_path, &import.path) {
+                    Ok(resolved_path) => {
+                        match loader.load_module(&resolved_path) {
+                            Ok(imported_program) => {
+                                // Collect Handlebars/Mustache variables with namespace prefix
+                                for var in &imported_program.variables {
+                                    if var.var_type == "handlebars" || var.var_type == "mustache" {
+                                        // Register with namespaced name using / (Handlebars syntax)
+                                        all_variables.push(crate::ast::Variable {
+                                            var_type: var.var_type.clone(),
+                                            name: format!("{}/{}", import.alias, var.name),
+                                            value: var.value.clone(),
+                                        });
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                warn!("Failed to load imported module '{}' from '{}': {}",
+                                    import.alias, import.path, e);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to resolve import '{}' from '{}': {}",
+                            import.alias, import.path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    all_variables
+}
+
 /// Load imports and merge GraphQL schemas, queries, mutations, and resolvers from imported modules
 fn merge_imported_graphql(
     program: &Program,
@@ -408,10 +456,15 @@ impl WebPipeServer {
         let mut all_configs = imported_configs;
         all_configs.extend(program.configs.clone());
 
-        // 2. Merge imported GraphQL schemas and resolvers
+        // 2. Load imported Handlebars/Mustache variables with namespace prefixes
+        let imported_hb_vars = load_imported_handlebars_variables(&program, file_path.as_ref());
+        let mut all_variables = imported_hb_vars;
+        all_variables.extend(program.variables.clone());
+
+        // 3. Merge imported GraphQL schemas and resolvers
         let merged_program = merge_imported_graphql(&program, file_path.as_ref());
 
-        // 3. Build GraphQL runtime first (if schema exists)
+        // 4. Build GraphQL runtime first (if schema exists)
         let graphql_runtime = if merged_program.graphql_schema.is_some() {
             Some(Arc::new(
                 crate::graphql::GraphQLRuntime::from_program(&merged_program)
@@ -421,13 +474,13 @@ impl WebPipeServer {
             None
         };
 
-        // 4. Build a Context from merged configs (also initializes global config)
-        let mut ctx = Context::from_program_configs(all_configs, &program.variables).await?;
+        // 5. Build a Context from merged configs and variables (also initializes global config)
+        let mut ctx = Context::from_program_configs(all_configs, &all_variables).await?;
 
-        // 5. Add GraphQL runtime to context
+        // 6. Add GraphQL runtime to context
         ctx.graphql = graphql_runtime;
 
-        // 6. Build middleware registry with context
+        // 7. Build middleware registry with context
         let ctx_arc = Arc::new(ctx);
         let middleware_registry = Arc::new(MiddlewareRegistry::with_builtins(ctx_arc.clone()));
 
@@ -598,8 +651,8 @@ impl WebPipeServer {
 
         // Register automatic GraphQL endpoint if configured
         if let Some(endpoint) = crate::config::global().get_graphql_endpoint() {
-            // Only register if we have a GraphQL schema
-            if self.program.graphql_schema.is_some() {
+            // Only register if we have a GraphQL runtime (includes imported schemas)
+            if self.ctx.graphql.is_some() {
                 // Check if user has already defined a POST route for this endpoint
                 let user_defined_route = self.program.routes.iter().any(|route| {
                     route.method == "POST" && route.path == endpoint

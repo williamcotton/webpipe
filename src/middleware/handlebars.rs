@@ -63,6 +63,7 @@ impl HandlebarsMiddleware {
     fn render_template(&self, template: &str, data: &Value) -> Result<String, WebPipeError> {
         let mut handlebars = self.handlebars.lock();
         let tpl = Self::dedent_multiline(template);
+
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         tpl.hash(&mut hasher);
         let id = format!("tpl_{:x}", hasher.finish());

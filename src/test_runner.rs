@@ -330,6 +330,54 @@ fn merge_imported_graphql_for_tests(
     merged_program
 }
 
+/// Load Handlebars/Mustache variables from imports with namespace prefixes for testing
+fn load_imported_handlebars_variables_for_tests(
+    program: &Program,
+    file_path: Option<&std::path::PathBuf>,
+) -> Vec<Variable> {
+    use tracing::warn;
+
+    let mut all_variables: Vec<Variable> = Vec::new();
+
+    if let Some(file_path) = file_path {
+        if !program.imports.is_empty() {
+            let mut loader = crate::loader::ModuleLoader::new();
+
+            for import in &program.imports {
+                match loader.resolve_import_path(file_path, &import.path) {
+                    Ok(resolved_path) => {
+                        match loader.load_module(&resolved_path) {
+                            Ok(imported_program) => {
+                                // Collect Handlebars/Mustache variables with namespace prefix
+                                for var in &imported_program.variables {
+                                    if var.var_type == "handlebars" || var.var_type == "mustache" {
+                                        // Register with namespaced name using / (Handlebars syntax)
+                                        all_variables.push(Variable {
+                                            var_type: var.var_type.clone(),
+                                            name: format!("{}/{}", import.alias, var.name),
+                                            value: var.value.clone(),
+                                        });
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                warn!("Failed to load imported module '{}' from '{}': {}",
+                                    import.alias, import.path, e);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to resolve import '{}' from '{}': {}",
+                            import.alias, import.path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    all_variables
+}
+
 /// Load imports and build complete symbol tables for testing
 fn load_imports_for_tests(
     program: &Program,
@@ -421,7 +469,12 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
     // Initialize global config (Context builder will also set globals and register partials)
     config::init_global(all_configs.clone());
 
-    let mut ctx = Context::from_program_configs(all_configs, &program.variables).await?;
+    // Load imported Handlebars/Mustache variables with namespace prefixes
+    let imported_hb_vars = load_imported_handlebars_variables_for_tests(&program, file_path.as_ref());
+    let mut all_variables = imported_hb_vars;
+    all_variables.extend(program.variables.clone());
+
+    let mut ctx = Context::from_program_configs(all_configs, &all_variables).await?;
 
     // Merge imported GraphQL schemas and resolvers
     let merged_program = merge_imported_graphql_for_tests(&program, file_path.as_ref());
