@@ -286,7 +286,7 @@ fn load_imported_handlebars_variables(
     all_variables
 }
 
-/// Load imports and merge GraphQL schemas, queries, mutations, and resolvers from imported modules
+/// Load imports and merge GraphQL schemas, routes, and pipelines from imported modules
 fn merge_imported_graphql(
     program: &Program,
     file_path: Option<&PathBuf>,
@@ -321,6 +321,12 @@ fn merge_imported_graphql(
 
                                 // Merge type resolvers
                                 merged_program.resolvers.extend(imported_program.resolvers.clone());
+
+                                // Merge routes from imports
+                                merged_program.routes.extend(imported_program.routes.clone());
+
+                                // Merge pipelines from imports
+                                merged_program.pipelines.extend(imported_program.pipelines.clone());
                             },
                             Err(e) => {
                                 warn!("Failed to load imported module '{}' from '{}': {}",
@@ -484,8 +490,9 @@ impl WebPipeServer {
         let ctx_arc = Arc::new(ctx);
         let middleware_registry = Arc::new(MiddlewareRegistry::with_builtins(ctx_arc.clone()));
 
+        // 8. Use merged_program (includes imported routes, pipelines, and GraphQL)
         Ok(Self {
-            program,
+            program: merged_program,
             file_path,
             middleware_registry,
             ctx: ctx_arc,

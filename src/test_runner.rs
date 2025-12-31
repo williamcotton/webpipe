@@ -266,7 +266,7 @@ fn find_variable<'a>(variables: &'a [Variable], var_type: &str, name: &str) -> O
     variables.iter().find(|v| v.var_type == var_type && v.name == name)
 }
 
-/// Merge GraphQL schemas and resolvers from imported modules for testing
+/// Merge GraphQL schemas, routes, and pipelines from imported modules for testing
 fn merge_imported_graphql_for_tests(
     program: &Program,
     file_path: Option<&std::path::PathBuf>,
@@ -303,6 +303,12 @@ fn merge_imported_graphql_for_tests(
 
                                 // Merge type resolvers
                                 merged_program.resolvers.extend(imported_program.resolvers.clone());
+
+                                // Merge routes from imports
+                                merged_program.routes.extend(imported_program.routes.clone());
+
+                                // Merge pipelines from imports
+                                merged_program.pipelines.extend(imported_program.pipelines.clone());
                             },
                             Err(e) => {
                                 warn!("Failed to load imported module '{}' from '{}': {}",
@@ -563,7 +569,7 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                         if let Some(endpoint) = config::global().get_graphql_endpoint() {
                             // Use merged_program to check for GraphQL schema (includes imported schemas)
                             if merged_program.graphql_schema.is_some() {
-                                let user_defined = program.routes.iter().any(|r| r.method == "POST" && r.path == endpoint);
+                                let user_defined = merged_program.routes.iter().any(|r| r.method == "POST" && r.path == endpoint);
                                 if !user_defined {
                                     Some(crate::server::create_graphql_endpoint_pipeline())
                                 } else {
@@ -580,12 +586,12 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                     };
 
                     let mut router: matchit::Router<(&Pipeline, Option<&str>)> = matchit::Router::new();
-                    for route in &program.routes {
+                    for route in &merged_program.routes {
                         if &route.method == method {
                             match &route.pipeline {
                                 PipelineRef::Inline(p) => { let _ = router.insert(route.path.clone(), (p, None)); },
                                 PipelineRef::Named(name) => {
-                                    if let Some(named) = program.pipelines.iter().find(|np| np.name == *name) {
+                                    if let Some(named) = merged_program.pipelines.iter().find(|np| np.name == *name) {
                                         let _ = router.insert(route.path.clone(), (&named.pipeline, Some(name.as_str())));
                                     }
                                 }
@@ -696,7 +702,7 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                         } else {
                             Value::Object(serde_json::Map::new())
                         };
-                        let pipeline = program
+                        let pipeline = merged_program
                             .pipelines
                             .iter()
                             .find(|p| p.name == *name)
