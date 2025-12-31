@@ -238,6 +238,68 @@ fn load_imported_configs(
     all_configs
 }
 
+/// Load imports and merge GraphQL schemas, queries, mutations, and resolvers from imported modules
+fn merge_imported_graphql(
+    program: &Program,
+    file_path: Option<&PathBuf>,
+) -> Program {
+    let mut merged_program = program.clone();
+    let mut merged_schema_parts: Vec<String> = Vec::new();
+
+    // Add main program's schema if it exists
+    if let Some(ref schema) = program.graphql_schema {
+        merged_schema_parts.push(schema.sdl.clone());
+    }
+
+    if let Some(file_path) = file_path {
+        if !program.imports.is_empty() {
+            let mut loader = crate::loader::ModuleLoader::new();
+
+            for import in &program.imports {
+                match loader.resolve_import_path(file_path, &import.path) {
+                    Ok(resolved_path) => {
+                        match loader.load_module(&resolved_path) {
+                            Ok(imported_program) => {
+                                // Merge GraphQL schema
+                                if let Some(ref imported_schema) = imported_program.graphql_schema {
+                                    merged_schema_parts.push(imported_schema.sdl.clone());
+                                }
+
+                                // Merge query resolvers
+                                merged_program.queries.extend(imported_program.queries.clone());
+
+                                // Merge mutation resolvers
+                                merged_program.mutations.extend(imported_program.mutations.clone());
+
+                                // Merge type resolvers
+                                merged_program.resolvers.extend(imported_program.resolvers.clone());
+                            },
+                            Err(e) => {
+                                warn!("Failed to load imported module '{}' from '{}': {}",
+                                    import.alias, import.path, e);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to resolve import '{}' from '{}': {}",
+                            import.alias, import.path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    // Combine all schema parts into a single schema
+    if !merged_schema_parts.is_empty() {
+        let combined_sdl = merged_schema_parts.join("\n\n");
+        merged_program.graphql_schema = Some(crate::ast::GraphQLSchema {
+            sdl: combined_sdl,
+        });
+    }
+
+    merged_program
+}
+
 pub struct WebPipeServer {
     program: Program,
     file_path: Option<PathBuf>,  // Path to the main .wp file (for resolving imports)
@@ -346,23 +408,26 @@ impl WebPipeServer {
         let mut all_configs = imported_configs;
         all_configs.extend(program.configs.clone());
 
-        // 2. Build GraphQL runtime first (if schema exists)
-        let graphql_runtime = if program.graphql_schema.is_some() {
+        // 2. Merge imported GraphQL schemas and resolvers
+        let merged_program = merge_imported_graphql(&program, file_path.as_ref());
+
+        // 3. Build GraphQL runtime first (if schema exists)
+        let graphql_runtime = if merged_program.graphql_schema.is_some() {
             Some(Arc::new(
-                crate::graphql::GraphQLRuntime::from_program(&program)
+                crate::graphql::GraphQLRuntime::from_program(&merged_program)
                     .map_err(|e| WebPipeError::ConfigError(format!("GraphQL initialization failed: {}", e)))?
             ))
         } else {
             None
         };
 
-        // 3. Build a Context from merged configs (also initializes global config)
+        // 4. Build a Context from merged configs (also initializes global config)
         let mut ctx = Context::from_program_configs(all_configs, &program.variables).await?;
 
-        // 4. Add GraphQL runtime to context
+        // 5. Add GraphQL runtime to context
         ctx.graphql = graphql_runtime;
 
-        // 5. Build middleware registry with context
+        // 6. Build middleware registry with context
         let ctx_arc = Arc::new(ctx);
         let middleware_registry = Arc::new(MiddlewareRegistry::with_builtins(ctx_arc.clone()));
 
@@ -446,8 +511,25 @@ impl WebPipeServer {
                                         );
                                     }
 
-                                    // Note: GraphQL queries/mutations from imported files are NOT exposed
-                                    // Only pipelines and variables can be imported
+                                    // Register imported GraphQL query resolvers
+                                    for query in &imported_program.queries {
+                                        let mut pipeline = query.pipeline.clone();
+                                        set_pipeline_file_path(&mut pipeline, &imported_file_path);
+                                        named_pipelines.insert(
+                                            (None, format!("query::{}", query.name)),
+                                            Arc::new(pipeline)
+                                        );
+                                    }
+
+                                    // Register imported GraphQL mutation resolvers
+                                    for mutation in &imported_program.mutations {
+                                        let mut pipeline = mutation.pipeline.clone();
+                                        set_pipeline_file_path(&mut pipeline, &imported_file_path);
+                                        named_pipelines.insert(
+                                            (None, format!("mutation::{}", mutation.name)),
+                                            Arc::new(pipeline)
+                                        );
+                                    }
                                 },
                                 Err(e) => {
                                     warn!("Failed to load imported module '{}' from '{}': {}",

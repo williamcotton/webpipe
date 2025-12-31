@@ -266,10 +266,74 @@ fn find_variable<'a>(variables: &'a [Variable], var_type: &str, name: &str) -> O
     variables.iter().find(|v| v.var_type == var_type && v.name == name)
 }
 
+/// Merge GraphQL schemas and resolvers from imported modules for testing
+fn merge_imported_graphql_for_tests(
+    program: &Program,
+    file_path: Option<&std::path::PathBuf>,
+) -> Program {
+    use tracing::warn;
+
+    let mut merged_program = program.clone();
+    let mut merged_schema_parts: Vec<String> = Vec::new();
+
+    // Add main program's schema if it exists
+    if let Some(ref schema) = program.graphql_schema {
+        merged_schema_parts.push(schema.sdl.clone());
+    }
+
+    if let Some(file_path) = file_path {
+        if !program.imports.is_empty() {
+            let mut loader = crate::loader::ModuleLoader::new();
+
+            for import in &program.imports {
+                match loader.resolve_import_path(file_path, &import.path) {
+                    Ok(resolved_path) => {
+                        match loader.load_module(&resolved_path) {
+                            Ok(imported_program) => {
+                                // Merge GraphQL schema
+                                if let Some(ref imported_schema) = imported_program.graphql_schema {
+                                    merged_schema_parts.push(imported_schema.sdl.clone());
+                                }
+
+                                // Merge query resolvers
+                                merged_program.queries.extend(imported_program.queries.clone());
+
+                                // Merge mutation resolvers
+                                merged_program.mutations.extend(imported_program.mutations.clone());
+
+                                // Merge type resolvers
+                                merged_program.resolvers.extend(imported_program.resolvers.clone());
+                            },
+                            Err(e) => {
+                                warn!("Failed to load imported module '{}' from '{}': {}",
+                                    import.alias, import.path, e);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to resolve import '{}' from '{}': {}",
+                            import.alias, import.path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    // Combine all schema parts into a single schema
+    if !merged_schema_parts.is_empty() {
+        let combined_sdl = merged_schema_parts.join("\n\n");
+        merged_program.graphql_schema = Some(crate::ast::GraphQLSchema {
+            sdl: combined_sdl,
+        });
+    }
+
+    merged_program
+}
+
 /// Load imports and build complete symbol tables for testing
 fn load_imports_for_tests(
     program: &Program,
-    file_path: Option<std::path::PathBuf>,
+    file_path: Option<&std::path::PathBuf>,
 ) -> Result<(
     HashMap<(Option<String>, String), Arc<Pipeline>>,
     HashMap<(Option<String>, String, String), Variable>,
@@ -348,7 +412,7 @@ fn load_imports_for_tests(
 pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, verbose: bool) -> Result<TestSummary, WebPipeError> {
     // Load imports and build complete symbol tables
     let (named_pipelines_with_imports, variables_with_imports, imports_map, imported_configs) =
-        load_imports_for_tests(&program, file_path)?;
+        load_imports_for_tests(&program, file_path.as_ref())?;
 
     // Merge configs: imported configs first, then main program configs (so main can override)
     let mut all_configs = imported_configs;
@@ -359,9 +423,19 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
 
     let mut ctx = Context::from_program_configs(all_configs, &program.variables).await?;
 
-    // Initialize GraphQL runtime if schema is defined
-    if program.graphql_schema.is_some() || !program.queries.is_empty() || !program.mutations.is_empty() {
-        let graphql_runtime = crate::graphql::GraphQLRuntime::from_program(&program)
+    // Merge imported GraphQL schemas and resolvers
+    let merged_program = merge_imported_graphql_for_tests(&program, file_path.as_ref());
+
+    // Debug: Log what was merged
+    if merged_program.graphql_schema.is_some() {
+        tracing::debug!("GraphQL schema merged, length: {}", merged_program.graphql_schema.as_ref().unwrap().sdl.len());
+    }
+    tracing::debug!("Number of queries: {}, mutations: {}, resolvers: {}",
+        merged_program.queries.len(), merged_program.mutations.len(), merged_program.resolvers.len());
+
+    // Initialize GraphQL runtime if schema is defined (using merged program)
+    if merged_program.graphql_schema.is_some() || !merged_program.queries.is_empty() || !merged_program.mutations.is_empty() {
+        let graphql_runtime = crate::graphql::GraphQLRuntime::from_program(&merged_program)
             .map_err(|e| WebPipeError::ConfigError(e.to_string()))?;
         ctx.graphql = Some(Arc::new(graphql_runtime));
     }
@@ -434,7 +508,8 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                     // Store the automatic GraphQL pipeline outside the loop so it lives long enough
                     let graphql_endpoint_pipeline: Option<Pipeline> = if method == "POST" {
                         if let Some(endpoint) = config::global().get_graphql_endpoint() {
-                            if program.graphql_schema.is_some() {
+                            // Use merged_program to check for GraphQL schema (includes imported schemas)
+                            if merged_program.graphql_schema.is_some() {
                                 let user_defined = program.routes.iter().any(|r| r.method == "POST" && r.path == endpoint);
                                 if !user_defined {
                                     Some(crate::server::create_graphql_endpoint_pipeline())
