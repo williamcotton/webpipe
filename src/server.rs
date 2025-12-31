@@ -201,6 +201,43 @@ fn set_pipeline_file_path(pipeline: &mut Pipeline, file_path: &str) {
     }
 }
 
+/// Load imports and collect configs from imported modules
+fn load_imported_configs(
+    program: &Program,
+    file_path: Option<&PathBuf>,
+) -> Vec<crate::ast::Config> {
+    let mut all_configs: Vec<crate::ast::Config> = Vec::new();
+
+    if let Some(file_path) = file_path {
+        if !program.imports.is_empty() {
+            let mut loader = crate::loader::ModuleLoader::new();
+
+            for import in &program.imports {
+                match loader.resolve_import_path(file_path, &import.path) {
+                    Ok(resolved_path) => {
+                        match loader.load_module(&resolved_path) {
+                            Ok(imported_program) => {
+                                // Collect imported configs
+                                all_configs.extend(imported_program.configs.clone());
+                            },
+                            Err(e) => {
+                                warn!("Failed to load imported module '{}' from '{}': {}",
+                                    import.alias, import.path, e);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        warn!("Failed to resolve import '{}' from '{}': {}",
+                            import.alias, import.path, e);
+                    }
+                }
+            }
+        }
+    }
+
+    all_configs
+}
+
 pub struct WebPipeServer {
     program: Program,
     file_path: Option<PathBuf>,  // Path to the main .wp file (for resolving imports)
@@ -304,7 +341,12 @@ impl WebPipeServer {
         #[cfg(not(feature = "debugger"))]
         _debugger: Option<()>,
     ) -> Result<Self, WebPipeError> {
-        // 1. Build GraphQL runtime first (if schema exists)
+        // 1. Load imported configs and merge with main program configs
+        let imported_configs = load_imported_configs(&program, file_path.as_ref());
+        let mut all_configs = imported_configs;
+        all_configs.extend(program.configs.clone());
+
+        // 2. Build GraphQL runtime first (if schema exists)
         let graphql_runtime = if program.graphql_schema.is_some() {
             Some(Arc::new(
                 crate::graphql::GraphQLRuntime::from_program(&program)
@@ -314,13 +356,13 @@ impl WebPipeServer {
             None
         };
 
-        // 2. Build a Context from program configs (also initializes global config)
-        let mut ctx = Context::from_program_configs(program.configs.clone(), &program.variables).await?;
+        // 3. Build a Context from merged configs (also initializes global config)
+        let mut ctx = Context::from_program_configs(all_configs, &program.variables).await?;
 
-        // 3. Add GraphQL runtime to context
+        // 4. Add GraphQL runtime to context
         ctx.graphql = graphql_runtime;
 
-        // 4. Build middleware registry with context
+        // 5. Build middleware registry with context
         let ctx_arc = Arc::new(ctx);
         let middleware_registry = Arc::new(MiddlewareRegistry::with_builtins(ctx_arc.clone()));
 

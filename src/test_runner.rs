@@ -257,6 +257,7 @@ fn load_imports_for_tests(
     HashMap<(Option<String>, String), Arc<Pipeline>>,
     HashMap<(Option<String>, String, String), Variable>,
     HashMap<String, std::path::PathBuf>,
+    Vec<crate::ast::Config>,
 ), WebPipeError> {
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -265,6 +266,7 @@ fn load_imports_for_tests(
     let mut named_pipelines: HashMap<(Option<String>, String), Arc<Pipeline>> = HashMap::new();
     let mut variables_map: HashMap<(Option<String>, String, String), Variable> = HashMap::new();
     let mut imports_map: HashMap<String, std::path::PathBuf> = HashMap::new();
+    let mut all_configs: Vec<crate::ast::Config> = Vec::new();
 
     // Register local symbols first
     for p in &program.pipelines {
@@ -304,6 +306,9 @@ fn load_imports_for_tests(
                                         v.clone()
                                     );
                                 }
+
+                                // Collect imported configs
+                                all_configs.extend(imported_program.configs.clone());
                             },
                             Err(e) => {
                                 warn!("Failed to load imported module '{}' from '{}': {}",
@@ -320,14 +325,22 @@ fn load_imports_for_tests(
         }
     }
 
-    Ok((named_pipelines, variables_map, imports_map))
+    Ok((named_pipelines, variables_map, imports_map, all_configs))
 }
 
 pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, verbose: bool) -> Result<TestSummary, WebPipeError> {
-    // Initialize global config (Context builder will also set globals and register partials)
-    config::init_global(program.configs.clone());
+    // Load imports and build complete symbol tables
+    let (named_pipelines_with_imports, variables_with_imports, imports_map, imported_configs) =
+        load_imports_for_tests(&program, file_path)?;
 
-    let mut ctx = Context::from_program_configs(program.configs.clone(), &program.variables).await?;
+    // Merge configs: imported configs first, then main program configs (so main can override)
+    let mut all_configs = imported_configs;
+    all_configs.extend(program.configs.clone());
+
+    // Initialize global config (Context builder will also set globals and register partials)
+    config::init_global(all_configs.clone());
+
+    let mut ctx = Context::from_program_configs(all_configs, &program.variables).await?;
 
     // Initialize GraphQL runtime if schema is defined
     if program.graphql_schema.is_some() || !program.queries.is_empty() || !program.mutations.is_empty() {
@@ -337,10 +350,6 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
     }
 
     let registry: Arc<MiddlewareRegistry> = Arc::new(MiddlewareRegistry::with_builtins(std::sync::Arc::new(ctx)));
-
-    // Load imports and build complete symbol tables
-    let (named_pipelines_with_imports, variables_with_imports, imports_map) =
-        load_imports_for_tests(&program, file_path)?;
 
     let mut outcomes: Vec<TestOutcome> = Vec::new();
 
