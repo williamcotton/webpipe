@@ -309,6 +309,9 @@ fn merge_imported_graphql_for_tests(
 
                                 // Merge pipelines from imports
                                 merged_program.pipelines.extend(imported_program.pipelines.clone());
+
+                                // Merge test describes from imports
+                                merged_program.describes.extend(imported_program.describes.clone());
                             },
                             Err(e) => {
                                 warn!("Failed to load imported module '{}' from '{}': {}",
@@ -503,7 +506,8 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
 
     let mut outcomes: Vec<TestOutcome> = Vec::new();
 
-    for describe in &program.describes {
+    // Use merged_program to run tests from imported files
+    for describe in &merged_program.describes {
         // Process describe-level variables first
         let mut describe_ctx = serde_json::Map::new();
         for (name, raw_val, _format) in &describe.variables {

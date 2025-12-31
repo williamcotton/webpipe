@@ -327,6 +327,9 @@ fn merge_imported_graphql(
 
                                 // Merge pipelines from imports
                                 merged_program.pipelines.extend(imported_program.pipelines.clone());
+
+                                // Merge test describes from imports
+                                merged_program.describes.extend(imported_program.describes.clone());
                             },
                             Err(e) => {
                                 warn!("Failed to load imported module '{}' from '{}': {}",
