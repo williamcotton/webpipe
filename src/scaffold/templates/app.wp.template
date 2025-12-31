@@ -1,4 +1,4 @@
-## {{PROJECT_NAME}} - WebPipe Application
+## {{PROJECT_NAME}} - Web Pipe Application
 
 ## Configuration
 config pg {
@@ -30,6 +30,10 @@ config log {
   level: "info"
 }
 
+config graphql {
+  endpoint: "/graphql"
+}
+
 ## Variables
 pg listUsers = `SELECT id, login, email, created_at FROM users ORDER BY created_at DESC`
 
@@ -44,6 +48,23 @@ handlebars layout = `
 </body>
 </html>
 `
+
+## GraphQL Schema
+graphqlSchema = `
+  type User {
+    id: ID!
+    name: String!
+    email: String!
+  }
+  
+  type Query {
+    users: [User!]!
+  }
+`
+
+query users =
+  |> pg: listUsers @result(users)
+  |> jq: `.data.users.rows | map( { id: .id, name: .name, email: .email } )`
 
 ## Routes
 GET /
@@ -64,11 +85,18 @@ GET /api/users
   |> jq: `{ users: .data.users.rows }`
   |> result
     ok(200):
-      |> jq: `{ success: true, data: . }`
+      |> jq: `{ success: true, users }`
     sqlError(500):
       |> jq: `{ error: "Database error", message: .errors[0].message }`
 
 ## Tests
+describe "frontpage endpoint"
+  it "returns ok status"
+    when calling GET /
+    then status is 200
+    and selector `h1` text equals "{{PROJECT_NAME}}"
+    and selector `p` text equals "Welcome to WebPipe!"
+
 describe "health endpoint"
   it "returns ok status"
     when calling GET /api/health
@@ -76,9 +104,22 @@ describe "health endpoint"
     and output contains `{ "status": "ok" }`
 
 describe "users endpoint"
-  with mock pg.listUsers returning `{ "rows": [{ "id": 1, "login": "admin" }] }`
+  with mock pg.listUsers returning `{ "rows": [{ "id": 1, "name": "admin", "email": "admin@example.com" }] }`
 
   it "returns user list"
     when calling GET /api/users
     then status is 200
-    and output `.users[0].login` equals "admin"
+    and output `.users[0].id` equals 1
+    and output `.users[0].name` equals "admin"
+    and output `.users[0].email` equals "admin@example.com"
+
+describe "graphql endpoint"
+  with mock pg.listUsers returning `{ "rows": [{ "id": 1, "name": "admin", "email": "admin@example.com" }] }`
+
+  it "returns user list"
+    when calling POST /graphql
+    with body `{ "query": "query { users { id name email } }" }`
+    then status is 200
+    and output `.data.users[0].id` equals 1
+    and output `.data.users[0].name` equals "admin"
+    and output `.data.users[0].email` equals "admin@example.com"
