@@ -36,6 +36,10 @@ config log {
   timestamp: true
 }
 
+config graphql {
+  endpoint: "/graphql"
+}
+
 # ------------------------------------------------
 # GraphQL Schema for Todos (internal only)
 # ------------------------------------------------
@@ -405,6 +409,7 @@ describe "Simple Todo App - HTML mutations via forms"
       "content-type": "application/json"
     }`
     then status is 303
+    and header "Location" equals "/todos"
     and call mutation toggleTodo with `{
       userId: $userId,
       id: $todoId
@@ -417,6 +422,7 @@ describe "Simple Todo App - HTML mutations via forms"
       "content-type": "application/json"
     }`
     then status is 303
+    and header "Location" equals "/todos"
     and call mutation deleteTodo with `{
       userId: $userId,
       id: $todoId

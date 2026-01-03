@@ -946,8 +946,15 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                                     None
                                 }
                             } else {
-                                // For other headers, check if they're in the output JSON
-                                output_value.get(header_name).and_then(|v| v.as_str()).map(|s| s.to_string())
+                                // For other headers, check if they're in setHeaders first (tests receive raw JSON)
+                                output_value.get("setHeaders")
+                                    .and_then(|headers| headers.get(header_name))
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string())
+                                    .or_else(|| {
+                                        // Fallback to checking directly in output
+                                        output_value.get(header_name).and_then(|v| v.as_str()).map(|s| s.to_string())
+                                    })
                             };
 
                             match op {
