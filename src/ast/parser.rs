@@ -22,6 +22,7 @@ fn location_from_span(span: Span) -> SourceLocation {
         column: span.get_column(),
         offset: span.location_offset(),
         file_path: None,
+        module_id: None,
     }
 }
 

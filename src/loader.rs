@@ -5,6 +5,17 @@ use std::fs;
 use crate::ast::{Program, parse_program};
 use crate::error::{WebPipeError, Result};
 
+/// Information about a loaded module
+#[derive(Debug, Clone)]
+pub struct ModuleInfo {
+    /// Canonical absolute path to the module file
+    pub path: PathBuf,
+    /// Parsed AST of the module
+    pub program: Program,
+    /// Import map: alias → absolute path of imported module
+    pub imports: HashMap<String, PathBuf>,
+}
+
 /// Module loader for handling .wp file imports
 /// Provides caching and circular import detection
 pub struct ModuleLoader {
@@ -81,6 +92,61 @@ impl ModuleLoader {
         self.cache.insert(abs_path.clone(), program.clone());
 
         Ok(program)
+    }
+
+    /// Load the entire module tree starting from a root file
+    /// Returns a registry of ALL modules (root + all nested imports) keyed by canonical path
+    /// Each ModuleInfo includes the parsed program and its import map (alias → path)
+    pub fn load_module_tree(&mut self, root_path: &Path) -> Result<HashMap<PathBuf, ModuleInfo>> {
+        let mut registry: HashMap<PathBuf, ModuleInfo> = HashMap::new();
+
+        // Helper function to recursively load a module and its dependencies
+        fn load_recursive(
+            loader: &mut ModuleLoader,
+            registry: &mut HashMap<PathBuf, ModuleInfo>,
+            path: &Path,
+        ) -> Result<()> {
+            // Convert to absolute path
+            let abs_path = path.canonicalize().map_err(|e| {
+                WebPipeError::ImportNotFound(format!(
+                    "Cannot resolve path '{}': {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+
+            // Skip if already loaded
+            if registry.contains_key(&abs_path) {
+                return Ok(());
+            }
+
+            // Load the module (this uses the existing load_module which handles caching and circular detection)
+            let program = loader.load_module(&abs_path)?;
+
+            // Build the import map for this module
+            let mut import_map = HashMap::new();
+            for import in &program.imports {
+                let import_abs_path = loader.resolve_import_path(&abs_path, &import.path)?;
+                import_map.insert(import.alias.clone(), import_abs_path.clone());
+
+                // Recursively load the imported module
+                load_recursive(loader, registry, &import_abs_path)?;
+            }
+
+            // Add this module to the registry
+            registry.insert(abs_path.clone(), ModuleInfo {
+                path: abs_path,
+                program,
+                imports: import_map,
+            });
+
+            Ok(())
+        }
+
+        // Start the recursive loading from the root
+        load_recursive(self, &mut registry, root_path)?;
+
+        Ok(registry)
     }
 
     /// Resolve an import path relative to the current file

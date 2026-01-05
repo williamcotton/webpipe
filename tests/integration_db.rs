@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use webpipe::ast::{parse_program, Pipeline};
-use webpipe::executor::{execute_pipeline, ExecutionEnv, RealInvoker};
+use webpipe::executor::{execute_pipeline, ExecutionEnv, ModuleRegistry, RealInvoker};
 use webpipe::middleware::MiddlewareRegistry;
 use webpipe::runtime::Context;
 use webpipe::ast::Variable;
@@ -64,13 +64,13 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
     );
     let registry = Arc::new(MiddlewareRegistry::with_builtins(ctx.clone()));
 
-    let named: HashMap<(Option<String>, String), Arc<Pipeline>> = program
+    let named: HashMap<(Option<usize>, String), Arc<Pipeline>> = program
         .pipelines
         .iter()
         .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
         .collect();
 
-    let variables_map: HashMap<(Option<String>, String, String), Variable> = program.variables
+    let variables_map: HashMap<(Option<usize>, String, String), Variable> = program.variables
         .iter()
         .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
         .collect();
@@ -84,6 +84,7 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
         environment: None,
         cache: ctx.cache.clone(),
         rate_limit: ctx.rate_limit.clone(),
+        module_registry: Arc::new(ModuleRegistry::new()),
         #[cfg(feature = "debugger")]
         debugger: None,
     };

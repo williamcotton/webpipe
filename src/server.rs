@@ -1,4 +1,4 @@
-use crate::ast::{Program, Pipeline, PipelineRef, PipelineStep, SourceLocation};
+use crate::ast::{GraphQLSchema, Program, Pipeline, PipelineRef, PipelineStep, SourceLocation};
 use crate::middleware::MiddlewareRegistry;
 use crate::error::WebPipeError;
 use axum::{
@@ -50,7 +50,7 @@ fn tag_expr_has_needs_flags(expr: &crate::ast::TagExpr) -> bool {
 /// Recursive function to detect if a pipeline requires feature flags
 fn pipeline_needs_flags(
     pipeline: &Pipeline,
-    named_pipelines: &HashMap<(Option<String>, String), Arc<Pipeline>>
+    named_pipelines: &HashMap<(Option<usize>, String), Arc<Pipeline>>
 ) -> bool {
     for step in &pipeline.steps {
         match step {
@@ -67,7 +67,7 @@ fn pipeline_needs_flags(
                     }
                 }
 
-                // 3. Recursive Reference: |> pipeline: name
+                // 3. Recursive Reference: |> pipeline: name (local only for now)
                 if name == "pipeline" {
                     let target = config.trim();
                     let key = (None, target.to_string());
@@ -147,7 +147,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
                 config_type: ConfigType::Backtick,
                 condition: None,
                 parsed_join_targets: None,
-                location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None },
+                location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None, module_id: None },
             },
             // Execute GraphQL with empty config (triggers dynamic mode)
             PipelineStep::Regular {
@@ -157,45 +157,50 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
                 config_type: ConfigType::Backtick,
                 condition: None,
                 parsed_join_targets: None,
-                location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None },
+                location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None, module_id: None },
             },
         ],
     }
 }
 
-/// Helper function to update all SourceLocations in a pipeline with a file path
-fn set_pipeline_file_path(pipeline: &mut Pipeline, file_path: &str) {
+/// Helper function to update all SourceLocations in a pipeline with file path AND module ID
+fn set_pipeline_module_info(pipeline: &mut Pipeline, file_path: &str, module_id: usize) {
     for step in &mut pipeline.steps {
         match step {
             PipelineStep::Regular { location, .. } => {
                 location.file_path = Some(file_path.to_string());
+                location.module_id = Some(module_id);
             }
             PipelineStep::Result { location, branches, .. } => {
                 location.file_path = Some(file_path.to_string());
+                location.module_id = Some(module_id);
                 for branch in branches {
-                    set_pipeline_file_path(&mut branch.pipeline, file_path);
+                    set_pipeline_module_info(&mut branch.pipeline, file_path, module_id);
                 }
             }
             PipelineStep::If { location, condition, then_branch, else_branch, .. } => {
                 location.file_path = Some(file_path.to_string());
-                set_pipeline_file_path(condition, file_path);
-                set_pipeline_file_path(then_branch, file_path);
+                location.module_id = Some(module_id);
+                set_pipeline_module_info(condition, file_path, module_id);
+                set_pipeline_module_info(then_branch, file_path, module_id);
                 if let Some(else_pipe) = else_branch {
-                    set_pipeline_file_path(else_pipe, file_path);
+                    set_pipeline_module_info(else_pipe, file_path, module_id);
                 }
             }
             PipelineStep::Dispatch { location, branches, default, .. } => {
                 location.file_path = Some(file_path.to_string());
+                location.module_id = Some(module_id);
                 for branch in branches {
-                    set_pipeline_file_path(&mut branch.pipeline, file_path);
+                    set_pipeline_module_info(&mut branch.pipeline, file_path, module_id);
                 }
                 if let Some(default_pipe) = default {
-                    set_pipeline_file_path(default_pipe, file_path);
+                    set_pipeline_module_info(default_pipe, file_path, module_id);
                 }
             }
             PipelineStep::Foreach { location, pipeline, .. } => {
                 location.file_path = Some(file_path.to_string());
-                set_pipeline_file_path(pipeline, file_path);
+                location.module_id = Some(module_id);
+                set_pipeline_module_info(pipeline, file_path, module_id);
             }
         }
     }
@@ -238,45 +243,118 @@ fn load_imported_configs(
     all_configs
 }
 
-/// Load Handlebars/Mustache variables from imports with namespace prefixes
-fn load_imported_handlebars_variables(
-    program: &Program,
-    file_path: Option<&PathBuf>,
-) -> Vec<crate::ast::Variable> {
-    use tracing::warn;
+/// Merge routes, pipelines, and GraphQL from module tree with proper module_id assignment
+fn merge_from_module_tree(
+    main_program: &Program,
+    module_tree: &HashMap<PathBuf, crate::loader::ModuleInfo>,
+) -> Program {
+    use std::collections::HashMap as StdHashMap;
 
+    let mut merged = main_program.clone();
+    let mut merged_schema_parts: Vec<String> = Vec::new();
+
+    // Add main program's schema if it exists
+    if let Some(ref schema) = main_program.graphql_schema {
+        merged_schema_parts.push(schema.sdl.clone());
+    }
+
+    // Build a path-to-id map for quick lookups using SORTED keys for deterministic ordering
+    let mut sorted_paths: Vec<PathBuf> = module_tree.keys().cloned().collect();
+    sorted_paths.sort();
+
+    let mut path_to_id: StdHashMap<PathBuf, usize> = StdHashMap::new();
+    for (i, path) in sorted_paths.iter().enumerate() {
+        path_to_id.insert(path.clone(), i);
+    }
+
+    // Merge from each module in the tree
+    for (module_path, module_info) in module_tree {
+        let module_id = path_to_id[module_path];
+        let file_path_str = module_path.to_string_lossy().to_string();
+
+        // Merge GraphQL schema
+        if let Some(ref schema) = module_info.program.graphql_schema {
+            merged_schema_parts.push(schema.sdl.clone());
+        }
+
+        // Merge query resolvers (with module_id set on pipeline steps)
+        for resolver in &module_info.program.queries {
+            let mut resolver_clone = resolver.clone();
+            set_pipeline_module_info(&mut resolver_clone.pipeline, &file_path_str, module_id);
+            merged.queries.push(resolver_clone);
+        }
+
+        // Merge mutation resolvers (with module_id set on pipeline steps)
+        for resolver in &module_info.program.mutations {
+            let mut resolver_clone = resolver.clone();
+            set_pipeline_module_info(&mut resolver_clone.pipeline, &file_path_str, module_id);
+            merged.mutations.push(resolver_clone);
+        }
+
+        // Merge type resolvers (with module_id set on pipeline steps)
+        for resolver in &module_info.program.resolvers {
+            let mut resolver_clone = resolver.clone();
+            set_pipeline_module_info(&mut resolver_clone.pipeline, &file_path_str, module_id);
+            merged.resolvers.push(resolver_clone);
+        }
+
+        // Merge routes (with module_id set on pipeline steps)
+        for route in &module_info.program.routes {
+            let mut route_clone = route.clone();
+            match &mut route_clone.pipeline {
+                PipelineRef::Inline(pipeline) => {
+                    set_pipeline_module_info(pipeline, &file_path_str, module_id);
+                }
+                PipelineRef::Named(_) => {
+                    // Named pipelines will be resolved later, and their module_id
+                    // is tracked separately in the named_pipelines HashMap
+                }
+            }
+            merged.routes.push(route_clone);
+        }
+
+        // Merge named pipelines (with module_id set on pipeline steps)
+        for named_pipeline in &module_info.program.pipelines {
+            let mut pipeline_clone = named_pipeline.clone();
+            set_pipeline_module_info(&mut pipeline_clone.pipeline, &file_path_str, module_id);
+            merged.pipelines.push(pipeline_clone);
+        }
+
+        // Merge test describes
+        merged.describes.extend(module_info.program.describes.clone());
+    }
+
+    // Combine all schema parts into a single schema
+    if !merged_schema_parts.is_empty() {
+        let combined_sdl = merged_schema_parts.join("\n\n");
+        merged.graphql_schema = Some(GraphQLSchema { sdl: combined_sdl });
+    }
+
+    merged
+}
+
+/// Load Handlebars/Mustache variables from all modules in the tree with namespace prefixes
+fn load_handlebars_from_module_tree(
+    module_tree: &HashMap<PathBuf, crate::loader::ModuleInfo>,
+) -> Vec<crate::ast::Variable> {
     let mut all_variables: Vec<crate::ast::Variable> = Vec::new();
 
-    if let Some(file_path) = file_path {
-        if !program.imports.is_empty() {
-            let mut loader = crate::loader::ModuleLoader::new();
-
-            for import in &program.imports {
-                match loader.resolve_import_path(file_path, &import.path) {
-                    Ok(resolved_path) => {
-                        match loader.load_module(&resolved_path) {
-                            Ok(imported_program) => {
-                                // Collect Handlebars/Mustache variables with namespace prefix
-                                for var in &imported_program.variables {
-                                    if var.var_type == "handlebars" || var.var_type == "mustache" {
-                                        // Register with namespaced name using / (Handlebars syntax)
-                                        all_variables.push(crate::ast::Variable {
-                                            var_type: var.var_type.clone(),
-                                            name: format!("{}/{}", import.alias, var.name),
-                                            value: var.value.clone(),
-                                        });
-                                    }
-                                }
-                            },
-                            Err(e) => {
-                                warn!("Failed to load imported module '{}' from '{}': {}",
-                                    import.alias, import.path, e);
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        warn!("Failed to resolve import '{}' from '{}': {}",
-                            import.alias, import.path, e);
+    // For each module in the tree
+    for (_module_path, module_info) in module_tree {
+        // For each import in this module
+        for (alias, target_path) in &module_info.imports {
+            // Get the target module
+            if let Some(target_module) = module_tree.get(target_path) {
+                // Collect Handlebars/Mustache variables from the target module
+                for var in &target_module.program.variables {
+                    if var.var_type == "handlebars" || var.var_type == "mustache" {
+                        // Register with namespaced name using / (Handlebars syntax)
+                        // This allows any module to reference imported partials using alias/name
+                        all_variables.push(crate::ast::Variable {
+                            var_type: var.var_type.clone(),
+                            name: format!("{}/{}", alias, var.name),
+                            value: var.value.clone(),
+                        });
                     }
                 }
             }
@@ -360,6 +438,7 @@ fn merge_imported_graphql(
 pub struct WebPipeServer {
     program: Program,
     file_path: Option<PathBuf>,  // Path to the main .wp file (for resolving imports)
+    module_paths: Vec<PathBuf>,  // Paths to all imported modules (for file watching)
     middleware_registry: Arc<MiddlewareRegistry>,
     ctx: Arc<Context>,
     trace_enabled: bool,
@@ -460,20 +539,36 @@ impl WebPipeServer {
         #[cfg(not(feature = "debugger"))]
         _debugger: Option<()>,
     ) -> Result<Self, WebPipeError> {
-        // 1. Load imported configs and merge with main program configs
+        // 1. Load module tree (if file_path exists) for nested import support
+        let module_tree = if let Some(ref file_path) = file_path {
+            let mut loader = crate::loader::ModuleLoader::new();
+            Some(loader.load_module_tree(file_path)?)
+        } else {
+            None
+        };
+
+        // 2. Load imported configs and merge with main program configs
         let imported_configs = load_imported_configs(&program, file_path.as_ref());
         let mut all_configs = imported_configs;
         all_configs.extend(program.configs.clone());
 
-        // 2. Load imported Handlebars/Mustache variables with namespace prefixes
-        let imported_hb_vars = load_imported_handlebars_variables(&program, file_path.as_ref());
+        // 3. Load Handlebars/Mustache variables from all modules in the tree
+        let imported_hb_vars = if let Some(ref tree) = module_tree {
+            load_handlebars_from_module_tree(tree)
+        } else {
+            Vec::new()
+        };
         let mut all_variables = imported_hb_vars;
         all_variables.extend(program.variables.clone());
 
-        // 3. Merge imported GraphQL schemas and resolvers
-        let merged_program = merge_imported_graphql(&program, file_path.as_ref());
+        // 4. Merge imported GraphQL schemas, resolvers, routes, and pipelines
+        let merged_program = if let Some(ref tree) = module_tree {
+            merge_from_module_tree(&program, tree)
+        } else {
+            merge_imported_graphql(&program, file_path.as_ref())
+        };
 
-        // 4. Build GraphQL runtime first (if schema exists)
+        // 5. Build GraphQL runtime first (if schema exists)
         let graphql_runtime = if merged_program.graphql_schema.is_some() {
             Some(Arc::new(
                 crate::graphql::GraphQLRuntime::from_program(&merged_program)
@@ -483,20 +578,28 @@ impl WebPipeServer {
             None
         };
 
-        // 5. Build a Context from merged configs and variables (also initializes global config)
+        // 6. Build a Context from merged configs and variables (also initializes global config)
         let mut ctx = Context::from_program_configs(all_configs, &all_variables).await?;
 
-        // 6. Add GraphQL runtime to context
+        // 7. Add GraphQL runtime to context
         ctx.graphql = graphql_runtime;
 
-        // 7. Build middleware registry with context
+        // 8. Build middleware registry with context
         let ctx_arc = Arc::new(ctx);
         let middleware_registry = Arc::new(MiddlewareRegistry::with_builtins(ctx_arc.clone()));
 
-        // 8. Use merged_program (includes imported routes, pipelines, and GraphQL)
+        // 9. Collect all module paths for file watching
+        let module_paths: Vec<PathBuf> = if let Some(ref tree) = module_tree {
+            tree.keys().cloned().collect()
+        } else {
+            Vec::new()
+        };
+
+        // 10. Use merged_program (includes imported routes, pipelines, and GraphQL)
         Ok(Self {
             program: merged_program,
             file_path,
+            module_paths,
             middleware_registry,
             ctx: ctx_arc,
             trace_enabled,
@@ -505,16 +608,35 @@ impl WebPipeServer {
         })
     }
 
+    /// Get all module paths (for file watching)
+    pub fn module_paths(&self) -> &[PathBuf] {
+        &self.module_paths
+    }
+
     pub fn router(self) -> Router {
         let mut router = Router::new().route("/health", get(health_check));
 
-        // Build named_pipelines and variables_map with import support
-        // Key: (namespace, name) where namespace is None for local symbols
-        let mut named_pipelines: HashMap<(Option<String>, String), Arc<Pipeline>> = HashMap::new();
-        let mut variables_map: HashMap<(Option<String>, String, String), crate::ast::Variable> = HashMap::new();
-        let mut imports_map: HashMap<String, PathBuf> = HashMap::new();
+        // Build named_pipelines and variables_map with Module ID support
+        // Key: (module_id, name) where module_id is None for local symbols
+        let mut named_pipelines: HashMap<(Option<usize>, String), Arc<Pipeline>> = HashMap::new();
+        let mut variables_map: HashMap<(Option<usize>, String, String), crate::ast::Variable> = HashMap::new();
+        let mut module_registry = crate::executor::ModuleRegistry::new();
 
-        // Register local symbols first
+        // Load the entire module tree if file_path is available
+        let module_tree = if let Some(ref file_path) = self.file_path {
+            let mut loader = crate::loader::ModuleLoader::new();
+            match loader.load_module_tree(file_path) {
+                Ok(tree) => Some(tree),
+                Err(e) => {
+                    warn!("Failed to load module tree: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Register local symbols first (main file, module_id = None)
         for p in &self.program.pipelines {
             named_pipelines.insert((None, p.name.clone()), Arc::new(p.pipeline.clone()));
         }
@@ -523,7 +645,7 @@ impl WebPipeServer {
             variables_map.insert((None, v.var_type.clone(), v.name.clone()), v.clone());
         }
 
-        // Add GraphQL query resolvers to named_pipelines
+        // Add GraphQL query resolvers to named_pipelines (local)
         for query in &self.program.queries {
             named_pipelines.insert(
                 (None, format!("query::{}", query.name)),
@@ -531,7 +653,7 @@ impl WebPipeServer {
             );
         }
 
-        // Add GraphQL mutation resolvers to named_pipelines
+        // Add GraphQL mutation resolvers to named_pipelines (local)
         for mutation in &self.program.mutations {
             named_pipelines.insert(
                 (None, format!("mutation::{}", mutation.name)),
@@ -539,72 +661,76 @@ impl WebPipeServer {
             );
         }
 
-        // Load and register imported symbols if file_path is available
-        if let Some(ref file_path) = self.file_path {
-            if !self.program.imports.is_empty() {
-                let mut loader = crate::loader::ModuleLoader::new();
+        // Build ModuleRegistry and register imported symbols using Module IDs
+        if let Some(tree) = module_tree {
+            // Step 1: Assign Module IDs to all modules using SORTED keys for deterministic ordering
+            // We need to do this in two passes because import_map needs Module IDs
+            let mut sorted_paths: Vec<PathBuf> = tree.keys().cloned().collect();
+            sorted_paths.sort();
 
-                // Build import map and load each imported file
-                for import in &self.program.imports {
-                    match loader.resolve_import_path(file_path, &import.path) {
-                        Ok(resolved_path) => {
-                            imports_map.insert(import.alias.clone(), resolved_path.clone());
+            let mut path_to_temp_id: HashMap<PathBuf, usize> = HashMap::new();
+            for (i, path) in sorted_paths.iter().enumerate() {
+                path_to_temp_id.insert(path.clone(), i);
+            }
 
-                            // Load the imported program
-                            match loader.load_module(&resolved_path) {
-                                Ok(imported_program) => {
-                                    let imported_file_path = resolved_path.to_string_lossy().to_string();
+            // Step 2: Build import maps with Module IDs (iterate in sorted order!)
+            for path in sorted_paths.iter() {
+                let module_info = &tree[path];
 
-                                    // Register imported pipelines with namespace = Some(alias)
-                                    for p in &imported_program.pipelines {
-                                        let mut pipeline = p.pipeline.clone();
-                                        // Update all SourceLocations in the pipeline to include the imported file path
-                                        set_pipeline_file_path(&mut pipeline, &imported_file_path);
-                                        named_pipelines.insert(
-                                            (Some(import.alias.clone()), p.name.clone()),
-                                            Arc::new(pipeline)
-                                        );
-                                    }
-
-                                    // Register imported variables with namespace = Some(alias)
-                                    for v in &imported_program.variables {
-                                        variables_map.insert(
-                                            (Some(import.alias.clone()), v.var_type.clone(), v.name.clone()),
-                                            v.clone()
-                                        );
-                                    }
-
-                                    // Register imported GraphQL query resolvers
-                                    for query in &imported_program.queries {
-                                        let mut pipeline = query.pipeline.clone();
-                                        set_pipeline_file_path(&mut pipeline, &imported_file_path);
-                                        named_pipelines.insert(
-                                            (None, format!("query::{}", query.name)),
-                                            Arc::new(pipeline)
-                                        );
-                                    }
-
-                                    // Register imported GraphQL mutation resolvers
-                                    for mutation in &imported_program.mutations {
-                                        let mut pipeline = mutation.pipeline.clone();
-                                        set_pipeline_file_path(&mut pipeline, &imported_file_path);
-                                        named_pipelines.insert(
-                                            (None, format!("mutation::{}", mutation.name)),
-                                            Arc::new(pipeline)
-                                        );
-                                    }
-                                },
-                                Err(e) => {
-                                    warn!("Failed to load imported module '{}' from '{}': {}",
-                                        import.alias, import.path, e);
-                                }
-                            }
-                        },
-                        Err(e) => {
-                            warn!("Failed to resolve import '{}' from '{}': {}",
-                                import.alias, import.path, e);
-                        }
+                // Build import map: alias → target Module ID
+                let mut import_map = HashMap::new();
+                for (alias, target_path) in &module_info.imports {
+                    if let Some(&target_id) = path_to_temp_id.get(target_path) {
+                        import_map.insert(alias.clone(), target_id);
                     }
+                }
+
+                // Register the module in the registry (this will assign ID based on call order)
+                module_registry.register(path.clone(), import_map);
+            }
+
+            // Step 3: Register symbols from all modules (iterate in sorted order!)
+            for path in sorted_paths.iter() {
+                let module_info = &tree[path];
+                let module_id = path_to_temp_id[path];
+                let file_path_str = path.to_string_lossy().to_string();
+
+                // Register pipelines
+                for p in &module_info.program.pipelines {
+                    let mut pipeline = p.pipeline.clone();
+                    set_pipeline_module_info(&mut pipeline, &file_path_str, module_id);
+                    named_pipelines.insert(
+                        (Some(module_id), p.name.clone()),
+                        Arc::new(pipeline)
+                    );
+                }
+
+                // Register variables
+                for v in &module_info.program.variables {
+                    variables_map.insert(
+                        (Some(module_id), v.var_type.clone(), v.name.clone()),
+                        v.clone()
+                    );
+                }
+
+                // Register GraphQL query resolvers
+                for query in &module_info.program.queries {
+                    let mut pipeline = query.pipeline.clone();
+                    set_pipeline_module_info(&mut pipeline, &file_path_str, module_id);
+                    named_pipelines.insert(
+                        (None, format!("query::{}", query.name)),
+                        Arc::new(pipeline)
+                    );
+                }
+
+                // Register GraphQL mutation resolvers
+                for mutation in &module_info.program.mutations {
+                    let mut pipeline = mutation.pipeline.clone();
+                    set_pipeline_module_info(&mut pipeline, &file_path_str, module_id);
+                    named_pipelines.insert(
+                        (None, format!("mutation::{}", mutation.name)),
+                        Arc::new(pipeline)
+                    );
                 }
             }
         }
@@ -696,11 +822,12 @@ impl WebPipeServer {
             }
         }
 
-        // Build ExecutionEnv with loaded symbols and imports
+        // Build ExecutionEnv with loaded symbols and module registry
         let env = Arc::new(ExecutionEnv {
             variables: Arc::new(variables_map),
             named_pipelines: Arc::new(named_pipelines),
-            imports: Arc::new(imports_map),
+            module_registry: Arc::new(module_registry),
+            imports: Arc::new(HashMap::new()), // DEPRECATED: kept for backward compat
             invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
             registry: self.middleware_registry.clone(),
             environment: std::env::var("WEBPIPE_ENV").ok(),
@@ -1241,6 +1368,7 @@ mod tests {
         let env = ExecutionEnv {
             variables: Arc::new(HashMap::new()),
             named_pipelines: Arc::new(HashMap::new()),
+            module_registry: Arc::new(crate::executor::ModuleRegistry::new()),
             imports: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(RealInvoker::new(registry.clone())),
             registry: registry.clone(),
@@ -1261,7 +1389,7 @@ mod tests {
         };
         // Craft a tiny pipeline that sets cookies via jq
         let p_set_cookie = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "jq".to_string(), args: Vec::new(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0, file_path: None } }
+            crate::ast::PipelineStep::Regular { name: "jq".to_string(), args: Vec::new(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0, file_path: None, module_id: None } }
         ]});
         let resp = respond_with_pipeline(
             state.clone(),
@@ -1280,7 +1408,7 @@ mod tests {
 
         // Pipeline that renders HTML
         let p_html = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0, file_path: None } }
+            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0, file_path: None, module_id: None } }
         ]});
         let resp2 = respond_with_pipeline(
             state,

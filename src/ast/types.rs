@@ -10,15 +10,22 @@ pub struct SourceLocation {
     pub offset: usize,
     /// Source file path (for multi-file debugging and error reporting)
     pub file_path: Option<String>,
+    /// Module ID for context-aware variable resolution
+    /// This is set when the step is part of an imported module
+    pub module_id: Option<usize>,
 }
 
 impl SourceLocation {
     pub fn new(line: usize, column: usize, offset: usize) -> Self {
-        Self { line, column, offset, file_path: None }
+        Self { line, column, offset, file_path: None, module_id: None }
     }
 
     pub fn with_file(line: usize, column: usize, offset: usize, file_path: String) -> Self {
-        Self { line, column, offset, file_path: Some(file_path) }
+        Self { line, column, offset, file_path: Some(file_path), module_id: None }
+    }
+
+    pub fn with_module(line: usize, column: usize, offset: usize, file_path: String, module_id: usize) -> Self {
+        Self { line, column, offset, file_path: Some(file_path), module_id: Some(module_id) }
     }
 }
 

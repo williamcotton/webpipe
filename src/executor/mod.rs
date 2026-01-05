@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, pin::Pin, sync::Arc, future::Future};
+use std::{collections::HashMap, path::{Path, PathBuf}, pin::Pin, sync::Arc, future::Future};
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -331,19 +331,88 @@ impl Profiler {
     }
 }
 
+/// Module ID type - used to uniquely identify loaded modules
+/// Using integers for fast lookups and small memory footprint
+pub type ModuleId = usize;
+
+/// Metadata about a loaded module
+#[derive(Clone, Debug)]
+pub struct ModuleMetadata {
+    /// Unique module ID
+    pub id: ModuleId,
+    /// Canonical absolute path to the module file
+    pub path: PathBuf,
+    /// Import map: alias → Module ID of imported module
+    pub import_map: HashMap<String, ModuleId>,
+}
+
+/// Registry of all loaded modules
+/// Maps Module IDs to their metadata for context-aware resolution
+#[derive(Clone, Debug)]
+pub struct ModuleRegistry {
+    /// Module metadata by ID
+    modules: HashMap<ModuleId, ModuleMetadata>,
+    /// Reverse lookup: path → Module ID
+    path_to_id: HashMap<PathBuf, ModuleId>,
+}
+
+impl ModuleRegistry {
+    pub fn new() -> Self {
+        Self {
+            modules: HashMap::new(),
+            path_to_id: HashMap::new(),
+        }
+    }
+
+    /// Get module metadata by ID
+    pub fn get_module(&self, id: ModuleId) -> Option<&ModuleMetadata> {
+        self.modules.get(&id)
+    }
+
+    /// Get module ID by path
+    pub fn get_id_by_path(&self, path: &Path) -> Option<ModuleId> {
+        self.path_to_id.get(path).copied()
+    }
+
+    /// Register a new module and return its assigned ID
+    pub fn register(&mut self, path: PathBuf, import_map: HashMap<String, ModuleId>) -> ModuleId {
+        // Assign next available ID
+        let id = self.modules.len();
+
+        let metadata = ModuleMetadata {
+            id,
+            path: path.clone(),
+            import_map,
+        };
+
+        self.modules.insert(id, metadata);
+        self.path_to_id.insert(path, id);
+
+        id
+    }
+
+    /// Get all modules (for iteration/validation)
+    pub fn modules(&self) -> &HashMap<ModuleId, ModuleMetadata> {
+        &self.modules
+    }
+}
+
 /// Global execution environment (The Toolbelt)
 /// Immutable, shared across all requests
 #[derive(Clone)]
 pub struct ExecutionEnv {
     /// Variables for resolution and auto-naming
-    /// Key: (namespace, var_type, name) where namespace is None for local symbols
-    pub variables: Arc<HashMap<(Option<String>, String, String), Variable>>,
+    /// Key: (module_id, var_type, name) where module_id is None for local symbols
+    pub variables: Arc<HashMap<(Option<ModuleId>, String, String), Variable>>,
 
     /// Named pipelines registry
-    /// Key: (namespace, name) where namespace is None for local symbols
-    pub named_pipelines: Arc<HashMap<(Option<String>, String), Arc<Pipeline>>>,
+    /// Key: (module_id, name) where module_id is None for local symbols
+    pub named_pipelines: Arc<HashMap<(Option<ModuleId>, String), Arc<Pipeline>>>,
 
-    /// Import map: alias -> resolved file path
+    /// Module registry for context-aware resolution
+    pub module_registry: Arc<ModuleRegistry>,
+
+    /// Import map: alias -> resolved file path (DEPRECATED - kept for backward compat during transition)
     pub imports: Arc<HashMap<String, PathBuf>>,
 
     /// Middleware invoker
@@ -405,17 +474,56 @@ fn parse_scoped_ref(config: &str) -> (Option<String>, String) {
 }
 
 fn resolve_config_and_autoname(
-    variables: &HashMap<(Option<String>, String, String), Variable>,
+    env: &ExecutionEnv,
+    step_location: &crate::ast::SourceLocation,
     middleware_name: &str,
     step_config: &str,
     input: &Value,
 ) -> (String, Value, bool) {
-    // Parse step_config for scoped references: namespace::name
-    let (namespace, name) = parse_scoped_ref(step_config);
+    // Parse step_config for scoped references: alias::name
+    let (alias, var_name) = parse_scoped_ref(step_config);
 
-    let key = (namespace.clone(), middleware_name.to_string(), name.clone());
+    // If there's an alias, do context-aware resolution using Module IDs
+    if let Some(alias) = alias {
+        // Get the module ID from the step's location
+        if let Some(step_module_id) = step_location.module_id {
+            // Get the module metadata for the step's module
+            if let Some(step_module) = env.module_registry.get_module(step_module_id) {
+                // Resolve the alias to the target Module ID using this module's import map
+                if let Some(&target_module_id) = step_module.import_map.get(&alias) {
+                    // Look up the variable in the target module
+                    let key = (Some(target_module_id), middleware_name.to_string(), var_name.clone());
+                    if let Some(var) = env.variables.get(&key) {
+                        let resolved_config = var.value.clone();
+                        let mut new_input = input.clone();
+                        let mut auto_named = false;
+                        if let Some(obj) = new_input.as_object_mut() {
+                            if !obj.contains_key("resultName") {
+                                obj.insert("resultName".to_string(), Value::String(var.name.clone()));
+                                auto_named = true;
+                            }
+                        }
+                        return (resolved_config, new_input, auto_named);
+                    } else {
+                        tracing::warn!("Variable not found with key: ({:?}, {}, {})", Some(target_module_id), middleware_name, var_name);
+                    }
+                } else {
+                    tracing::warn!("Alias '{}' not found in import map for module_id {}", alias, step_module_id);
+                }
+            } else {
+                tracing::warn!("Module metadata not found for module_id {}", step_module_id);
+            }
+        } else {
+            tracing::warn!("Step has no module_id, but has scoped reference {}::{}", alias, var_name);
+        }
+        // If we couldn't resolve the scoped reference, return as-is (will error downstream)
+        return (step_config.to_string(), input.clone(), false);
+    }
 
-    if let Some(var) = variables.get(&key) {
+    // No alias - try local variable lookup (module_id = None)
+    let key = (None, middleware_name.to_string(), var_name.clone());
+
+    if let Some(var) = env.variables.get(&key) {
         let resolved_config = var.value.clone();
         let mut new_input = input.clone();
         let mut auto_named = false;
@@ -428,8 +536,7 @@ fn resolve_config_and_autoname(
         return (resolved_config, new_input, auto_named);
     }
 
-    // If scoped reference not found and it was scoped, return as-is (will likely error downstream)
-    // If it was local and not found, also return as-is (backward compatibility)
+    // If local variable not found, return as-is (backward compatibility - might be a literal value)
     (step_config.to_string(), input.clone(), false)
 }
 
@@ -884,6 +991,7 @@ fn spawn_async_step(
     name: &str,
     args: &[String],
     config: &str,
+    location: &crate::ast::SourceLocation,
     input: Value,
     async_name: String,
 ) {
@@ -891,11 +999,12 @@ fn spawn_async_step(
     let name_clone = name.to_string();
     let args_clone = args.to_vec();
     let config_clone = config.to_string();
+    let location_clone = location.clone();
     let input_snapshot = input;
 
     let handle = tokio::spawn(async move {
         let (effective_config, effective_input, _auto_named) =
-            resolve_config_and_autoname(&env_clone.variables, &name_clone, &config_clone, &input_snapshot);
+            resolve_config_and_autoname(&env_clone, &location_clone, &name_clone, &config_clone, &input_snapshot);
 
         // Create a new RequestContext for the async task
         let mut async_ctx = RequestContext::new();
@@ -908,9 +1017,26 @@ fn spawn_async_step(
 
         if name_clone == "pipeline" {
             let pipeline_name = effective_config.trim();
-            // Parse for scoped references: namespace::name
-            let (namespace, name) = parse_scoped_ref(pipeline_name);
-            let key = (namespace, name);
+            // Parse for scoped references: alias::name
+            let (alias, name) = parse_scoped_ref(pipeline_name);
+
+            // Resolve alias to Module ID using context
+            let module_id_opt = if let Some(alias) = alias {
+                // Get module ID from step location, then resolve alias
+                if let Some(step_module_id) = location_clone.module_id {
+                    if let Some(step_module) = env_clone.module_registry.get_module(step_module_id) {
+                        step_module.import_map.get(&alias).copied()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None // Local pipeline
+            };
+
+            let key = (module_id_opt, name);
             if let Some(p) = env_clone.named_pipelines.get(&key) {
                 // If args are provided, evaluate and merge into input
                 let pipeline_input = if !args_clone.is_empty() {
@@ -957,13 +1083,30 @@ fn handle_recursive_pipeline<'a>(
     ctx: &'a mut RequestContext,
     args: &'a [String],
     config: &'a str,
+    location: &'a crate::ast::SourceLocation,
     input: Value,
 ) -> Pin<Box<dyn Future<Output = Result<StepResult, WebPipeError>> + Send + 'a>> {
     Box::pin(async move {
         let pipeline_name = config.trim();
-        // Parse for scoped references: namespace::name
-        let (namespace, name) = parse_scoped_ref(pipeline_name);
-        let key = (namespace, name);
+        // Parse for scoped references: alias::name
+        let (alias, name) = parse_scoped_ref(pipeline_name);
+
+        // Resolve alias to Module ID using context
+        let module_id_opt = if let Some(alias) = alias {
+            if let Some(step_module_id) = location.module_id {
+                if let Some(step_module) = env.module_registry.get_module(step_module_id) {
+                    step_module.import_map.get(&alias).copied()
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None // Local pipeline
+        };
+
+        let key = (module_id_opt, name);
 
         if let Some(pipeline) = env.named_pipelines.get(&key) {
             // If args are provided, evaluate and merge into input
@@ -1103,13 +1246,14 @@ async fn execute_step<'a>(
 
     // 3. Execute (Existing Logic)
     let result = match step {
-        PipelineStep::Regular { name, args, config, condition, parsed_join_targets, .. } => {
+        PipelineStep::Regular { name, args, config, condition, parsed_join_targets, location, .. } => {
             execute_regular_step(
                 name,
                 args,
                 config,
                 condition,
                 parsed_join_targets.as_ref(),
+                location,
                 idx,
                 all_steps,
                 env,
@@ -1324,6 +1468,7 @@ async fn execute_regular_step(
     config: &str,
     condition: &Option<crate::ast::TagExpr>,
     parsed_join_targets: Option<&Vec<String>>,
+    location: &crate::ast::SourceLocation,
     idx: usize,
     all_steps: &[PipelineStep],
     env: &ExecutionEnv,
@@ -1344,13 +1489,13 @@ async fn execute_regular_step(
 
     // Handle async execution separately (no state merge needed)
     if let ExecutionMode::Async(async_name) = mode {
-        spawn_async_step(env, ctx, name, args, config, pipeline_ctx.state.clone(), async_name);
+        spawn_async_step(env, ctx, name, args, config, location, pipeline_ctx.state.clone(), async_name);
         return Ok(StepOutcome::Continue);
     }
 
     // 3. Config Resolution: resolve_config_and_autoname. Handle resultName injection.
     let (effective_config, effective_input, auto_named) =
-        resolve_config_and_autoname(&env.variables, name, config, &pipeline_ctx.state);
+        resolve_config_and_autoname(env, location, name, config, &pipeline_ctx.state);
 
     // If auto-named, update the pipeline context state with resultName
     if auto_named {
@@ -1371,7 +1516,7 @@ async fn execute_regular_step(
             handle_join(ctx, &effective_config, parsed_join_targets, effective_input).await?
         }
         ExecutionMode::Recursive => {
-            handle_recursive_pipeline(env, ctx, args, &effective_config, effective_input).await?
+            handle_recursive_pipeline(env, ctx, args, &effective_config, location, effective_input).await?
         }
         ExecutionMode::Standard => {
             // Standard middleware usually expects to mutate a context.
@@ -1580,6 +1725,7 @@ mod tests {
 
             cache: CacheStore::new(8, 60),
             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
+            module_registry: Arc::new(ModuleRegistry::new()),
             #[cfg(feature = "debugger")]
             debugger: None,
         }

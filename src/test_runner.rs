@@ -339,45 +339,28 @@ fn merge_imported_graphql_for_tests(
     merged_program
 }
 
-/// Load Handlebars/Mustache variables from imports with namespace prefixes for testing
-fn load_imported_handlebars_variables_for_tests(
-    program: &Program,
-    file_path: Option<&std::path::PathBuf>,
+/// Load Handlebars/Mustache variables from all modules in the tree with namespace prefixes for testing
+fn load_handlebars_from_module_tree_for_tests(
+    module_tree: &HashMap<std::path::PathBuf, crate::loader::ModuleInfo>,
 ) -> Vec<Variable> {
-    use tracing::warn;
-
     let mut all_variables: Vec<Variable> = Vec::new();
 
-    if let Some(file_path) = file_path {
-        if !program.imports.is_empty() {
-            let mut loader = crate::loader::ModuleLoader::new();
-
-            for import in &program.imports {
-                match loader.resolve_import_path(file_path, &import.path) {
-                    Ok(resolved_path) => {
-                        match loader.load_module(&resolved_path) {
-                            Ok(imported_program) => {
-                                // Collect Handlebars/Mustache variables with namespace prefix
-                                for var in &imported_program.variables {
-                                    if var.var_type == "handlebars" || var.var_type == "mustache" {
-                                        // Register with namespaced name using / (Handlebars syntax)
-                                        all_variables.push(Variable {
-                                            var_type: var.var_type.clone(),
-                                            name: format!("{}/{}", import.alias, var.name),
-                                            value: var.value.clone(),
-                                        });
-                                    }
-                                }
-                            },
-                            Err(e) => {
-                                warn!("Failed to load imported module '{}' from '{}': {}",
-                                    import.alias, import.path, e);
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        warn!("Failed to resolve import '{}' from '{}': {}",
-                            import.alias, import.path, e);
+    // For each module in the tree
+    for (_module_path, module_info) in module_tree {
+        // For each import in this module
+        for (alias, target_path) in &module_info.imports {
+            // Get the target module
+            if let Some(target_module) = module_tree.get(target_path) {
+                // Collect Handlebars/Mustache variables from the target module
+                for var in &target_module.program.variables {
+                    if var.var_type == "handlebars" || var.var_type == "mustache" {
+                        // Register with namespaced name using / (Handlebars syntax)
+                        // This allows any module to reference imported partials using alias/name
+                        all_variables.push(Variable {
+                            var_type: var.var_type.clone(),
+                            name: format!("{}/{}", alias, var.name),
+                            value: var.value.clone(),
+                        });
                     }
                 }
             }
@@ -388,25 +371,27 @@ fn load_imported_handlebars_variables_for_tests(
 }
 
 /// Load imports and build complete symbol tables for testing
+/// Returns Module ID-based maps (using sequential IDs for simplicity in tests)
 fn load_imports_for_tests(
     program: &Program,
     file_path: Option<&std::path::PathBuf>,
 ) -> Result<(
-    HashMap<(Option<String>, String), Arc<Pipeline>>,
-    HashMap<(Option<String>, String, String), Variable>,
-    HashMap<String, std::path::PathBuf>,
+    HashMap<(Option<usize>, String), Arc<Pipeline>>,
+    HashMap<(Option<usize>, String, String), Variable>,
+    crate::executor::ModuleRegistry,
     Vec<crate::ast::Config>,
 ), WebPipeError> {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tracing::warn;
 
-    let mut named_pipelines: HashMap<(Option<String>, String), Arc<Pipeline>> = HashMap::new();
-    let mut variables_map: HashMap<(Option<String>, String, String), Variable> = HashMap::new();
-    let mut imports_map: HashMap<String, std::path::PathBuf> = HashMap::new();
+    let mut named_pipelines: HashMap<(Option<usize>, String), Arc<Pipeline>> = HashMap::new();
+    let mut variables_map: HashMap<(Option<usize>, String, String), Variable> = HashMap::new();
+    let mut module_registry = crate::executor::ModuleRegistry::new();
     let mut all_configs: Vec<crate::ast::Config> = Vec::new();
+    let mut next_module_id: usize = 0;
 
-    // Register local symbols first
+    // Register local symbols first (module_id = None for backward compat)
     for p in &program.pipelines {
         named_pipelines.insert((None, p.name.clone()), Arc::new(p.pipeline.clone()));
     }
@@ -416,6 +401,7 @@ fn load_imports_for_tests(
     }
 
     // Load and register imported symbols if file_path is available
+    // For tests, we use simple sequential Module IDs (not full load_module_tree)
     if let Some(ref file_path) = file_path {
         if !program.imports.is_empty() {
             let mut loader = crate::loader::ModuleLoader::new();
@@ -424,23 +410,28 @@ fn load_imports_for_tests(
             for import in &program.imports {
                 match loader.resolve_import_path(file_path, &import.path) {
                     Ok(resolved_path) => {
-                        imports_map.insert(import.alias.clone(), resolved_path.clone());
+                        // Assign a Module ID for this import
+                        let module_id = next_module_id;
+                        next_module_id += 1;
+
+                        // Register in module registry with empty import map (tests don't need nested imports yet)
+                        module_registry.register(resolved_path.clone(), HashMap::new());
 
                         // Load the imported program
                         match loader.load_module(&resolved_path) {
                             Ok(imported_program) => {
-                                // Register imported pipelines with namespace = Some(alias)
+                                // Register imported pipelines with Module ID
                                 for p in &imported_program.pipelines {
                                     named_pipelines.insert(
-                                        (Some(import.alias.clone()), p.name.clone()),
+                                        (Some(module_id), p.name.clone()),
                                         Arc::new(p.pipeline.clone())
                                     );
                                 }
 
-                                // Register imported variables with namespace = Some(alias)
+                                // Register imported variables with Module ID
                                 for v in &imported_program.variables {
                                     variables_map.insert(
-                                        (Some(import.alias.clone()), v.var_type.clone(), v.name.clone()),
+                                        (Some(module_id), v.var_type.clone(), v.name.clone()),
                                         v.clone()
                                     );
                                 }
@@ -463,12 +454,12 @@ fn load_imports_for_tests(
         }
     }
 
-    Ok((named_pipelines, variables_map, imports_map, all_configs))
+    Ok((named_pipelines, variables_map, module_registry, all_configs))
 }
 
 pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, verbose: bool) -> Result<TestSummary, WebPipeError> {
     // Load imports and build complete symbol tables
-    let (named_pipelines_with_imports, variables_with_imports, imports_map, imported_configs) =
+    let (named_pipelines_with_imports, variables_with_imports, module_registry, imported_configs) =
         load_imports_for_tests(&program, file_path.as_ref())?;
 
     // Merge configs: imported configs first, then main program configs (so main can override)
@@ -478,8 +469,19 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
     // Initialize global config (Context builder will also set globals and register partials)
     config::init_global(all_configs.clone());
 
-    // Load imported Handlebars/Mustache variables with namespace prefixes
-    let imported_hb_vars = load_imported_handlebars_variables_for_tests(&program, file_path.as_ref());
+    // Load Handlebars/Mustache variables from all modules in the tree
+    let module_tree = if let Some(ref fp) = file_path {
+        let mut loader = crate::loader::ModuleLoader::new();
+        loader.load_module_tree(fp).ok()
+    } else {
+        None
+    };
+
+    let imported_hb_vars = if let Some(ref tree) = module_tree {
+        load_handlebars_from_module_tree_for_tests(tree)
+    } else {
+        Vec::new()
+    };
     let mut all_variables = imported_hb_vars;
     all_variables.extend(program.variables.clone());
 
@@ -487,13 +489,6 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
 
     // Merge imported GraphQL schemas and resolvers
     let merged_program = merge_imported_graphql_for_tests(&program, file_path.as_ref());
-
-    // Debug: Log what was merged
-    if merged_program.graphql_schema.is_some() {
-        tracing::debug!("GraphQL schema merged, length: {}", merged_program.graphql_schema.as_ref().unwrap().sdl.len());
-    }
-    tracing::debug!("Number of queries: {}, mutations: {}, resolvers: {}",
-        merged_program.queries.len(), merged_program.mutations.len(), merged_program.resolvers.len());
 
     // Initialize GraphQL runtime if schema is defined (using merged program)
     if merged_program.graphql_schema.is_some() || !merged_program.queries.is_empty() || !merged_program.mutations.is_empty() {
@@ -663,14 +658,13 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                             let env = ExecutionEnv {
                                 variables: Arc::new(variables_with_imports.clone()),
                                 named_pipelines: Arc::new(named_pipelines_with_imports.clone()),
-                                imports: Arc::new(imports_map.clone()),
+                                module_registry: Arc::new(module_registry.clone()),
+                                imports: Arc::new(HashMap::new()),
                                 invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                                 registry: registry.clone(),
                                 environment: None,
-
-
                                 cache: crate::runtime::context::CacheStore::new(8, 60),
-                    rate_limit: crate::runtime::context::RateLimitStore::new(1000),
+                                rate_limit: crate::runtime::context::RateLimitStore::new(1000),
                                 #[cfg(feature = "debugger")]
                                 debugger: None,
                             };
@@ -715,14 +709,13 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                         let env = ExecutionEnv {
                             variables: Arc::new(variables_with_imports.clone()),
                             named_pipelines: Arc::new(named_pipelines_with_imports.clone()),
-                            imports: Arc::new(imports_map.clone()),
+                            module_registry: Arc::new(module_registry.clone()),
+                            imports: Arc::new(HashMap::new()),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             registry: registry.clone(),
                             environment: None,
-
-
                             cache: crate::runtime::context::CacheStore::new(8, 60),
-                    rate_limit: crate::runtime::context::RateLimitStore::new(1000),
+                            rate_limit: crate::runtime::context::RateLimitStore::new(1000),
                             #[cfg(feature = "debugger")]
                             debugger: None,
                         };
@@ -746,19 +739,18 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                         (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
                     } else {
                         // Single-step pipeline invoking the variable's middleware
-                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), args: Vec::new(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None, location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None } }] };
+                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), args: Vec::new(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None, location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None, module_id: None } }] };
                         // Build ExecutionEnv using preloaded symbols
                         let env = ExecutionEnv {
                             variables: Arc::new(variables_with_imports.clone()),
                             named_pipelines: Arc::new(named_pipelines_with_imports.clone()),
-                            imports: Arc::new(imports_map.clone()),
+                            module_registry: Arc::new(module_registry.clone()),
+                            imports: Arc::new(HashMap::new()),
                             invoker: Arc::new(MockingInvoker { registry: registry.clone(), mocks: mocks.clone() }),
                             registry: registry.clone(),
                             environment: None,
-
-
                             cache: crate::runtime::context::CacheStore::new(8, 60),
-                    rate_limit: crate::runtime::context::RateLimitStore::new(1000),
+                            rate_limit: crate::runtime::context::RateLimitStore::new(1000),
                             #[cfg(feature = "debugger")]
                             debugger: None,
                         };

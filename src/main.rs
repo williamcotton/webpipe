@@ -134,16 +134,8 @@ async fn serve_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Erro
         }
     });
 
-    // Set up file watcher
-    let mut _watcher: Option<RecommendedWatcher> = {
-        let mut w: RecommendedWatcher = notify::recommended_watcher(move |res| {
-            let _ = raw_tx.send(res);
-        })?;
-        w.watch(file_path, RecursiveMode::NonRecursive)?;
-        // Also watch the directory for .env changes (creation/modification)
-        let _ = w.watch(env_dir, RecursiveMode::NonRecursive);
-        Some(w)
-    };
+    // Set up file watcher (will be updated each reload with all imported files)
+    let mut _watcher: Option<RecommendedWatcher> = None;
 
     loop {
         // Reload .env files each iteration so edits take effect on hot-reload
@@ -162,6 +154,26 @@ async fn serve_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Erro
                 std::process::exit(1);
             }
         };
+
+        // Update file watcher to watch all imported modules
+        let raw_tx_clone = raw_tx.clone();
+        _watcher = {
+            let mut w: RecommendedWatcher = notify::recommended_watcher(move |res| {
+                let _ = raw_tx_clone.send(res);
+            })?;
+            // Watch the main file
+            w.watch(file_path, RecursiveMode::NonRecursive)?;
+            // Watch all imported module files
+            for module_path in server.module_paths() {
+                if let Err(e) = w.watch(module_path, RecursiveMode::NonRecursive) {
+                    eprintln!("Warning: Failed to watch imported file {}: {}", module_path.display(), e);
+                }
+            }
+            // Also watch the directory for .env changes
+            let _ = w.watch(env_dir, RecursiveMode::NonRecursive);
+            Some(w)
+        };
+
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let mut serve_fut = Box::pin(server.serve_with_shutdown(addr, async move { let _ = shutdown_rx.await; }));
 

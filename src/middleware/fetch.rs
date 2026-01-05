@@ -206,6 +206,7 @@ mod tests {
             environment: None,
             cache: CacheStore::new(8, 60),
             rate_limit: RateLimitStore::new(1000),
+            module_registry: Arc::new(crate::executor::ModuleRegistry::new()),
             #[cfg(feature = "debugger")]
             debugger: None,
         }
