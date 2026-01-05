@@ -64,15 +64,15 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
     );
     let registry = Arc::new(MiddlewareRegistry::with_builtins(ctx.clone()));
 
-    let named: HashMap<String, Arc<Pipeline>> = program
+    let named: HashMap<(Option<String>, String), Arc<Pipeline>> = program
         .pipelines
         .iter()
-        .map(|p| (p.name.clone(), Arc::new(p.pipeline.clone())))
+        .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
         .collect();
 
-    let variables_map: HashMap<(String, String), Variable> = program.variables
+    let variables_map: HashMap<(Option<String>, String, String), Variable> = program.variables
         .iter()
-        .map(|v| ((v.var_type.clone(), v.name.clone()), v.clone()))
+        .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
         .collect();
 
     let env = ExecutionEnv {
