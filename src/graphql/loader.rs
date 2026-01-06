@@ -5,14 +5,15 @@ use async_graphql::dataloader::Loader;
 use crate::executor::ExecutionEnv;
 use crate::error::WebPipeError;
 
-/// Key for the DataLoader: (PipelineName, KeyValue, Context)
+/// Key for the DataLoader: (PipelineName, KeyValue, Context, ModuleId)
 /// Hash/Eq only consider pipeline_name and key for batching,
-/// but we carry the context through to pass to the pipeline
+/// but we carry the context and module_id through to pass to the pipeline
 #[derive(Debug, Clone)]
 pub struct LoaderKey {
     pub pipeline_name: String,
     pub key: Value,
     pub context: Value,  // Full {parent, args, context} from resolver
+    pub module_id: Option<usize>,  // Module ID of the loader step for pipeline lookup
 }
 
 // Implement Hash/Eq to only consider pipeline_name and key for batching
@@ -73,9 +74,19 @@ impl Loader<LoaderKey> for PipelineLoader {
             });
 
             // Find the pipeline in the named pipelines registry
-            // Look up local pipelines (namespace = None)
-            let key = (None, pipeline_name.clone());
+            // Use the module_id from the first key to look up the pipeline
+            let module_id_opt = key_entries[0].module_id;
+            let key = (module_id_opt, pipeline_name.clone());
+
+            // Try with module_id first, then fall back to None for backward compatibility
             let pipeline = self.env.named_pipelines.get(&key)
+                .or_else(|| {
+                    if module_id_opt.is_some() {
+                        self.env.named_pipelines.get(&(None, pipeline_name.clone()))
+                    } else {
+                        None
+                    }
+                })
                 .ok_or_else(|| Arc::new(WebPipeError::PipelineNotFound(
                     format!("{}", pipeline_name)
                 )))?;

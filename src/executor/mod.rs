@@ -520,8 +520,10 @@ fn resolve_config_and_autoname(
         return (step_config.to_string(), input.clone(), false);
     }
 
-    // No alias - try local variable lookup (module_id = None)
-    let key = (None, middleware_name.to_string(), var_name.clone());
+    // No alias - try local variable lookup using step's module_id
+    // First try with step's module_id (for module-based resolution)
+    let module_id_opt = step_location.module_id;
+    let key = (module_id_opt, middleware_name.to_string(), var_name.clone());
 
     if let Some(var) = env.variables.get(&key) {
         let resolved_config = var.value.clone();
@@ -536,7 +538,24 @@ fn resolve_config_and_autoname(
         return (resolved_config, new_input, auto_named);
     }
 
-    // If local variable not found, return as-is (backward compatibility - might be a literal value)
+    // Fallback: try with module_id = None (backward compatibility for symbols registered without module_id)
+    if module_id_opt.is_some() {
+        let fallback_key = (None, middleware_name.to_string(), var_name.clone());
+        if let Some(var) = env.variables.get(&fallback_key) {
+            let resolved_config = var.value.clone();
+            let mut new_input = input.clone();
+            let mut auto_named = false;
+            if let Some(obj) = new_input.as_object_mut() {
+                if !obj.contains_key("resultName") {
+                    obj.insert("resultName".to_string(), Value::String(var.name.clone()));
+                    auto_named = true;
+                }
+            }
+            return (resolved_config, new_input, auto_named);
+        }
+    }
+
+    // If local variable not found, return as-is (might be a literal value)
     (step_config.to_string(), input.clone(), false)
 }
 
@@ -1022,7 +1041,7 @@ fn spawn_async_step(
 
             // Resolve alias to Module ID using context
             let module_id_opt = if let Some(alias) = alias {
-                // Get module ID from step location, then resolve alias
+                // Scoped reference: resolve alias to target module ID
                 if let Some(step_module_id) = location_clone.module_id {
                     if let Some(step_module) = env_clone.module_registry.get_module(step_module_id) {
                         step_module.import_map.get(&alias).copied()
@@ -1033,7 +1052,8 @@ fn spawn_async_step(
                     None
                 }
             } else {
-                None // Local pipeline
+                // Unscoped reference: use step's own module_id for local pipeline lookup
+                location_clone.module_id
             };
 
             let key = (module_id_opt, name);
@@ -1093,6 +1113,7 @@ fn handle_recursive_pipeline<'a>(
 
         // Resolve alias to Module ID using context
         let module_id_opt = if let Some(alias) = alias {
+            // Scoped reference: resolve alias to target module ID
             if let Some(step_module_id) = location.module_id {
                 if let Some(step_module) = env.module_registry.get_module(step_module_id) {
                     step_module.import_map.get(&alias).copied()
@@ -1103,7 +1124,8 @@ fn handle_recursive_pipeline<'a>(
                 None
             }
         } else {
-            None // Local pipeline
+            // Unscoped reference: use step's own module_id for local pipeline lookup
+            location.module_id
         };
 
         let key = (module_id_opt, name);

@@ -164,7 +164,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
 }
 
 /// Helper function to update all SourceLocations in a pipeline with file path AND module ID
-fn set_pipeline_module_info(pipeline: &mut Pipeline, file_path: &str, module_id: usize) {
+pub(crate) fn set_pipeline_module_info(pipeline: &mut Pipeline, file_path: &str, module_id: usize) {
     for step in &mut pipeline.steps {
         match step {
             PipelineStep::Regular { location, .. } => {
@@ -244,19 +244,28 @@ fn load_imported_configs(
 }
 
 /// Merge routes, pipelines, and GraphQL from module tree with proper module_id assignment
-fn merge_from_module_tree(
+pub(crate) fn merge_from_module_tree_for_tests(
     main_program: &Program,
     module_tree: &HashMap<PathBuf, crate::loader::ModuleInfo>,
 ) -> Program {
     use std::collections::HashMap as StdHashMap;
 
-    let mut merged = main_program.clone();
-    let mut merged_schema_parts: Vec<String> = Vec::new();
+    // Start with empty program - we'll merge everything from module_tree
+    let mut merged = Program {
+        imports: main_program.imports.clone(), // Keep imports for reference
+        configs: main_program.configs.clone(), // Configs don't need module_id
+        variables: Vec::new(), // Will be populated from module_tree
+        pipelines: Vec::new(), // Will be populated from module_tree
+        routes: Vec::new(), // Will be populated from module_tree
+        queries: Vec::new(), // Will be populated from module_tree
+        mutations: Vec::new(), // Will be populated from module_tree
+        resolvers: Vec::new(), // Will be populated from module_tree
+        describes: Vec::new(), // Will be populated from module_tree
+        graphql_schema: None, // Will be built from all schemas
+        feature_flags: main_program.feature_flags.clone(), // Feature flags from main program
+    };
 
-    // Add main program's schema if it exists
-    if let Some(ref schema) = main_program.graphql_schema {
-        merged_schema_parts.push(schema.sdl.clone());
-    }
+    let mut merged_schema_parts: Vec<String> = Vec::new();
 
     // Build a path-to-id map for quick lookups using SORTED keys for deterministic ordering
     let mut sorted_paths: Vec<PathBuf> = module_tree.keys().cloned().collect();
@@ -268,7 +277,8 @@ fn merge_from_module_tree(
     }
 
     // Merge from each module in the tree
-    for (module_path, module_info) in module_tree {
+    for module_path in sorted_paths.iter() {
+        let module_info = &module_tree[module_path];
         let module_id = path_to_id[module_path];
         let file_path_str = module_path.to_string_lossy().to_string();
 
@@ -319,6 +329,9 @@ fn merge_from_module_tree(
             set_pipeline_module_info(&mut pipeline_clone.pipeline, &file_path_str, module_id);
             merged.pipelines.push(pipeline_clone);
         }
+
+        // Merge variables (no module_id needed here - handled in router)
+        merged.variables.extend(module_info.program.variables.clone());
 
         // Merge test describes
         merged.describes.extend(module_info.program.describes.clone());
@@ -563,7 +576,7 @@ impl WebPipeServer {
 
         // 4. Merge imported GraphQL schemas, resolvers, routes, and pipelines
         let merged_program = if let Some(ref tree) = module_tree {
-            merge_from_module_tree(&program, tree)
+            merge_from_module_tree_for_tests(&program, tree)
         } else {
             merge_imported_graphql(&program, file_path.as_ref())
         };

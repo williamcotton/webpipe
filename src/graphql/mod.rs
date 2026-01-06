@@ -125,12 +125,12 @@ impl GraphQLRuntime {
                                                 }
                                             }).unwrap();
 
-                                            // Extract loader config
-                                            let (loader_pipeline_name, key_expr) = if let crate::ast::PipelineStep::Regular { config, args, .. } = loader_step {
+                                            // Extract loader config and module_id
+                                            let (loader_pipeline_name, key_expr, loader_module_id) = if let crate::ast::PipelineStep::Regular { config, args, location, .. } = loader_step {
                                                 let key_expr = args.first()
                                                     .ok_or_else(|| async_graphql::Error::new("loader requires a key expression"))?
                                                     .clone();
-                                                (config.clone(), key_expr)
+                                                (config.clone(), key_expr, location.module_id)
                                             } else {
                                                 return Err(async_graphql::Error::new("Invalid loader configuration"));
                                             };
@@ -180,6 +180,7 @@ impl GraphQLRuntime {
                                                 pipeline_name: loader_pipeline_name,
                                                 key: key_value,
                                                 context: current_value.clone(),
+                                                module_id: loader_module_id,
                                             };
                                             let mut result_value = loader.load_one(loader_key).await
                                                 .map_err(|e| async_graphql::Error::new(format!("DataLoader error: {}", e)))?

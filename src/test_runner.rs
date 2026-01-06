@@ -6,6 +6,7 @@ use crate::runtime::Context;
 use crate::config;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use crate::http::request::build_request_for_tests;
 use regex::Regex;
@@ -371,7 +372,7 @@ fn load_handlebars_from_module_tree_for_tests(
 }
 
 /// Load imports and build complete symbol tables for testing
-/// Returns Module ID-based maps (using sequential IDs for simplicity in tests)
+/// Returns Module ID-based maps with proper module context, plus the module_tree for reuse
 fn load_imports_for_tests(
     program: &Program,
     file_path: Option<&std::path::PathBuf>,
@@ -380,18 +381,104 @@ fn load_imports_for_tests(
     HashMap<(Option<usize>, String, String), Variable>,
     crate::executor::ModuleRegistry,
     Vec<crate::ast::Config>,
+    Option<HashMap<PathBuf, crate::loader::ModuleInfo>>, // Return module_tree for reuse
 ), WebPipeError> {
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::path::PathBuf;
     use tracing::warn;
 
     let mut named_pipelines: HashMap<(Option<usize>, String), Arc<Pipeline>> = HashMap::new();
     let mut variables_map: HashMap<(Option<usize>, String, String), Variable> = HashMap::new();
     let mut module_registry = crate::executor::ModuleRegistry::new();
     let mut all_configs: Vec<crate::ast::Config> = Vec::new();
-    let mut next_module_id: usize = 0;
+    let mut loaded_module_tree: Option<HashMap<PathBuf, crate::loader::ModuleInfo>> = None;
 
-    // Register local symbols first (module_id = None for backward compat)
+    // Load and register ALL symbols from module tree (including main file)
+    // The module tree includes the main file, so all symbols get proper module_id
+    if let Some(ref file_path) = file_path {
+        let mut loader = crate::loader::ModuleLoader::new();
+
+        // Load the entire module tree (handles nested imports)
+        match loader.load_module_tree(file_path) {
+                Ok(module_tree) => {
+                    // Build sorted list of paths for deterministic module ID assignment
+                    let mut sorted_paths: Vec<PathBuf> = module_tree.keys().cloned().collect();
+                    sorted_paths.sort();
+
+                    // Build path -> temp ID map
+                    let mut path_to_temp_id: HashMap<PathBuf, usize> = HashMap::new();
+                    for (i, path) in sorted_paths.iter().enumerate() {
+                        path_to_temp_id.insert(path.clone(), i);
+                    }
+
+                    // Build import maps and register modules (iterate in sorted order)
+                    for path in sorted_paths.iter() {
+                        let module_info = &module_tree[path];
+
+                        // Build import map: alias → target Module ID
+                        let mut import_map = HashMap::new();
+                        for (alias, target_path) in &module_info.imports {
+                            if let Some(&target_id) = path_to_temp_id.get(target_path) {
+                                import_map.insert(alias.clone(), target_id);
+                            }
+                        }
+
+                        // Register the module in the registry
+                        module_registry.register(path.clone(), import_map);
+                    }
+
+                    // Register symbols from all modules (iterate in sorted order)
+                    for path in sorted_paths.iter() {
+                        let module_info = &module_tree[path];
+                        let module_id = path_to_temp_id[path];
+                        let file_path_str = path.to_string_lossy().to_string();
+
+                        // Register imported pipelines with Module ID and set module_id on steps
+                        for p in &module_info.program.pipelines {
+                            let mut pipeline = p.pipeline.clone();
+                            crate::server::set_pipeline_module_info(&mut pipeline, &file_path_str, module_id);
+                            named_pipelines.insert(
+                                (Some(module_id), p.name.clone()),
+                                Arc::new(pipeline)
+                            );
+                        }
+
+                        // Register imported variables with Module ID
+                        for v in &module_info.program.variables {
+                            variables_map.insert(
+                                (Some(module_id), v.var_type.clone(), v.name.clone()),
+                                v.clone()
+                            );
+                        }
+
+                        // Collect imported configs
+                        all_configs.extend(module_info.program.configs.clone());
+                    }
+
+                    // Save the module tree for reuse
+                    loaded_module_tree = Some(module_tree);
+                },
+                Err(e) => {
+                    warn!("Failed to load module tree: {}. Falling back to local symbols only.", e);
+                    // Fallback: register local symbols without module_id
+                    register_local_symbols(&program, &mut named_pipelines, &mut variables_map);
+                }
+            }
+    } else {
+        // No file_path: register local symbols without module_id
+        register_local_symbols(&program, &mut named_pipelines, &mut variables_map);
+    }
+
+    Ok((named_pipelines, variables_map, module_registry, all_configs, loaded_module_tree))
+}
+
+/// Helper to register local symbols without module_id (for fallback)
+fn register_local_symbols(
+    program: &Program,
+    named_pipelines: &mut HashMap<(Option<usize>, String), Arc<Pipeline>>,
+    variables_map: &mut HashMap<(Option<usize>, String, String), Variable>,
+) {
     for p in &program.pipelines {
         named_pipelines.insert((None, p.name.clone()), Arc::new(p.pipeline.clone()));
     }
@@ -399,67 +486,11 @@ fn load_imports_for_tests(
     for v in &program.variables {
         variables_map.insert((None, v.var_type.clone(), v.name.clone()), v.clone());
     }
-
-    // Load and register imported symbols if file_path is available
-    // For tests, we use simple sequential Module IDs (not full load_module_tree)
-    if let Some(ref file_path) = file_path {
-        if !program.imports.is_empty() {
-            let mut loader = crate::loader::ModuleLoader::new();
-
-            // Build import map and load each imported file
-            for import in &program.imports {
-                match loader.resolve_import_path(file_path, &import.path) {
-                    Ok(resolved_path) => {
-                        // Assign a Module ID for this import
-                        let module_id = next_module_id;
-                        next_module_id += 1;
-
-                        // Register in module registry with empty import map (tests don't need nested imports yet)
-                        module_registry.register(resolved_path.clone(), HashMap::new());
-
-                        // Load the imported program
-                        match loader.load_module(&resolved_path) {
-                            Ok(imported_program) => {
-                                // Register imported pipelines with Module ID
-                                for p in &imported_program.pipelines {
-                                    named_pipelines.insert(
-                                        (Some(module_id), p.name.clone()),
-                                        Arc::new(p.pipeline.clone())
-                                    );
-                                }
-
-                                // Register imported variables with Module ID
-                                for v in &imported_program.variables {
-                                    variables_map.insert(
-                                        (Some(module_id), v.var_type.clone(), v.name.clone()),
-                                        v.clone()
-                                    );
-                                }
-
-                                // Collect imported configs
-                                all_configs.extend(imported_program.configs.clone());
-                            },
-                            Err(e) => {
-                                warn!("Failed to load imported module '{}' from '{}': {}",
-                                    import.alias, import.path, e);
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        warn!("Failed to resolve import '{}' from '{}': {}",
-                            import.alias, import.path, e);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok((named_pipelines, variables_map, module_registry, all_configs))
 }
 
 pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, verbose: bool) -> Result<TestSummary, WebPipeError> {
-    // Load imports and build complete symbol tables
-    let (named_pipelines_with_imports, variables_with_imports, module_registry, imported_configs) =
+    // Load imports and build complete symbol tables (also returns module_tree for reuse)
+    let (named_pipelines_with_imports, variables_with_imports, module_registry, imported_configs, module_tree) =
         load_imports_for_tests(&program, file_path.as_ref())?;
 
     // Merge configs: imported configs first, then main program configs (so main can override)
@@ -469,14 +500,7 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
     // Initialize global config (Context builder will also set globals and register partials)
     config::init_global(all_configs.clone());
 
-    // Load Handlebars/Mustache variables from all modules in the tree
-    let module_tree = if let Some(ref fp) = file_path {
-        let mut loader = crate::loader::ModuleLoader::new();
-        loader.load_module_tree(fp).ok()
-    } else {
-        None
-    };
-
+    // Load Handlebars/Mustache variables from all modules in the tree (reuse loaded module_tree)
     let imported_hb_vars = if let Some(ref tree) = module_tree {
         load_handlebars_from_module_tree_for_tests(tree)
     } else {
@@ -487,8 +511,14 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
 
     let mut ctx = Context::from_program_configs(all_configs, &all_variables).await?;
 
-    // Merge imported GraphQL schemas and resolvers
-    let merged_program = merge_imported_graphql_for_tests(&program, file_path.as_ref());
+    // Merge imported GraphQL schemas, routes, and pipelines with module_id set
+    let merged_program = if let Some(ref tree) = module_tree {
+        // Use module tree to build merged program with module_id set on all steps
+        crate::server::merge_from_module_tree_for_tests(&program, tree)
+    } else {
+        // Fallback: use old merge function
+        merge_imported_graphql_for_tests(&program, file_path.as_ref())
+    };
 
     // Initialize GraphQL runtime if schema is defined (using merged program)
     if merged_program.graphql_schema.is_some() || !merged_program.queries.is_empty() || !merged_program.mutations.is_empty() {
