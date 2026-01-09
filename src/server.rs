@@ -1057,6 +1057,14 @@ async fn respond_with_pipeline(
                         }
                     }
                 }
+            } else if content_type.starts_with("image/svg+xml") {
+                let body = result.as_str().unwrap_or("").to_string();
+                let mut resp = (http_status, body).into_response();
+                resp.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("image/svg+xml")
+                );
+                resp
             } else {
                 (http_status, Json(result.clone())).into_response()
             };

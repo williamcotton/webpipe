@@ -45,6 +45,8 @@ async-graphql-parser = "7.0"
 async-graphql-value = "7.0"
 dashmap = "6.1"
 clap = { version = "4.5", features = ["derive", "env"] }
+gramgraph = { git = "https://github.com/williamcotton/gramgraph.git", branch = "main" }
+base64 = "0.21"
 
 [features]
 pg_tests = []

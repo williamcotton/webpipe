@@ -1182,6 +1182,12 @@ async fn handle_standard_execution(
     // Special case: handlebars sets HTML content type
     let content_type = if name == "handlebars" {
         "text/html".to_string()
+    } else if name == "gg" {
+        if pipeline_ctx.state.as_str().map_or(false, |s| s.trim().starts_with("<svg")) {
+            "image/svg+xml".to_string()
+        } else {
+            "application/json".to_string()
+        }
     } else {
         "application/json".to_string()
     };
@@ -1544,12 +1550,7 @@ async fn execute_regular_step(
             // Standard middleware usually expects to mutate a context.
             // We create a temp context with the input.
             let mut temp_ctx = crate::runtime::PipelineContext::new(effective_input);
-            handle_standard_execution(env, ctx, name, args, &effective_config, &mut temp_ctx, target_name.as_deref()).await?;
-            StepResult {
-                value: temp_ctx.state,
-                content_type: if name == "handlebars" { "text/html".to_string() } else { "application/json".to_string() },
-                status_code: None,
-            }
+            handle_standard_execution(env, ctx, name, args, &effective_config, &mut temp_ctx, target_name.as_deref()).await?
         }
         ExecutionMode::Async(_) => unreachable!("Async handled above"),
     };
@@ -1586,7 +1587,7 @@ async fn execute_regular_step(
 
     // 6. Metadata Update: Update content_type and status_code in current_output
     if step_result.content_type != "application/json" || is_last_step {
-        if name == "pipeline" || is_last_step || name == "handlebars" {
+        if name == "pipeline" || is_last_step || name == "handlebars" || name == "gg" {
             current_output.content_type = step_result.content_type;
         }
     }
