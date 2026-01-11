@@ -29,7 +29,8 @@ ARG TARGETPLATFORM
 RUN xx-apt-get update && xx-apt-get install -y --no-install-recommends \
   libssl-dev \
   libc6-dev \
-  libgcc-12-dev
+  libgcc-12-dev \
+  libfontconfig-dev
 
 WORKDIR /build
 
@@ -51,6 +52,7 @@ FROM ubuntu:22.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
   libssl3 \
   ca-certificates \
+  libfontconfig1 \
   && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r wp && useradd -r -g wp -d /app wp
