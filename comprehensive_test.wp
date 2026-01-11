@@ -4340,14 +4340,27 @@ GET /svg/weather
     .hourly as $h |
     [$h.time, $h.temperature_2m] | transpose | map({time: .[0], temp: .[1]})
   `
-  |> gg({ "type": "svg", "width": 800, "height": 400, "variables": { "color": "red" } }): `
+  |> gg({
+      "type": "svg",
+      "width": 800, 
+      "height": 400, 
+      "variables": { 
+        "color": "red", 
+        "size": $context.request.query.size // "3"
+      } 
+    }): `
     aes(x: time, y: temp) 
-      | line(color: "$color")
-      | point(color: "$color")
+      | line(color: "$color", width: $size)
+      | point(color: "$color", size: $size)
   `
 
 describe "weather svg with variables"
   it "returns an svg"
     when calling GET /svg/weather
+    then status is 200
+    and selector `svg` exists
+
+  it "renders svg with query param size"
+    when calling GET /svg/weather?size=20
     then status is 200
     and selector `svg` exists

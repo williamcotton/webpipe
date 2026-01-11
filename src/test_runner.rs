@@ -704,13 +704,15 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                                 if let Some(mock) = mocks.get_pipeline_mock(name) {
                                     (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
                                 } else {
-                                    let ctx = crate::executor::RequestContext::new();
+                                    let mut ctx = crate::executor::RequestContext::new();
+                                    ctx.request = input.clone();
                                     let (out, ct, s, ctx) = crate::executor::execute_pipeline(&env, selected_pipeline, input, ctx).await?;
                                     let log = ctx.call_log.clone();
                                     (s.unwrap_or(200u16), out, ct, true, String::new(), log)
                                 }
                             } else {
-                                let ctx = crate::executor::RequestContext::new();
+                                let mut ctx = crate::executor::RequestContext::new();
+                                ctx.request = input.clone();
                                 let (out, ct, s, ctx) = crate::executor::execute_pipeline(&env, selected_pipeline, input, ctx).await?;
                                 let log = ctx.call_log.clone();
                                 (s.unwrap_or(200u16), out, ct, true, String::new(), log)
@@ -749,7 +751,8 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                             #[cfg(feature = "debugger")]
                             debugger: None,
                         };
-                        let ctx = crate::executor::RequestContext::new();
+                        let mut ctx = crate::executor::RequestContext::new();
+                        ctx.request = input.clone();
                         let (out, ct, status_opt, ctx) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input, ctx).await?;
                         let log = ctx.call_log.clone();
                         (status_opt.unwrap_or(200u16), out, ct, true, String::new(), log)
@@ -784,7 +787,8 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                             #[cfg(feature = "debugger")]
                             debugger: None,
                         };
-                        let ctx = crate::executor::RequestContext::new();
+                        let mut ctx = crate::executor::RequestContext::new();
+                        ctx.request = input.clone();
                         let (out, ct, status_opt, ctx) = crate::executor::execute_pipeline(&env, &pipeline, input, ctx).await?;
                         let log = ctx.call_log.clone();
                         (status_opt.unwrap_or(200u16), out, ct, true, String::new(), log)

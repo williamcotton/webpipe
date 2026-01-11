@@ -28,7 +28,7 @@ struct GramGraphConfig {
     options: RenderOptions,
 
     #[serde(default)]
-    variables: HashMap<String, String>,
+    variables: HashMap<String, Value>,
 }
 
 #[async_trait]
@@ -38,19 +38,45 @@ impl super::Middleware for GramGraphMiddleware {
         args: &[String],
         config: &str,
         pipeline_ctx: &mut crate::runtime::PipelineContext,
-        _env: &crate::executor::ExecutionEnv,
-        _ctx: &mut crate::executor::RequestContext,
+        env: &crate::executor::ExecutionEnv,
+        ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
     ) -> Result<(), WebPipeError> {
         // 1. Parse Options and Variables
-        let (options, variables) = if let Some(arg_json) = args.first() {
-            let cfg: GramGraphConfig = serde_json::from_str(arg_json).map_err(|e| {
+        let (options, variables) = if let Some(arg_expr) = args.first() {
+            // Create combined input with context
+            let combined_input = serde_json::json!({
+                "state": pipeline_ctx.state,
+                "context": ctx.to_value(env)
+            });
+
+            // Wrap expression to bind $context and evaluate against state
+            let wrapped_expr = format!(".context as $context | .state | ({})", arg_expr);
+
+            // Evaluate JQ expression
+            let cfg_value = crate::runtime::jq::evaluate(&wrapped_expr, &combined_input)?;
+
+            // Parse result as config
+            let cfg: GramGraphConfig = serde_json::from_value(cfg_value).map_err(|e| {
                 WebPipeError::MiddlewareExecutionError(format!(
                     "Invalid GramGraph config: {}",
                     e
                 ))
             })?;
-            (cfg.options, cfg.variables)
+
+            // Convert variables to strings (handle numbers, booleans, etc.)
+            let variables_str: HashMap<String, String> = cfg.variables.into_iter().map(|(k, v)| {
+                let s = match v {
+                    Value::String(s) => s,
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => String::new(),
+                    _ => v.to_string(),
+                };
+                (k, s)
+            }).collect();
+
+            (cfg.options, variables_str)
         } else {
             (RenderOptions::default(), HashMap::new())
         };

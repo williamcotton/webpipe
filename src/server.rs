@@ -491,7 +491,7 @@ impl ServerState {
     /// Create a new RequestContext for this request
     /// SECURITY: Feature flags are extracted from the feature_flags pipeline result,
     /// NOT from user-provided JSON input (which would be a security vulnerability)
-    fn create_request_context(&self, flags: HashMap<String, bool>) -> crate::executor::RequestContext {
+    fn create_request_context(&self, flags: HashMap<String, bool>, request_json: Value) -> crate::executor::RequestContext {
         #[cfg(feature = "debugger")]
         let debug_thread_id = if let Some(ref debugger) = self.env.debugger {
             Some(debugger.allocate_thread_id())
@@ -507,6 +507,7 @@ impl ServerState {
             metadata: crate::executor::RequestMetadata::default(),
             call_log: HashMap::new(),
             profiler: crate::executor::Profiler::default(),
+            request: request_json,
             #[cfg(feature = "debugger")]
             debug_thread_id,
             #[cfg(feature = "debugger")]
@@ -981,7 +982,7 @@ async fn respond_with_pipeline(
         if let Some(flag_pipeline) = &state.feature_flags {
             // Execute Flag Pipeline with Timeout (50ms)
             // Create a temporary RequestContext for the flag pipeline
-            let flag_ctx = state.create_request_context(HashMap::new());
+            let flag_ctx = state.create_request_context(HashMap::new(), request_json.clone());
             let flag_result = tokio::time::timeout(
                 std::time::Duration::from_millis(50),
                 state.execute_pipeline(flag_pipeline, request_json.clone(), flag_ctx)
@@ -1010,7 +1011,7 @@ async fn respond_with_pipeline(
     }
 
     // Create RequestContext with feature flags
-    let mut ctx = state.create_request_context(flags);
+    let mut ctx = state.create_request_context(flags, request_json.clone());
 
     // Push the route as the root of the profiler stack
     let route_label = format!("{} {}", method, path);

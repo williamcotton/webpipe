@@ -213,6 +213,9 @@ pub struct RequestContext {
     /// Profiler for tracking execution timing
     pub profiler: Profiler,
 
+    /// Persistent request information (query, params, headers) that survives state transformations
+    pub request: Value,
+
     /// Debug thread ID for DAP protocol (None in production)
     #[cfg(feature = "debugger")]
     pub debug_thread_id: Option<u64>,
@@ -232,6 +235,7 @@ impl RequestContext {
             metadata: RequestMetadata::default(),
             call_log: HashMap::new(),
             profiler: Profiler::default(),
+            request: Value::Null,
             #[cfg(feature = "debugger")]
             debug_thread_id: None,
             #[cfg(feature = "debugger")]
@@ -272,6 +276,11 @@ impl RequestContext {
             .map(|(k, v)| (k.clone(), serde_json::Value::Bool(*v)))
             .collect();
         context.insert("conditions".to_string(), serde_json::Value::Object(conditions));
+
+        // Add persistent request info
+        if !self.request.is_null() {
+            context.insert("request".to_string(), self.request.clone());
+        }
 
         // Add environment name
         if let Some(env_name) = &env.environment {

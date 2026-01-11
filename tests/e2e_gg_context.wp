@@ -1,0 +1,24 @@
+
+GET /gg-test
+  |> jq: `[{time: 1, temp: 10}, {time: 2, temp: 20}]`
+  |> gg({
+      "type": "svg",
+      "width": 800,
+      "height": 400,
+      "variables": {
+        "size": $context.request.query.size // "10"
+      }
+  }): `
+    aes(x: time, y: temp) | line(width: $size)
+  `
+
+describe "gg context access"
+  it "renders svg with default size"
+    when calling GET /gg-test
+    then status is 200
+    and contentType is "image/svg+xml"
+
+  it "renders svg with query param size"
+    when calling GET /gg-test?size=20
+    then status is 200
+    and contentType is "image/svg+xml"
