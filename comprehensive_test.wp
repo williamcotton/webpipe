@@ -4266,8 +4266,7 @@ describe "import test"
     then status is 200
     and output `.one` equals "one"
 
-GET /svg/weather
-  |> jq: `{
+jq weatherData = `{
     "latitude": 52.52,
     "longitude": 13.419998,
     "generationtime_ms": 0.03147125244140625,
@@ -4334,6 +4333,9 @@ GET /svg/weather
       ]
     }
   }`
+
+GET /svg/weather
+  |> jq: weatherData
   |> jq: `
     .hourly as $h |
     [$h.time, $h.temperature_2m] | transpose | map({time: .[0], temp: .[1]})

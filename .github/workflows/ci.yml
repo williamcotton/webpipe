@@ -38,7 +38,7 @@ jobs:
       - name: Install jq and Postgres client
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq libjq-dev libonig-dev pkg-config postgresql-client
+          sudo apt-get install -y jq libjq-dev libonig-dev pkg-config postgresql-client libfontconfig1-dev
 
       - name: Configure jq env (Ubuntu)
         run: |
