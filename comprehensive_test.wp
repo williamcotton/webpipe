@@ -4340,13 +4340,13 @@ GET /svg/weather
     .hourly as $h |
     [$h.time, $h.temperature_2m] | transpose | map({time: .[0], temp: .[1]})
   `
-  |> gg({ "type": "svg", "width": 800, "height": 400 }): `
+  |> gg({ "type": "svg", "width": 800, "height": 400, "variables": { "color": "red" } }): `
     aes(x: time, y: temp) 
-      | line() 
-      | point()
+      | line(color: $color)
+      | point(color: $color)
   `
 
-describe "weather svg"
+describe "weather svg with variables"
   it "returns an svg"
     when calling GET /svg/weather
     then status is 200
