@@ -1591,7 +1591,7 @@ dependencies = [
 [[package]]
 name = "gramgraph"
 version = "0.1.0"
-source = "git+https://github.com/williamcotton/gramgraph.git?branch=main#03bc85b279ab1f043d98dcdf36f6958884ad8848"
+source = "git+https://github.com/williamcotton/gramgraph.git?branch=main#81e8239c2eb40ae899dfa4d0e51210e736e774b6"
 dependencies = [
  "anyhow",
  "clap",

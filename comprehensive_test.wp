@@ -4342,8 +4342,8 @@ GET /svg/weather
   `
   |> gg({ "type": "svg", "width": 800, "height": 400, "variables": { "color": "red" } }): `
     aes(x: time, y: temp) 
-      | line(color: $color)
-      | point(color: $color)
+      | line(color: "$color")
+      | point(color: "$color")
   `
 
 describe "weather svg with variables"
