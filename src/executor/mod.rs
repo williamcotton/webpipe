@@ -1,789 +1,33 @@
-use std::{collections::HashMap, path::{Path, PathBuf}, pin::Pin, sync::Arc, future::Future};
+use std::pin::Pin;
+use std::future::Future;
 
-use async_trait::async_trait;
-use serde_json::Value;
-use tokio::task::JoinHandle;
-use parking_lot::Mutex;
 use async_recursion::async_recursion;
+use serde_json::Value;
 
 use crate::{
-    ast::{Pipeline, PipelineStep, Variable},
+    ast::{Pipeline, PipelineStep},
     error::WebPipeError,
-    middleware::MiddlewareRegistry,
-    runtime::context::{CacheStore, RateLimitStore},
     runtime::json_path,
 };
 
-/// Output from pipeline execution
-#[derive(Debug, Clone)]
-pub struct PipelineOutput {
-    /// The current JSON body/state of the pipeline
-    pub state: Value,
-    /// The MIME type (e.g., "application/json", "text/html")
-    pub content_type: String,
-    /// The HTTP status code, if set
-    pub status_code: Option<u16>,
-}
+pub mod context;
+pub mod env;
+pub mod modules;
+pub mod resolver;
+pub mod tags;
+pub mod tasks;
+pub mod types;
 
-impl PipelineOutput {
-    pub fn new(state: Value) -> Self {
-        Self {
-            state,
-            content_type: "application/json".to_string(),
-            status_code: None,
-        }
-    }
-}
-
-/// Loop control enum to manage flow within the pipeline loop
-enum StepOutcome {
-    /// Continue to the next step
-    Continue,
-    /// Stop execution and return the pipeline result immediately
-    Return(PipelineOutput),
-}
-
-/// Represents different execution modes for pipeline steps
-#[derive(Debug)]
-enum ExecutionMode {
-    /// Standard synchronous middleware execution
-    Standard,
-    /// Asynchronous execution - spawn task with given name
-    Async(String),
-    /// Join operation - wait for async tasks
-    Join,
-    /// Recursive pipeline execution
-    Recursive,
-}
-
-/// Result from executing a single step
-struct StepResult {
-    value: Value,
-    content_type: String,
-    status_code: Option<u16>,
-}
-
-/// Public alias for the complex future type returned by pipeline execution functions.
-pub type PipelineExecFuture<'a> = Pin<
-    Box<
-        dyn Future<Output = Result<(Value, String, Option<u16>), WebPipeError>> + Send + 'a,
-    >,
->;
-
-#[async_trait]
-pub trait MiddlewareInvoker: Send + Sync {
-    async fn call(
-        &self,
-        name: &str,
-        args: &[String],
-        cfg: &str,
-        pipeline_ctx: &mut crate::runtime::PipelineContext,
-        env: &ExecutionEnv,
-        ctx: &mut RequestContext,
-        target_name: Option<&str>,
-    ) -> Result<(), WebPipeError>;
-
-    /// Look up a mock value for a specific target (e.g. "query.users")
-    /// Returns None for RealInvoker, Some(mock_value) for MockingInvoker in tests
-    fn get_mock(&self, _target: &str) -> Option<Value> {
-        None // Default implementation returns None
-    }
-}
-
-/// Registry for async tasks spawned with @async tag
-#[derive(Clone)]
-pub struct AsyncTaskRegistry {
-    tasks: Arc<Mutex<HashMap<String, JoinHandle<Result<(Value, Profiler), WebPipeError>>>>>,
-}
-
-impl AsyncTaskRegistry {
-    pub fn new() -> Self {
-        Self {
-            tasks: Arc::new(Mutex::new(HashMap::new())),
-        }
-    }
-
-    pub fn register(&self, name: String, handle: JoinHandle<Result<(Value, Profiler), WebPipeError>>) {
-        self.tasks.lock().insert(name, handle);
-    }
-
-    pub fn take(&self, name: &str) -> Option<JoinHandle<Result<(Value, Profiler), WebPipeError>>> {
-        self.tasks.lock().remove(name)
-    }
-}
-
-/// Cache policy configuration for middleware communication
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct CachePolicy {
-    pub enabled: bool,
-    pub ttl: u64,
-    pub key_template: Option<String>,
-}
-
-/// Log configuration for logging middleware
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct LogConfig {
-    pub level: String,
-    pub include_body: bool,
-    pub include_headers: bool,
-}
-
-/// Rate limit status for headers/logging
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct RateLimitStatus {
-    pub allowed: bool,
-    pub current_count: u64,
-    pub limit: u64,
-    pub retry_after_secs: u64,
-    /// The computed key used for rate limiting
-    pub key: String,
-    /// Optional semantic scope (e.g., "route", "global", "custom")
-    pub scope: Option<String>,
-}
-
-#[derive(Default)]
-pub struct RequestMetadata {
-    pub start_time: Option<std::time::Instant>,
-    pub cache_policy: Option<CachePolicy>,
-    pub log_config: Option<LogConfig>,
-    pub rate_limit_status: Option<RateLimitStatus>,
-}
-
-impl RequestMetadata {
-    /// Convert metadata to a JSON Value for context injection
-    pub fn to_value(&self) -> serde_json::Value {
-        serde_json::json!({
-            "cache": self.cache_policy.as_ref().map(|cp| serde_json::json!({
-                "enabled": cp.enabled,
-                "ttl": cp.ttl,
-                "key_template": cp.key_template,
-            })),
-            "log": self.log_config.as_ref().map(|lc| serde_json::json!({
-                "level": lc.level,
-                "include_body": lc.include_body,
-                "include_headers": lc.include_headers,
-            })),
-            "rate_limit": self.rate_limit_status.as_ref().map(|rl| serde_json::json!({
-                "allowed": rl.allowed,
-                "remaining": rl.limit.saturating_sub(rl.current_count),
-                "limit": rl.limit,
-                "retry_after": rl.retry_after_secs,
-                "key": rl.key,
-                "scope": rl.scope,
-            })),
-        })
-    }
-}
-
-/// Debug stepping modes for step-by-step execution
+// Re-exports for backward compatibility and convenience
+pub use context::{RequestContext, RequestMetadata, Profiler};
 #[cfg(feature = "debugger")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StepMode {
-    /// Stop at next step in same pipeline (don't enter nested pipelines)
-    StepOver,
-    /// Stop at next step (enter nested pipelines)
-    StepIn,
-    /// Stop when returning to parent pipeline
-    StepOut,
-}
-
-/// Per-request mutable context (The Backpack)
-pub struct RequestContext {
-    /// Feature flags for this request (extracted from headers or auth, NOT from user JSON)
-    /// Static/Sticky configuration (e.g., ENABLE_BETA, NEW_UI). Controlled via @flag / getFlag / setFlag.
-    pub feature_flags: HashMap<String, bool>,
-
-    /// Transient conditions for @when routing
-    /// Dynamic/Transient request state (e.g., is_admin, json_request). Controlled via @when / setWhen.
-    pub conditions: HashMap<String, bool>,
-
-    /// Async task registry for @async steps
-    pub async_registry: AsyncTaskRegistry,
-
-    /// Deferred actions to run at pipeline completion
-    pub deferred: Vec<Box<dyn FnOnce(&Value, &str, &ExecutionEnv) + Send>>,
-
-    /// Typed metadata for middleware communication
-    pub metadata: RequestMetadata,
-
-    /// Log of calls to resolvers/middleware for assertion (spying)
-    /// Key: "query.users", Value: List of argument objects passed to that resolver
-    pub call_log: HashMap<String, Vec<Value>>,
-
-    /// Profiler for tracking execution timing
-    pub profiler: Profiler,
-
-    /// Persistent request information (query, params, headers) that survives state transformations
-    pub request: Value,
-
-    /// Debug thread ID for DAP protocol (None in production)
-    #[cfg(feature = "debugger")]
-    pub debug_thread_id: Option<u64>,
-
-    /// Debug stepping mode (StepOver pauses at next step)
-    #[cfg(feature = "debugger")]
-    pub debug_step_mode: Option<StepMode>,
-}
-
-impl RequestContext {
-    pub fn new() -> Self {
-        Self {
-            feature_flags: HashMap::new(),
-            conditions: HashMap::new(),
-            async_registry: AsyncTaskRegistry::new(),
-            deferred: Vec::new(),
-            metadata: RequestMetadata::default(),
-            call_log: HashMap::new(),
-            profiler: Profiler::default(),
-            request: Value::Null,
-            #[cfg(feature = "debugger")]
-            debug_thread_id: None,
-            #[cfg(feature = "debugger")]
-            debug_step_mode: None,
-        }
-    }
-
-    /// Register a deferred action to run at pipeline completion
-    pub fn defer<F>(&mut self, f: F)
-    where
-        F: FnOnce(&Value, &str, &ExecutionEnv) + Send + 'static,
-    {
-        self.deferred.push(Box::new(f));
-    }
-
-    /// Execute all deferred actions (called by server after pipeline completes)
-    pub fn run_deferred(mut self, final_result: &Value, content_type: &str, env: &ExecutionEnv) {
-        for action in self.deferred.drain(..) {
-            action(final_result, content_type, env);
-        }
-    }
-
-    /// Convert RequestContext to a JSON Value for middleware injection
-    /// This provides read-only access to system metadata for user scripts
-    pub fn to_value(&self, env: &ExecutionEnv) -> serde_json::Value {
-        let mut context = serde_json::Map::new();
-
-        // Add feature flags
-        let flags: serde_json::Map<String, serde_json::Value> = self.feature_flags
-            .iter()
-            .map(|(k, v)| (k.clone(), serde_json::Value::Bool(*v)))
-            .collect();
-        context.insert("flags".to_string(), serde_json::Value::Object(flags));
-
-        // Add conditions (transient request state for @when routing)
-        let conditions: serde_json::Map<String, serde_json::Value> = self.conditions
-            .iter()
-            .map(|(k, v)| (k.clone(), serde_json::Value::Bool(*v)))
-            .collect();
-        context.insert("conditions".to_string(), serde_json::Value::Object(conditions));
-
-        // Add persistent request info
-        if !self.request.is_null() {
-            context.insert("request".to_string(), self.request.clone());
-        }
-
-        // Add environment name
-        if let Some(env_name) = &env.environment {
-            context.insert("env".to_string(), serde_json::Value::String(env_name.clone()));
-        }
-
-        // Add metadata (cache, log, rate_limit)
-        let metadata_json = self.metadata.to_value();
-        if let Some(cache) = metadata_json.get("cache") {
-            if !cache.is_null() {
-                context.insert("cache".to_string(), cache.clone());
-            }
-        }
-        if let Some(log) = metadata_json.get("log") {
-            if !log.is_null() {
-                context.insert("log".to_string(), log.clone());
-            }
-        }
-        if let Some(rate_limit) = metadata_json.get("rate_limit") {
-            if !rate_limit.is_null() {
-                context.insert("rate_limit".to_string(), rate_limit.clone());
-            }
-        }
-
-        serde_json::Value::Object(context)
-    }
-}
-
-impl Default for RequestContext {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Profiler for tracking execution timing and generating folded stack traces
-#[derive(Clone, Debug, Default)]
-pub struct Profiler {
-    /// Current call stack (e.g., ["GET /api", "pipeline:auth", "pg"])
-    pub stack: Vec<String>,
-    /// Recorded samples: (folded_stack_string, duration_micros)
-    pub samples: Vec<(String, u128)>,
-}
-
-impl Profiler {
-    pub fn push(&mut self, name: &str) {
-        self.stack.push(name.to_string());
-    }
-
-    pub fn pop(&mut self) {
-        self.stack.pop();
-    }
-
-    pub fn record_sample(&mut self, duration_micros: u128) {
-        if self.stack.is_empty() { return; }
-        let stack_str = self.stack.join(";");
-        self.samples.push((stack_str, duration_micros));
-    }
-}
-
-/// Module ID type - used to uniquely identify loaded modules
-/// Using integers for fast lookups and small memory footprint
-pub type ModuleId = usize;
-
-/// Metadata about a loaded module
-#[derive(Clone, Debug)]
-pub struct ModuleMetadata {
-    /// Unique module ID
-    pub id: ModuleId,
-    /// Canonical absolute path to the module file
-    pub path: PathBuf,
-    /// Import map: alias → Module ID of imported module
-    pub import_map: HashMap<String, ModuleId>,
-}
-
-/// Registry of all loaded modules
-/// Maps Module IDs to their metadata for context-aware resolution
-#[derive(Clone, Debug)]
-pub struct ModuleRegistry {
-    /// Module metadata by ID
-    modules: HashMap<ModuleId, ModuleMetadata>,
-    /// Reverse lookup: path → Module ID
-    path_to_id: HashMap<PathBuf, ModuleId>,
-}
-
-impl ModuleRegistry {
-    pub fn new() -> Self {
-        Self {
-            modules: HashMap::new(),
-            path_to_id: HashMap::new(),
-        }
-    }
-
-    /// Get module metadata by ID
-    pub fn get_module(&self, id: ModuleId) -> Option<&ModuleMetadata> {
-        self.modules.get(&id)
-    }
-
-    /// Get module ID by path
-    pub fn get_id_by_path(&self, path: &Path) -> Option<ModuleId> {
-        self.path_to_id.get(path).copied()
-    }
-
-    /// Register a new module and return its assigned ID
-    pub fn register(&mut self, path: PathBuf, import_map: HashMap<String, ModuleId>) -> ModuleId {
-        // Assign next available ID
-        let id = self.modules.len();
-
-        let metadata = ModuleMetadata {
-            id,
-            path: path.clone(),
-            import_map,
-        };
-
-        self.modules.insert(id, metadata);
-        self.path_to_id.insert(path, id);
-
-        id
-    }
-
-    /// Get all modules (for iteration/validation)
-    pub fn modules(&self) -> &HashMap<ModuleId, ModuleMetadata> {
-        &self.modules
-    }
-}
-
-/// Global execution environment (The Toolbelt)
-/// Immutable, shared across all requests
-#[derive(Clone)]
-pub struct ExecutionEnv {
-    /// Variables for resolution and auto-naming
-    /// Key: (module_id, var_type, name) where module_id is None for local symbols
-    pub variables: Arc<HashMap<(Option<ModuleId>, String, String), Variable>>,
-
-    /// Named pipelines registry
-    /// Key: (module_id, name) where module_id is None for local symbols
-    pub named_pipelines: Arc<HashMap<(Option<ModuleId>, String), Arc<Pipeline>>>,
-
-    /// Module registry for context-aware resolution
-    pub module_registry: Arc<ModuleRegistry>,
-
-    /// Import map: alias -> resolved file path (DEPRECATED - kept for backward compat during transition)
-    pub imports: Arc<HashMap<String, PathBuf>>,
-
-    /// Middleware invoker
-    pub invoker: Arc<dyn MiddlewareInvoker>,
-
-    /// Middleware registry (for accessing behavior metadata)
-    pub registry: Arc<MiddlewareRegistry>,
-
-    /// Environment name (e.g. "production", "development", "staging")
-    pub environment: Option<String>,
-
-    /// Global cache store (shared across requests)
-    pub cache: CacheStore,
-
-    /// Global rate limit store (shared across requests)
-    pub rate_limit: RateLimitStore,
-
-    /// Optional debugger hook (None = zero cost in production)
-    /// When enabled, before_step/after_step are called for each pipeline step
-    #[cfg(feature = "debugger")]
-    pub debugger: Option<std::sync::Arc<dyn crate::debugger::DebuggerHook>>,
-}
-
-#[derive(Clone)]
-pub struct RealInvoker {
-    registry: Arc<MiddlewareRegistry>,
-}
-
-impl RealInvoker {
-    pub fn new(registry: Arc<MiddlewareRegistry>) -> Self { Self { registry } }
-}
-
-#[async_trait]
-impl MiddlewareInvoker for RealInvoker {
-    async fn call(
-        &self,
-        name: &str,
-        args: &[String],
-        cfg: &str,
-        pipeline_ctx: &mut crate::runtime::PipelineContext,
-        env: &ExecutionEnv,
-        ctx: &mut RequestContext,
-        target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
-        self.registry.execute(name, args, cfg, pipeline_ctx, env, ctx, target_name).await
-    }
-}
-
-/// Parse a scoped reference: "namespace::name" OR "name"
-/// Returns (namespace, name) where namespace is None for local references
-fn parse_scoped_ref(config: &str) -> (Option<String>, String) {
-    if let Some(idx) = config.find("::") {
-        let namespace = config[..idx].to_string();
-        let name = config[idx+2..].to_string();
-        (Some(namespace), name)
-    } else {
-        (None, config.to_string())
-    }
-}
-
-fn resolve_config_and_autoname(
-    env: &ExecutionEnv,
-    step_location: &crate::ast::SourceLocation,
-    middleware_name: &str,
-    step_config: &str,
-    input: &Value,
-) -> (String, Value, bool) {
-    // Parse step_config for scoped references: alias::name
-    let (alias, var_name) = parse_scoped_ref(step_config);
-
-    // If there's an alias, do context-aware resolution using Module IDs
-    if let Some(alias) = alias {
-        // Get the module ID from the step's location
-        if let Some(step_module_id) = step_location.module_id {
-            // Get the module metadata for the step's module
-            if let Some(step_module) = env.module_registry.get_module(step_module_id) {
-                // Resolve the alias to the target Module ID using this module's import map
-                if let Some(&target_module_id) = step_module.import_map.get(&alias) {
-                    // Look up the variable in the target module
-                    let key = (Some(target_module_id), middleware_name.to_string(), var_name.clone());
-                    if let Some(var) = env.variables.get(&key) {
-                        let resolved_config = var.value.clone();
-                        let mut new_input = input.clone();
-                        let mut auto_named = false;
-                        if let Some(obj) = new_input.as_object_mut() {
-                            if !obj.contains_key("resultName") {
-                                obj.insert("resultName".to_string(), Value::String(var.name.clone()));
-                                auto_named = true;
-                            }
-                        }
-                        return (resolved_config, new_input, auto_named);
-                    } else {
-                        tracing::warn!("Variable not found with key: ({:?}, {}, {})", Some(target_module_id), middleware_name, var_name);
-                    }
-                } else {
-                    tracing::warn!("Alias '{}' not found in import map for module_id {}", alias, step_module_id);
-                }
-            } else {
-                tracing::warn!("Module metadata not found for module_id {}", step_module_id);
-            }
-        } else {
-            tracing::warn!("Step has no module_id, but has scoped reference {}::{}", alias, var_name);
-        }
-        // If we couldn't resolve the scoped reference, return as-is (will error downstream)
-        return (step_config.to_string(), input.clone(), false);
-    }
-
-    // No alias - try local variable lookup using step's module_id
-    // First try with step's module_id (for module-based resolution)
-    let module_id_opt = step_location.module_id;
-    let key = (module_id_opt, middleware_name.to_string(), var_name.clone());
-
-    if let Some(var) = env.variables.get(&key) {
-        let resolved_config = var.value.clone();
-        let mut new_input = input.clone();
-        let mut auto_named = false;
-        if let Some(obj) = new_input.as_object_mut() {
-            if !obj.contains_key("resultName") {
-                obj.insert("resultName".to_string(), Value::String(var.name.clone()));
-                auto_named = true;
-            }
-        }
-        return (resolved_config, new_input, auto_named);
-    }
-
-    // Fallback: try with module_id = None (backward compatibility for symbols registered without module_id)
-    if module_id_opt.is_some() {
-        let fallback_key = (None, middleware_name.to_string(), var_name.clone());
-        if let Some(var) = env.variables.get(&fallback_key) {
-            let resolved_config = var.value.clone();
-            let mut new_input = input.clone();
-            let mut auto_named = false;
-            if let Some(obj) = new_input.as_object_mut() {
-                if !obj.contains_key("resultName") {
-                    obj.insert("resultName".to_string(), Value::String(var.name.clone()));
-                    auto_named = true;
-                }
-            }
-            return (resolved_config, new_input, auto_named);
-        }
-    }
-
-    // If local variable not found, return as-is (might be a literal value)
-    (step_config.to_string(), input.clone(), false)
-}
-
-fn extract_error_type(input: &Value) -> Option<String> {
-    if let Some(errors) = input.get("errors") {
-        if let Some(errors_array) = errors.as_array() {
-            if let Some(first_error) = errors_array.first() {
-                if let Some(error_type) = first_error.get("type").and_then(|v| v.as_str()) {
-                    return Some(error_type.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-fn should_execute_step(condition: &Option<crate::ast::TagExpr>, env: &ExecutionEnv, ctx: &RequestContext, input: &Value) -> bool {
-    match condition {
-        None => true, // No condition means always execute
-        Some(expr) => check_tag_expr(expr, env, ctx, input),
-    }
-}
-
-fn check_tag(tag: &crate::ast::Tag, env: &ExecutionEnv, ctx: &RequestContext, input: &Value) -> bool {
-    match tag.name.as_str() {
-        "env" => check_env_tag(tag, env),
-        "async" => true, // async doesn't affect execution, just how it runs
-        "flag" => check_flag_tag(tag, ctx),
-        "when" => check_when_tag(tag, ctx),
-        "guard" => check_guard_tag(tag, input, tag.negated),
-        "needs" => true, // @needs is only for static analysis, doesn't affect runtime
-        _ => true,       // unknown tags don't prevent execution
-    }
-}
-
-/// Check @when tag against transient conditions in RequestContext
-/// All arguments must be true (AND logic). If tag.negated is true, invert the result.
-fn check_when_tag(tag: &crate::ast::Tag, ctx: &RequestContext) -> bool {
-    if tag.args.is_empty() {
-        return true; // Invalid @when() tag without args, don't prevent execution
-    }
-
-    // Check all condition arguments - all must be met for step to execute
-    for condition_name in &tag.args {
-        let is_met = ctx.conditions.get(condition_name.as_str())
-            .copied()
-            .unwrap_or(false); // Default: False (Fail Closed)
-
-        let matches = if tag.negated {
-            !is_met // @!when(admin) - execute if condition is NOT met
-        } else {
-            is_met  // @when(admin) - execute if condition IS met
-        };
-
-        // If any condition check fails, the step should not execute
-        if !matches {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Evaluate a boolean tag expression (for dispatch routing)
-/// Supports AND, OR operations with proper short-circuit evaluation
-fn check_tag_expr(expr: &crate::ast::TagExpr, env: &ExecutionEnv, ctx: &RequestContext, input: &Value) -> bool {
-    match expr {
-        crate::ast::TagExpr::Tag(tag) => check_tag(tag, env, ctx, input),
-        crate::ast::TagExpr::And(left, right) => {
-            // Short-circuit: if left is false, don't evaluate right
-            check_tag_expr(left, env, ctx, input) && check_tag_expr(right, env, ctx, input)
-        }
-        crate::ast::TagExpr::Or(left, right) => {
-            // Short-circuit: if left is true, don't evaluate right
-            check_tag_expr(left, env, ctx, input) || check_tag_expr(right, env, ctx, input)
-        }
-    }
-}
-
-fn check_flag_tag(tag: &crate::ast::Tag, ctx: &RequestContext) -> bool {
-    if tag.args.is_empty() {
-        return true; // Invalid @flag() tag without args, don't prevent execution
-    }
-
-    // Check all flag arguments - all must be enabled for step to execute
-    for flag_name in &tag.args {
-        let is_enabled = ctx.feature_flags.get(flag_name.as_str())
-            .copied()
-            .unwrap_or(false); // Default: False (Fail Closed)
-
-        let matches = if tag.negated {
-            !is_enabled // @!flag(beta) - execute if flag is NOT enabled
-        } else {
-            is_enabled  // @flag(beta) - execute if flag IS enabled
-        };
-
-        // If any flag check fails, the step should not execute
-        if !matches {
-            return false;
-        }
-    }
-
-    true
-}
-
-fn check_env_tag(tag: &crate::ast::Tag, env: &ExecutionEnv) -> bool {
-    if tag.args.len() != 1 {
-        return true; // Invalid @env() tag, don't prevent execution
-    }
-
-    let required_env = &tag.args[0];
-
-    match &env.environment {
-        Some(current_env) => {
-            let matches = current_env == required_env;
-            if tag.negated {
-                !matches // @!env(production) - execute if NOT production
-            } else {
-                matches  // @env(production) - execute if IS production
-            }
-        }
-        None => {
-            // No environment set: execute non-negated tags, skip negated ones
-            !tag.negated
-        }
-    }
-}
-
-/// Check @guard tag - evaluates a JQ expression against the pipeline input
-/// Returns true if the step should execute, false otherwise
-///
-/// # Examples
-/// - `@guard(.user.role == "admin")` - execute only if user is admin
-/// - `@!guard(.debug)` - execute only if debug is NOT truthy
-fn check_guard_tag(tag: &crate::ast::Tag, input: &Value, negated: bool) -> bool {
-    // 1. Extract JQ filter from args
-    let filter = match tag.args.first() {
-        Some(f) => f,
-        None => {
-            tracing::warn!("@guard tag without filter argument - defaulting to true");
-            return true; // Guard without arg defaults to true
-        }
-    };
-
-    // 2. Run JQ logic (uses thread-local cache for performance)
-    match crate::middleware::jq_eval_bool(filter, input) {
-        Ok(result) => {
-            // Apply negation if present
-            if negated {
-                !result
-            } else {
-                result
-            }
-        }
-        Err(e) => {
-            // Log error and fail closed (don't execute) for safety
-            tracing::warn!("Guard JQ error: {} - failing closed (skipping step)", e);
-            false
-        }
-    }
-}
-
-/// Extract @async(name) from a TagExpr, walking the expression tree
-fn get_async_from_tag_expr(expr: &crate::ast::TagExpr) -> Option<String> {
-    match expr {
-        crate::ast::TagExpr::Tag(tag) => {
-            if tag.name == "async" && !tag.negated && tag.args.len() == 1 {
-                Some(tag.args[0].clone())
-            } else {
-                None
-            }
-        }
-        crate::ast::TagExpr::And(left, right) | crate::ast::TagExpr::Or(left, right) => {
-            get_async_from_tag_expr(left).or_else(|| get_async_from_tag_expr(right))
-        }
-    }
-}
-
-/// Extract @result(name) from a TagExpr, walking the expression tree
-/// Returns the first @result tag found with a single argument
-fn get_result_from_tag_expr(expr: &crate::ast::TagExpr) -> Option<String> {
-    match expr {
-        crate::ast::TagExpr::Tag(tag) => {
-            if tag.name == "result" && !tag.negated && tag.args.len() == 1 {
-                Some(tag.args[0].clone())
-            } else {
-                None
-            }
-        }
-        crate::ast::TagExpr::And(left, right) | crate::ast::TagExpr::Or(left, right) => {
-            get_result_from_tag_expr(left).or_else(|| get_result_from_tag_expr(right))
-        }
-    }
-}
-
-/// Determine the target name for result wrapping with correct precedence:
-/// 1. @result(name) tag (highest priority)
-/// 2. resultName from state (legacy explicit + auto-named)
-///
-/// Returns (target_name, should_cleanup_result_name)
-fn determine_target_name(
-    condition: &Option<crate::ast::TagExpr>,
-    state: &Value,
-    auto_named: bool,
-) -> (Option<String>, bool) {
-    // Priority 1: @result(name) tag
-    if let Some(ref expr) = condition {
-        if let Some(result_name) = get_result_from_tag_expr(expr) {
-            return (Some(result_name), false);
-        }
-    }
-
-    // Priority 2 & 3: resultName from state (covers both explicit and auto-named)
-    if let Some(result_name) = state.get("resultName").and_then(|v| v.as_str()) {
-        return (Some(result_name.to_string()), auto_named);
-    }
-
-    (None, false)
-}
+pub use context::StepMode;
+pub use env::{ExecutionEnv, MiddlewareInvoker, RealInvoker};
+pub use modules::{ModuleId, ModuleMetadata, ModuleRegistry};
+pub use resolver::{resolve_config_and_autoname, parse_scoped_ref, determine_target_name, extract_error_type, select_branch};
+pub use tags::{should_execute_step, check_tag_expr, get_async_from_tag_expr, get_result_from_tag_expr};
+pub use tasks::{AsyncTaskRegistry, parse_join_task_names};
+pub use types::{PipelineOutput, StepOutcome, ExecutionMode, StepResult, PipelineExecFuture, CachePolicy, LogConfig, RateLimitStatus};
 
 /// Check for cache control signal from cache middleware.
 /// Returns Some((cached_value, optional_content_type)) if cache hit occurred and pipeline should stop.
@@ -798,57 +42,6 @@ fn check_cache_control_signal(input: &Value) -> Option<(Value, Option<String>)> 
                 None
             }
         })
-}
-
-
-fn parse_join_task_names(config: &str) -> Result<Vec<String>, WebPipeError> {
-    let trimmed = config.trim();
-
-    // Try parsing as JSON array first
-    if trimmed.starts_with('[') {
-        match serde_json::from_str::<Vec<String>>(trimmed) {
-            Ok(names) => return Ok(names),
-            Err(_) => {
-                return Err(WebPipeError::ConfigError(
-                    "Invalid JSON array for join config".to_string()
-                ));
-            }
-        }
-    }
-
-    // Otherwise parse as comma-separated list
-    let names: Vec<String> = trimmed
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    if names.is_empty() {
-        return Err(WebPipeError::ConfigError(
-            "join config must specify at least one task name".to_string()
-        ));
-    }
-
-    Ok(names)
-}
-
-fn select_branch<'a>(
-    branches: &'a [crate::ast::ResultBranch],
-    error_type: &Option<String>,
-) -> Option<&'a crate::ast::ResultBranch> {
-    use crate::ast::ResultBranchType;
-
-    if let Some(err_type) = error_type {
-        if let Some(branch) = branches.iter().find(|b| matches!(&b.branch_type, ResultBranchType::Custom(name) if name == err_type)) {
-            return Some(branch);
-        }
-    } else if let Some(branch) = branches.iter().find(|b| matches!(b.branch_type, ResultBranchType::Ok)) {
-        return Some(branch);
-    }
-
-    branches
-        .iter()
-        .find(|b| matches!(b.branch_type, ResultBranchType::Default))
 }
 
 /// Determine the execution mode for a step
@@ -869,12 +62,6 @@ fn detect_execution_mode(name: &str, condition: &Option<crate::ast::TagExpr>) ->
 }
 
 /// Update pipeline state after a step execution
-///
-/// Handles the complex logic of whether to merge or replace state based on middleware behavior:
-/// - Merge: Default behavior for most middleware (Backpack semantics)
-/// - Transform: Replace state entirely, but preserve system context if not terminal
-/// - Render: Replace state entirely (for final output like HTML/Text)
-/// - ReadOnly: No state modification needed (handled by middleware)
 fn update_pipeline_state(
     pipeline_ctx: &mut crate::runtime::PipelineContext,
     new_value: Value,
@@ -951,7 +138,6 @@ fn is_effectively_last_step(
 }
 
 /// Handle join operation - wait for async tasks and merge results
-/// Uses pre-parsed task names when available (compile-time optimization)
 async fn handle_join(
     ctx: &mut RequestContext,
     config: &str,
@@ -1687,8 +873,12 @@ pub async fn execute_pipeline<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{PipelineStep, Pipeline, TagExpr, Tag};
+    use crate::ast::{PipelineStep, Pipeline, TagExpr, Tag, Variable};
+    use crate::middleware::MiddlewareRegistry;
+    use crate::runtime::context::{CacheStore, RateLimitStore};
     use std::sync::Arc;
+    use std::collections::HashMap;
+    use async_trait::async_trait;
 
     /// Helper to create a condition from a single tag
     fn single_tag(name: &str, negated: bool, args: Vec<&str>) -> Option<TagExpr> {
@@ -1747,8 +937,17 @@ mod tests {
 
     fn env_with_vars(_vars: Vec<Variable>) -> ExecutionEnv {
         let registry = Arc::new(MiddlewareRegistry::empty());
+        // For tests, we use the vars to populate the map. 
+        // In the original test helper, it created a map. 
+        // Here we need to map Variable to the key format.
+        let mut var_map = HashMap::new();
+        for var in _vars {
+             // For tests, assume no module (None) and var_type matches name or generic
+             var_map.insert((None, var.var_type.clone(), var.name.clone()), var);
+        }
+
         ExecutionEnv {
-            variables: Arc::new(HashMap::new()),
+            variables: Arc::new(var_map),
             named_pipelines: Arc::new(HashMap::new()),
             imports: Arc::new(std::collections::HashMap::new()),
             invoker: Arc::new(StubInvoker),
@@ -1756,7 +955,7 @@ mod tests {
             environment: None,
 
             cache: CacheStore::new(8, 60),
-            rate_limit: crate::runtime::context::RateLimitStore::new(1000),
+            rate_limit: RateLimitStore::new(1000),
             module_registry: Arc::new(ModuleRegistry::new()),
             #[cfg(feature = "debugger")]
             debugger: None,
@@ -2332,4 +1531,3 @@ mod tests {
         assert_eq!(conditions.get("is_mobile").and_then(|v| v.as_bool()), Some(false));
     }
 }
-
