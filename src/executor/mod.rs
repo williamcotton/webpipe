@@ -1,19 +1,16 @@
-use std::pin::Pin;
-use std::future::Future;
-
 use async_recursion::async_recursion;
 use serde_json::Value;
 
 use crate::{
     ast::{Pipeline, PipelineStep},
     error::WebPipeError,
-    runtime::json_path,
 };
 
 pub mod context;
 pub mod env;
 pub mod modules;
 pub mod resolver;
+pub mod step;
 pub mod tags;
 pub mod tasks;
 pub mod types;
@@ -28,375 +25,7 @@ pub use resolver::{resolve_config_and_autoname, parse_scoped_ref, determine_targ
 pub use tags::{should_execute_step, check_tag_expr, get_async_from_tag_expr, get_result_from_tag_expr};
 pub use tasks::{AsyncTaskRegistry, parse_join_task_names};
 pub use types::{PipelineOutput, StepOutcome, ExecutionMode, StepResult, PipelineExecFuture, CachePolicy, LogConfig, RateLimitStatus};
-
-/// Check for cache control signal from cache middleware.
-/// Returns Some((cached_value, optional_content_type)) if cache hit occurred and pipeline should stop.
-fn check_cache_control_signal(input: &Value) -> Option<(Value, Option<String>)> {
-    input.get("_control")
-        .and_then(|c| {
-            if c.get("stop").and_then(|b| b.as_bool()).unwrap_or(false) {
-                let value = c.get("value").cloned()?;
-                let content_type = c.get("content_type").and_then(|ct| ct.as_str()).map(|s| s.to_string());
-                Some((value, content_type))
-            } else {
-                None
-            }
-        })
-}
-
-/// Determine the execution mode for a step
-fn detect_execution_mode(name: &str, condition: &Option<crate::ast::TagExpr>) -> ExecutionMode {
-    // Check for async tag first
-    if let Some(ref expr) = condition {
-        if let Some(async_name) = get_async_from_tag_expr(expr) {
-            return ExecutionMode::Async(async_name);
-        }
-    }
-
-    // Check for special middleware types
-    match name {
-        "join" => ExecutionMode::Join,
-        "pipeline" => ExecutionMode::Recursive,
-        _ => ExecutionMode::Standard,
-    }
-}
-
-/// Update pipeline state after a step execution
-fn update_pipeline_state(
-    pipeline_ctx: &mut crate::runtime::PipelineContext,
-    new_value: Value,
-    behavior: crate::middleware::StateBehavior,
-    is_last_step: bool,
-) {
-    use crate::middleware::StateBehavior;
-
-    match behavior {
-        StateBehavior::Merge => {
-            pipeline_ctx.merge_state(new_value);
-        }
-        StateBehavior::Transform => {
-            if is_last_step {
-                // If it's the last step, just replace everything
-                pipeline_ctx.replace_state(new_value);
-            } else {
-                // For non-terminal transforms, preserve runtime context keys
-                let backups = pipeline_ctx.backup_system_keys();
-                pipeline_ctx.replace_state(new_value);
-                pipeline_ctx.restore_system_keys(backups);
-            }
-        }
-        StateBehavior::Render => {
-            // Render always replaces content entirely
-            pipeline_ctx.replace_state(new_value);
-        }
-        StateBehavior::ReadOnly => {
-            // ReadOnly middleware don't modify state through this path
-            // (they may have side effects but don't change pipeline state)
-            // In practice, they shouldn't call this function, but if they do, do nothing
-        }
-    }
-}
-
-/// Check if this is effectively the last step that will execute
-/// (accounts for remaining steps being skipped due to feature flags, etc.)
-fn is_effectively_last_step(
-    current_idx: usize,
-    steps: &[PipelineStep],
-    env: &ExecutionEnv,
-    ctx: &RequestContext,
-    state: &Value,
-) -> bool {
-    // Check if any remaining steps will execute
-    for remaining_step in steps.iter().skip(current_idx + 1) {
-        match remaining_step {
-            PipelineStep::Regular { condition, .. } => {
-                // If this remaining step would execute, current is not the last
-                if should_execute_step(condition, env, ctx, state) {
-                    return false;
-                }
-            }
-            PipelineStep::Result { .. } => {
-                // Result branches always execute, so current is not last
-                return false;
-            }
-            PipelineStep::If { .. } => {
-                // If blocks always execute (condition is always evaluated), so current is not last
-                return false;
-            }
-            PipelineStep::Dispatch { .. } => {
-                // Dispatch blocks always execute (at least default case), so current is not last
-                return false;
-            }
-            PipelineStep::Foreach { .. } => {
-                // Foreach blocks always execute, so current is not last
-                return false;
-            }
-        }
-    }
-    // No remaining steps will execute
-    true
-}
-
-/// Handle join operation - wait for async tasks and merge results
-async fn handle_join(
-    ctx: &mut RequestContext,
-    config: &str,
-    parsed_targets: Option<&Vec<String>>,
-    input: Value,
-) -> Result<StepResult, WebPipeError> {
-    // Use pre-parsed targets if available, otherwise parse at runtime (fallback)
-    let task_names: Vec<String> = match parsed_targets {
-        Some(targets) => targets.clone(),
-        None => parse_join_task_names(config)?,
-    };
-
-    // Wait for all async tasks and merge their profiler data
-    let mut async_results = serde_json::Map::new();
-    for task_name in task_names {
-        if let Some(handle) = ctx.async_registry.take(&task_name) {
-            match handle.await {
-                Ok(Ok((result, async_profiler))) => {
-                    async_results.insert(task_name.clone(), result);
-
-                    // Merge async task's profiler samples into main profiler with task name prefix
-                    for (async_stack, duration) in async_profiler.samples {
-                        // Build the full stack: current_main_stack;async:task_name;async_task_stack
-                        let prefixed_stack = if ctx.profiler.stack.is_empty() {
-                            format!("async:{};{}", task_name, async_stack)
-                        } else {
-                            format!("{};async:{};{}", ctx.profiler.stack.join(";"), task_name, async_stack)
-                        };
-                        ctx.profiler.samples.push((prefixed_stack, duration));
-                    }
-                }
-                Ok(Err(e)) => {
-                    // Task failed - store error representation
-                    async_results.insert(task_name, serde_json::json!({
-                        "error": e.to_string()
-                    }));
-                }
-                Err(e) => {
-                    // Join error (task panicked)
-                    async_results.insert(task_name, serde_json::json!({
-                        "error": format!("Task panicked: {}", e)
-                    }));
-                }
-            }
-        }
-    }
-
-    // Merge results into input under .async key
-    let mut result = input.clone();
-    if let Some(obj) = result.as_object_mut() {
-        obj.insert("async".to_string(), Value::Object(async_results));
-    }
-
-    Ok(StepResult {
-        value: result,
-        content_type: "application/json".to_string(),
-        status_code: None,
-    })
-}
-
-/// Spawn an async task without waiting for it
-fn spawn_async_step(
-    env: &ExecutionEnv,
-    ctx: &mut RequestContext,
-    name: &str,
-    args: &[String],
-    config: &str,
-    location: &crate::ast::SourceLocation,
-    input: Value,
-    async_name: String,
-) {
-    let env_clone = env.clone();
-    let name_clone = name.to_string();
-    let args_clone = args.to_vec();
-    let config_clone = config.to_string();
-    let location_clone = location.clone();
-    let input_snapshot = input;
-
-    let handle = tokio::spawn(async move {
-        let (effective_config, effective_input, _auto_named) =
-            resolve_config_and_autoname(&env_clone, &location_clone, &name_clone, &config_clone, &input_snapshot);
-
-        // Create a new RequestContext for the async task
-        let mut async_ctx = RequestContext::new();
-
-        // [FIX] Allocate unique debug thread ID for async task
-        #[cfg(feature = "debugger")]
-        if let Some(ref dbg) = env_clone.debugger {
-            async_ctx.debug_thread_id = Some(dbg.allocate_thread_id());
-        }
-
-        if name_clone == "pipeline" {
-            let pipeline_name = effective_config.trim();
-            // Parse for scoped references: alias::name
-            let (alias, name) = parse_scoped_ref(pipeline_name);
-
-            // Resolve alias to Module ID using context
-            let module_id_opt = if let Some(alias) = alias {
-                // Scoped reference: resolve alias to target module ID
-                if let Some(step_module_id) = location_clone.module_id {
-                    if let Some(step_module) = env_clone.module_registry.get_module(step_module_id) {
-                        step_module.import_map.get(&alias).copied()
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                // Unscoped reference: use step's own module_id for local pipeline lookup
-                location_clone.module_id
-            };
-
-            let key = (module_id_opt, name);
-            if let Some(p) = env_clone.named_pipelines.get(&key) {
-                // If args are provided, evaluate and merge into input
-                let pipeline_input = if !args_clone.is_empty() {
-                    // Evaluate arg[0] as jq expression
-                    let arg_value = crate::runtime::jq::evaluate(&args_clone[0], &effective_input)
-                        .map_err(|e| WebPipeError::MiddlewareExecutionError(
-                            format!("pipeline argument evaluation failed: {}", e)
-                        ))?;
-
-                    // Merge arg_value into input (shallow merge)
-                    if let (Some(input_obj), Some(arg_obj)) = (effective_input.as_object(), arg_value.as_object()) {
-                        let mut merged = input_obj.clone();
-                        for (k, v) in arg_obj {
-                            merged.insert(k.clone(), v.clone());
-                        }
-                        Value::Object(merged)
-                    } else {
-                        // If either is not an object, use arg_value as-is
-                        arg_value
-                    }
-                } else {
-                    effective_input.clone()
-                };
-
-                let (val, _ct, _st, ctx) = execute_pipeline(&env_clone, p, pipeline_input, async_ctx).await?;
-                Ok((val, ctx.profiler))
-            } else {
-                Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
-            }
-        } else {
-            // Create a PipelineContext for the async task
-            let mut pipeline_ctx = crate::runtime::PipelineContext::new(effective_input);
-            env_clone.invoker.call(&name_clone, &args_clone, &effective_config, &mut pipeline_ctx, &env_clone, &mut async_ctx, None).await?;
-            Ok((pipeline_ctx.state, async_ctx.profiler))
-        }
-    });
-
-    ctx.async_registry.register(async_name, handle);
-}
-
-/// Execute a named pipeline recursively
-fn handle_recursive_pipeline<'a>(
-    env: &'a ExecutionEnv,
-    ctx: &'a mut RequestContext,
-    args: &'a [String],
-    config: &'a str,
-    location: &'a crate::ast::SourceLocation,
-    input: Value,
-) -> Pin<Box<dyn Future<Output = Result<StepResult, WebPipeError>> + Send + 'a>> {
-    Box::pin(async move {
-        let pipeline_name = config.trim();
-        // Parse for scoped references: alias::name
-        let (alias, name) = parse_scoped_ref(pipeline_name);
-
-        // Resolve alias to Module ID using context
-        let module_id_opt = if let Some(alias) = alias {
-            // Scoped reference: resolve alias to target module ID
-            if let Some(step_module_id) = location.module_id {
-                if let Some(step_module) = env.module_registry.get_module(step_module_id) {
-                    step_module.import_map.get(&alias).copied()
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            // Unscoped reference: use step's own module_id for local pipeline lookup
-            location.module_id
-        };
-
-        let key = (module_id_opt, name);
-
-        if let Some(pipeline) = env.named_pipelines.get(&key) {
-            // If args are provided, evaluate and merge into input
-            let pipeline_input = if !args.is_empty() {
-                // Evaluate arg[0] as jq expression
-                let arg_value = crate::runtime::jq::evaluate(&args[0], &input)
-                    .map_err(|e| WebPipeError::MiddlewareExecutionError(
-                        format!("pipeline argument evaluation failed: {}", e)
-                    ))?;
-
-                // Merge arg_value into input (shallow merge)
-                if let (Some(input_obj), Some(arg_obj)) = (input.as_object(), arg_value.as_object()) {
-                    let mut merged = input_obj.clone();
-                    for (k, v) in arg_obj {
-                        merged.insert(k.clone(), v.clone());
-                    }
-                    Value::Object(merged)
-                } else {
-                    // If either is not an object, use arg_value as-is
-                    arg_value
-                }
-            } else {
-                input
-            };
-
-            // Reuse the same context for recursive pipeline execution
-            let (value, content_type, status_code) = execute_pipeline_internal(env, pipeline, pipeline_input, ctx).await?;
-            Ok(StepResult {
-                value,
-                content_type,
-                status_code,
-            })
-        } else {
-            Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
-        }
-    })
-}
-
-/// Execute standard middleware
-async fn handle_standard_execution(
-    env: &ExecutionEnv,
-    ctx: &mut RequestContext,
-    name: &str,
-    args: &[String],
-    config: &str,
-    pipeline_ctx: &mut crate::runtime::PipelineContext,
-    target_name: Option<&str>,
-) -> Result<StepResult, WebPipeError> {
-    env.invoker.call(name, args, config, pipeline_ctx, env, ctx, target_name).await?;
-
-    // Special case: handlebars sets HTML content type
-    let content_type = if name == "handlebars" {
-        "text/html".to_string()
-    } else if name == "gg" {
-        if pipeline_ctx.state.as_str().map_or(false, |s| s.trim().starts_with("<svg")) {
-            "image/svg+xml".to_string()
-        } else {
-            "application/json".to_string()
-        }
-    } else {
-        "application/json".to_string()
-    };
-
-    Ok(StepResult {
-        value: pipeline_ctx.state.clone(),
-        content_type,
-        status_code: None,
-    })
-}
-
-fn take_state(ctx: &mut crate::runtime::PipelineContext) -> Value {
-    std::mem::take(&mut ctx.state)
-}
+pub use step::{StepContext, RegularStepExecutor, determine_step_name};
 
 /// Dispatch to the appropriate step handler
 async fn execute_step<'a>(
@@ -408,406 +37,65 @@ async fn execute_step<'a>(
     pipeline_ctx: &mut crate::runtime::PipelineContext,
     current_output: &mut PipelineOutput,
 ) -> Result<StepOutcome, WebPipeError> {
-    // 1. Determine stack frame label
-    let base_name = match step {
-        PipelineStep::Regular { name, config, .. } => {
-            if name == "pipeline" {
-                // Format: "pipeline:myPipelineName"
-                format!("pipeline:{}", config.trim())
-            } else {
-                name.clone()
-            }
-        },
-        PipelineStep::If { .. } => "if".to_string(),
-        PipelineStep::Result { .. } => "result".to_string(),
-        PipelineStep::Dispatch { .. } => "dispatch".to_string(),
-        PipelineStep::Foreach { .. } => "foreach".to_string(),
+    // 1. Create StepContext to bundle execution state
+    let mut step_ctx = step::StepContext {
+        env,
+        req_ctx: ctx,
+        pipe_ctx: pipeline_ctx,
+        output: current_output,
+        step_index: idx,
+        all_steps,
     };
 
-    // Add file context to stack frame for multi-file profiling
-    let location = step.location();
-    let step_name = if let Some(ref file_path) = location.file_path {
-        // Extract just the filename for cleaner flamegraphs
-        let filename = std::path::Path::new(file_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(file_path);
-        format!("{}@{}", base_name, filename)
-    } else {
-        base_name
-    };
+    // 2. Determine step name for profiling
+    let step_name = step::determine_step_name(step);
 
-    // 2. Start Profiling
-    ctx.profiler.push(&step_name);
+    // 3. Start Profiling
+    step_ctx.req_ctx.profiler.push(&step_name);
     let start_time = std::time::Instant::now();
 
-    // Debugger Hook: before_step
+    // 4. Debugger Hook: before_step
     #[cfg(feature = "debugger")]
-    if let Some(ref dbg) = env.debugger {
-        let thread_id = ctx.debug_thread_id.unwrap_or(0);
-        let location = step.location();
-        let stack = ctx.profiler.stack.clone();
-        let action = dbg.before_step(thread_id, &step_name, location, &mut pipeline_ctx.state, stack).await?;
-        // Handle stepping actions
-        match action {
-            crate::debugger::StepAction::Continue => {
-                // Clear step mode - resume normal execution
-                ctx.debug_step_mode = None;
-            }
-            crate::debugger::StepAction::StepOver => {
-                // Set step mode - pause at next step
-                ctx.debug_step_mode = Some(StepMode::StepOver);
-            }
-            crate::debugger::StepAction::StepIn => {
-                ctx.debug_step_mode = Some(StepMode::StepIn);
-            }
-            crate::debugger::StepAction::StepOut => {
-                ctx.debug_step_mode = Some(StepMode::StepOut);
-            }
-        }
-    }
+    step::handle_debugger_before(&mut step_ctx, step, &step_name).await?;
 
-    // 3. Execute (Existing Logic)
+    // 5. Dispatch to appropriate handler
     let result = match step {
         PipelineStep::Regular { name, args, config, condition, parsed_join_targets, location, .. } => {
-            execute_regular_step(
+            step::RegularStepExecutor::new(
                 name,
                 args,
                 config,
                 condition,
                 parsed_join_targets.as_ref(),
                 location,
-                idx,
-                all_steps,
-                env,
-                ctx,
-                pipeline_ctx,
-                current_output,
-            ).await
+            )
+            .execute(&mut step_ctx)
+            .await
         }
         PipelineStep::Result { branches, .. } => {
-            // Handle result step - returns immediately
-            let error_type = extract_error_type(&pipeline_ctx.state);
-            let selected = select_branch(branches, &error_type);
-            if let Some(branch) = selected {
-                let inherited_cookies = pipeline_ctx.state.get("setCookies").cloned();
-                let input_state = take_state(pipeline_ctx);
-                let (mut result, branch_content_type, _status) = execute_pipeline_internal(
-                    env,
-                    &branch.pipeline,
-                    input_state,
-                    ctx
-                ).await?;
-                if inherited_cookies.is_some() {
-                    if let Some(obj) = result.as_object_mut() {
-                        if !obj.contains_key("setCookies") {
-                            if let Some(c) = inherited_cookies {
-                                obj.insert("setCookies".to_string(), c);
-                            }
-                        }
-                    }
-                }
-                pipeline_ctx.state = result.clone();
-                let final_content_type = if branch_content_type != "application/json" {
-                    branch_content_type
-                } else {
-                    current_output.content_type.clone()
-                };
-                Ok(StepOutcome::Return(PipelineOutput {
-                    state: result,
-                    content_type: final_content_type,
-                    status_code: Some(branch.status_code),
-                }))
-            } else {
-                Ok(StepOutcome::Return(PipelineOutput {
-                    state: pipeline_ctx.state.clone(),
-                    content_type: current_output.content_type.clone(),
-                    status_code: current_output.status_code,
-                }))
-            }
+            step::handle_result_step(branches, &mut step_ctx).await
         }
         PipelineStep::If { condition, then_branch, else_branch, .. } => {
-            // 1. Run Condition on Cloned State
-            let (cond_result, _, _) = execute_pipeline_internal(
-                env,
-                condition,
-                pipeline_ctx.state.clone(),
-                ctx
-            ).await?;
-
-            // 2. Determine Truthiness
-            let is_truthy = match cond_result {
-                Value::Bool(b) => b,
-                Value::Null => false,
-                _ => true,
-            };
-
-            // 3. Execute Branch
-            if is_truthy {
-                // Run THEN branch with ORIGINAL state
-                let input_state = take_state(pipeline_ctx);
-                let (res, ct, status) = execute_pipeline_internal(
-                    env,
-                    then_branch,
-                    input_state,
-                    ctx
-                ).await?;
-
-                // Update Context
-                pipeline_ctx.state = res;
-                if let Some(s) = status {
-                    current_output.status_code = Some(s);
-                }
-                if ct != "application/json" {
-                    current_output.content_type = ct;
-                }
-            } else if let Some(else_pipe) = else_branch {
-                // Run ELSE branch with ORIGINAL state
-                let input_state = take_state(pipeline_ctx);
-                let (res, ct, status) = execute_pipeline_internal(
-                    env,
-                    else_pipe,
-                    input_state,
-                    ctx
-                ).await?;
-
-                // Update Context
-                pipeline_ctx.state = res;
-                if let Some(s) = status {
-                    current_output.status_code = Some(s);
-                }
-                if ct != "application/json" {
-                    current_output.content_type = ct;
-                }
-            }
-            // If false and no else: state remains unchanged (pass-through)
-
-            Ok(StepOutcome::Continue)
+            step::handle_if_step(condition, then_branch, else_branch, &mut step_ctx).await
         }
         PipelineStep::Dispatch { branches, default, .. } => {
-            // Iterate through branches and find the first matching condition
-            let mut matched_pipeline = None;
-
-            for branch in branches {
-                // Check if this branch's condition expression matches
-                if check_tag_expr(&branch.condition, env, ctx, &pipeline_ctx.state) {
-                    matched_pipeline = Some(&branch.pipeline);
-                    break;
-                }
-            }
-
-            // If no case matched, use default
-            if matched_pipeline.is_none() {
-                matched_pipeline = default.as_ref();
-            }
-
-            // Execute the matched pipeline (or do nothing if no match and no default)
-            if let Some(pipeline) = matched_pipeline {
-                let input_state = take_state(pipeline_ctx);
-                let (res, ct, status) = execute_pipeline_internal(
-                    env,
-                    pipeline,
-                    input_state,
-                    ctx
-                ).await?;
-
-                // Update Context
-                pipeline_ctx.state = res;
-                if let Some(s) = status {
-                    current_output.status_code = Some(s);
-                }
-                if ct != "application/json" {
-                    current_output.content_type = ct;
-                }
-            }
-            // If no match and no default: state remains unchanged (pass-through)
-
-            Ok(StepOutcome::Continue)
+            step::handle_dispatch_step(branches, default, &mut step_ctx).await
         }
         PipelineStep::Foreach { selector, pipeline, .. } => {
-            // SURGICAL EXTRACTION PATTERN
-            // 1. EXTRACTION
-            // Use json_path helper to find the node and .take() it.
-            // This leaves 'Null' in the tree at the selector path.
-            let items_opt = json_path::get_value_mut(&mut pipeline_ctx.state, selector)
-                .map(|val| val.take());
-
-            if let Some(Value::Array(items)) = items_opt {
-                let mut results = Vec::with_capacity(items.len());
-
-                // 2. ITERATION
-                for item in items {
-                    // Execute the inner pipeline with the item as input.
-                    // This creates isolated context for each iteration.
-                    let (final_state, _, _) = execute_pipeline_internal(
-                        env,
-                        pipeline,
-                        item,
-                        ctx
-                    ).await?;
-
-                    results.push(final_state);
-                }
-
-                // 3. IMPLANTATION
-                // Find the path again (since our mutable borrow ended) and
-                // overwrite the 'Null' with our new Array of results.
-                if let Some(slot) = json_path::get_value_mut(&mut pipeline_ctx.state, selector) {
-                    *slot = Value::Array(results);
-                }
-            } else {
-                // Path not found or not an array.
-                // Fail fast so the user knows their path is wrong.
-                return Err(WebPipeError::MiddlewareExecutionError(
-                    format!("foreach: path '{}' is not an array or does not exist", selector)
-                ));
-            }
-
-            Ok(StepOutcome::Continue)
+            step::handle_foreach_step(selector, pipeline, &mut step_ctx).await
         }
     };
 
-    // Debugger Hook: after_step
+    // 6. Debugger Hook: after_step
     #[cfg(feature = "debugger")]
-    if let Some(ref dbg) = env.debugger {
-        let thread_id = ctx.debug_thread_id.unwrap_or(0);
-        let location = step.location();
-        let stack = ctx.profiler.stack.clone();
-        dbg.after_step(thread_id, &step_name, location, &pipeline_ctx.state, stack).await;
-    }
+    step::handle_debugger_after(&mut step_ctx, step, &step_name).await;
 
-    // 4. End Profiling
+    // 7. End Profiling
     let elapsed = start_time.elapsed().as_micros();
-    ctx.profiler.record_sample(elapsed);
-    ctx.profiler.pop();
+    step_ctx.req_ctx.profiler.record_sample(elapsed);
+    step_ctx.req_ctx.profiler.pop();
 
     result
-}
-
-/// Execute a regular pipeline step
-async fn execute_regular_step(
-    name: &str,
-    args: &[String],
-    config: &str,
-    condition: &Option<crate::ast::TagExpr>,
-    parsed_join_targets: Option<&Vec<String>>,
-    location: &crate::ast::SourceLocation,
-    idx: usize,
-    all_steps: &[PipelineStep],
-    env: &ExecutionEnv,
-    ctx: &mut RequestContext,
-    pipeline_ctx: &mut crate::runtime::PipelineContext,
-    current_output: &mut PipelineOutput,
-) -> Result<StepOutcome, WebPipeError> {
-    // 1. Guard Checks: should_execute_step
-    if !should_execute_step(condition, env, ctx, &pipeline_ctx.state) {
-        return Ok(StepOutcome::Continue);
-    }
-
-    // Check if this is effectively the last step (no remaining steps will execute)
-    let is_last_step = is_effectively_last_step(idx, all_steps, env, ctx, &pipeline_ctx.state);
-
-    // 2. Determine Execution Mode
-    let mode = detect_execution_mode(name, condition);
-
-    // Handle async execution separately (no state merge needed)
-    if let ExecutionMode::Async(async_name) = mode {
-        spawn_async_step(env, ctx, name, args, config, location, pipeline_ctx.state.clone(), async_name);
-        return Ok(StepOutcome::Continue);
-    }
-
-    // 3. Config Resolution: resolve_config_and_autoname. Handle resultName injection.
-    let (effective_config, effective_input, auto_named) =
-        resolve_config_and_autoname(env, location, name, config, &pipeline_ctx.state);
-
-    // If auto-named, update the pipeline context state with resultName
-    if auto_named {
-        pipeline_ctx.state = effective_input.clone();
-    }
-
-    // NEW: Determine target name with precedence (@result tag > resultName variable > auto-naming)
-    let (target_name, should_cleanup) = determine_target_name(
-        condition,
-        &pipeline_ctx.state,
-        auto_named
-    );
-
-    // 4. Execution Mode: Switch on Standard, Join, Recursive
-    let step_result = match mode {
-        ExecutionMode::Join => {
-            // Use pre-parsed targets for hot path optimization
-            handle_join(ctx, &effective_config, parsed_join_targets, effective_input).await?
-        }
-        ExecutionMode::Recursive => {
-            handle_recursive_pipeline(env, ctx, args, &effective_config, location, effective_input).await?
-        }
-        ExecutionMode::Standard => {
-            // Standard middleware usually expects to mutate a context.
-            // We create a temp context with the input.
-            let mut temp_ctx = crate::runtime::PipelineContext::new(effective_input);
-            handle_standard_execution(env, ctx, name, args, &effective_config, &mut temp_ctx, target_name.as_deref()).await?
-        }
-        ExecutionMode::Async(_) => unreachable!("Async handled above"),
-    };
-
-    // NEW: Wrap result if target_name is present AND middleware supports it
-    // Only data-fetching middleware (pg, fetch, graphql) support result wrapping
-    let should_wrap = target_name.is_some() && matches!(name, "pg" | "fetch" | "graphql");
-
-    if should_wrap {
-        // In-place mutation to accumulate results under .data.<target_name>
-        // This ensures deep merging - multiple results accumulate rather than replace
-        let target = target_name.as_ref().unwrap();
-        if let Some(obj) = pipeline_ctx.state.as_object_mut() {
-            let data_entry = obj.entry("data").or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if !data_entry.is_object() {
-                *data_entry = Value::Object(serde_json::Map::new());
-            }
-            if let Some(data_obj) = data_entry.as_object_mut() {
-                data_obj.insert(target.to_string(), step_result.value);
-            }
-        } else {
-            // State is not an object, replace it entirely
-            pipeline_ctx.state = serde_json::json!({
-                "data": {
-                    target: step_result.value
-                }
-            });
-        }
-    } else {
-        // 5. State Update: Use middleware behavior for non-wrapped results
-        let behavior = env.registry.get_behavior(name).unwrap_or(crate::middleware::StateBehavior::Merge);
-        update_pipeline_state(pipeline_ctx, step_result.value, behavior, is_last_step);
-    }
-
-    // 6. Metadata Update: Update content_type and status_code in current_output
-    if step_result.content_type != "application/json" || is_last_step {
-        if name == "pipeline" || is_last_step || name == "handlebars" || name == "gg" {
-            current_output.content_type = step_result.content_type;
-        }
-    }
-    if let Some(status) = step_result.status_code {
-        current_output.status_code = Some(status);
-    }
-
-    // 7. Cache Check: Check for cache stop signals. If found, return StepOutcome::Return.
-    if let Some((cached_val, cached_content_type)) = check_cache_control_signal(&pipeline_ctx.state) {
-        let final_content_type = cached_content_type.unwrap_or_else(|| current_output.content_type.clone());
-        return Ok(StepOutcome::Return(PipelineOutput {
-            state: cached_val,
-            content_type: final_content_type,
-            status_code: current_output.status_code,
-        }));
-    }
-
-    // 8. Cleanup: Remove resultName only if it should be cleaned up (auto-named case)
-    if should_cleanup {
-        if let Some(obj) = pipeline_ctx.state.as_object_mut() {
-            obj.remove("resultName");
-        }
-    }
-
-    Ok(StepOutcome::Continue)
 }
 
 /// Internal pipeline execution that accepts a mutable RequestContext
