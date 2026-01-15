@@ -4,7 +4,11 @@
 
 ## Web Pipe
 
-Web Pipe (wp) is an **experimental** DSL and runtime for building web APIs and applications through pipeline-based request processing. Each HTTP request flows through a series of middleware that transform JSON data, enabling composition of data processing steps.
+Web Pipe is an **experimental language and runtime** for building web applications using **pipeline-oriented request processing**.
+
+Instead of separating routing, middleware, database access, templating, GraphQL, and testing into distinct frameworks or layers, Web Pipe treats them as variations of the same thing: a request flowing through a sequence of transformations over explicit JSON data. The intent is not to compete with existing web frameworks, but to explore what happens when a single execution model is applied consistently across concerns that are usually siloed.
+
+This repository represents an experiment in language and systems design. Stability, familiarity, and completeness are explicitly not the goal. The goal is the journey of discovery and not the destination of a popular programming language.
 
 Here is a minimal hello world you can paste into a file like `hello.wp`:
 
