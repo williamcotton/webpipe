@@ -686,10 +686,10 @@ impl super::Middleware for JsMiddleware {
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         let result = self.execute_js_script(config, &pipeline_ctx.state, ctx, env)?;
         pipeline_ctx.state = result;
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 
     fn behavior(&self) -> super::StateBehavior {

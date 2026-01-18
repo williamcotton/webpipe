@@ -92,7 +92,7 @@ impl super::Middleware for HandlebarsMiddleware {
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         // Create a wrapper object that includes both the pipeline state and the context
         let context_value = ctx.to_value(env);
 
@@ -116,7 +116,9 @@ impl super::Middleware for HandlebarsMiddleware {
 
         let rendered = self.render_template(config, &render_data)?;
         pipeline_ctx.state = Value::String(rendered);
-        Ok(())
+        Ok(super::MiddlewareOutput {
+            content_type: Some("text/html".to_string()),
+        })
     }
 
     fn behavior(&self) -> super::StateBehavior {
@@ -149,8 +151,8 @@ mod tests {
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
+        ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
+            Ok(crate::middleware::MiddlewareOutput::default())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {

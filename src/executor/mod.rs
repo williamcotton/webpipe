@@ -194,11 +194,14 @@ mod tests {
             _env: &ExecutionEnv,
             _ctx: &mut RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
+        ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
             let input = &pipeline_ctx.state;
             match name {
                 "handlebars" => {
                     pipeline_ctx.state = Value::String(format!("<p>{}</p>", cfg));
+                    return Ok(crate::middleware::MiddlewareOutput {
+                        content_type: Some("text/html".to_string()),
+                    });
                 }
                 "echo" => {
                     // Try to parse config as JSON and merge with input
@@ -219,7 +222,7 @@ mod tests {
                     pipeline_ctx.state = serde_json::json!({"ok": true});
                 }
             }
-            Ok(())
+            Ok(crate::middleware::MiddlewareOutput::default())
         }
     }
 

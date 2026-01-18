@@ -140,10 +140,10 @@ impl MiddlewareInvoker for MockingInvoker {
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
         if let Some(mock_val) = self.mocks.get_middleware_mock(name, &pipeline_ctx.state) {
             pipeline_ctx.state = mock_val.clone();
-            return Ok(());
+            return Ok(crate::middleware::MiddlewareOutput::default());
         }
         self.registry.execute(name, args, cfg, pipeline_ctx, _env, _ctx, _target_name).await
     }

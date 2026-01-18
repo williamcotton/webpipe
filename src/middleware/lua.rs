@@ -293,10 +293,10 @@ impl super::Middleware for LuaMiddleware {
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         let result = self.execute_lua_script(config, &pipeline_ctx.state, ctx, env)?;
         pipeline_ctx.state = result;
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 
     fn behavior(&self) -> super::StateBehavior {
@@ -370,8 +370,8 @@ mod tests {
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
+        ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
+            Ok(crate::middleware::MiddlewareOutput::default())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {

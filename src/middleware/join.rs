@@ -15,14 +15,14 @@ impl Middleware for JoinMiddleware {
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext, 
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         // Validate config upfront to fail fast on bad syntax
         let _task_names = parse_join_config(config)?;
 
         // This middleware is a marker - the executor intercepts "join" steps
         // and handles them via handle_join() which reads the config directly.
         // State unchanged.
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 }
 

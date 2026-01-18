@@ -18,7 +18,7 @@ impl super::Middleware for PgMiddleware {
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
         target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         let config_trimmed = config.trim();
 
         // 1. Detect Raw Mode (!raw prefix)
@@ -61,13 +61,13 @@ impl super::Middleware for PgMiddleware {
                 Ok(json) => json.0,
                 Err(e) => {
                     pipeline_ctx.state = build_sql_error_value(&e, sql);
-                    return Ok(());
+                    return Ok(super::MiddlewareOutput::default());
                 }
             };
 
             // DIRECT ASSIGNMENT: No wrapping in "data" or "rows", no JQ needed later
             pipeline_ctx.state = result_json;
-            return Ok(());
+            return Ok(super::MiddlewareOutput::default());
         }
 
         let lowered = sql.to_lowercase();
@@ -87,7 +87,7 @@ impl super::Middleware for PgMiddleware {
                 Ok(json) => json.0,
                 Err(e) => {
                     pipeline_ctx.state = build_sql_error_value(&e, sql);
-                    return Ok(());
+                    return Ok(super::MiddlewareOutput::default());
                 }
             };
 
@@ -104,7 +104,7 @@ impl super::Middleware for PgMiddleware {
                     "data": result_value
                 });
             }
-            Ok(())
+            Ok(super::MiddlewareOutput::default())
         } else {
             let mut query = sqlx::query(sql);
             for p in &params { query = bind_json_param(query, p); }
@@ -113,7 +113,7 @@ impl super::Middleware for PgMiddleware {
                 Ok(res) => res,
                 Err(e) => {
                     pipeline_ctx.state = build_sql_error_value(&e, sql);
-                    return Ok(());
+                    return Ok(super::MiddlewareOutput::default());
                 }
             };
 
@@ -126,7 +126,7 @@ impl super::Middleware for PgMiddleware {
                     "data": result_value
                 });
             }
-            Ok(())
+            Ok(super::MiddlewareOutput::default())
         }
     }
 

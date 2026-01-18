@@ -54,7 +54,7 @@ impl Middleware for GraphQLMiddleware {
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
         target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         // Get the pre-compiled GraphQL runtime
         let runtime = self.ctx.graphql
             .as_ref()
@@ -115,14 +115,14 @@ impl Middleware for GraphQLMiddleware {
                 // Unwrap to just [...] so executor wrapping creates {"data": {"users": [...]}}
                 if data.len() == 1 && data.contains_key(name) {
                     pipeline_ctx.state = data.get(name).unwrap().clone();
-                    return Ok(());
+                    return Ok(super::MiddlewareOutput::default());
                 }
             }
         }
 
         // Default: return full GraphQL response
         pipeline_ctx.state = response;
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 
     fn behavior(&self) -> super::StateBehavior {

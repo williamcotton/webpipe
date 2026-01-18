@@ -46,7 +46,7 @@ impl super::Middleware for JqMiddleware {
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         // 1. Create a combined input object containing both state and context
         // This keeps the data separate from the code (filter)
         let combined_input = serde_json::json!({
@@ -67,7 +67,7 @@ impl super::Middleware for JqMiddleware {
 
         // REMOVED: Step 5 (Deserialization) is no longer necessary.
         pipeline_ctx.state = result_value;
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 
     fn behavior(&self) -> super::StateBehavior {
@@ -92,8 +92,8 @@ mod tests {
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
+        ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
+            Ok(crate::middleware::MiddlewareOutput::default())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {

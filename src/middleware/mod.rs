@@ -56,6 +56,13 @@ pub enum StateBehavior {
     ReadOnly,
 }
 
+/// Output metadata returned by a middleware execution
+#[derive(Debug, Clone, Default)]
+pub struct MiddlewareOutput {
+    /// The MIME type of the content produced, if different from application/json
+    pub content_type: Option<String>,
+}
+
 #[async_trait]
 pub trait Middleware: Send + Sync + std::fmt::Debug {
     /// Execute middleware, mutating pipeline_ctx.state in place
@@ -65,6 +72,9 @@ pub trait Middleware: Send + Sync + std::fmt::Debug {
     /// * `args` - Optional inline arguments evaluated from JQ expressions
     /// * `config` - The configuration string for this middleware step
     /// * `target_name` - Optional result target name from @result(name) tag or resultName variable
+    ///
+    /// # Returns
+    /// * `MiddlewareOutput` - Output metadata including optional content type
     async fn execute(
         &self,
         args: &[String],
@@ -73,7 +83,7 @@ pub trait Middleware: Send + Sync + std::fmt::Debug {
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
         target_name: Option<&str>,
-    ) -> Result<(), WebPipeError>;
+    ) -> Result<MiddlewareOutput, WebPipeError>;
 
     /// Returns the state manipulation behavior of this middleware.
     /// Default implementation returns Merge (the most common behavior).
@@ -131,7 +141,7 @@ impl MiddlewareRegistry {
         self.middlewares.insert(name.to_string(), middleware);
     }
 
-    pub async fn execute(&self, name: &str, args: &[String], config: &str, pipeline_ctx: &mut crate::runtime::PipelineContext, env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext, target_name: Option<&str>) -> Result<(), WebPipeError> {
+    pub async fn execute(&self, name: &str, args: &[String], config: &str, pipeline_ctx: &mut crate::runtime::PipelineContext, env: &crate::executor::ExecutionEnv, ctx: &mut crate::executor::RequestContext, target_name: Option<&str>) -> Result<MiddlewareOutput, WebPipeError> {
         let middleware = self.middlewares.get(name)
             .ok_or_else(|| WebPipeError::MiddlewareNotFound(name.to_string()))?;
         middleware.execute(args, config, pipeline_ctx, env, ctx, target_name).await
@@ -177,8 +187,8 @@ mod tests {
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
+        ) -> Result<MiddlewareOutput, WebPipeError> {
+            Ok(MiddlewareOutput::default())
         }
     }
 

@@ -332,7 +332,7 @@ impl super::Middleware for AuthMiddleware {
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         let input = &pipeline_ctx.state;
         let pool = self
             .ctx
@@ -354,7 +354,7 @@ impl super::Middleware for AuthMiddleware {
                 }
             }
         };
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 }
 

@@ -4381,3 +4381,20 @@ GET /:city/weather.svg
       | line()
       | point()
   `
+
+GET /:city/weather.png
+  |> fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + .params.city + "&count=10&language=en&format=json", {method: "GET"})
+  |> jq: `{
+    latitude: .data.response.results[0].latitude | tostring,
+    longitude: .data.response.results[0].longitude | tostring
+  }`
+  |> fetch("https://api.open-meteo.com/v1/forecast?latitude=" + .latitude + "&longitude=" + .longitude + "&hourly=temperature_2m", {method: "GET"})
+  |> jq: `
+    .data.response.hourly as $h |
+    [$h.time, $h.temperature_2m] | transpose | map({time: .[0], temp: .[1]})
+  `
+  |> gg({ "type": "png", "width": 800, "height": 400} ): `
+    aes(x: time, y: temp)
+      | line()
+      | point()
+  `

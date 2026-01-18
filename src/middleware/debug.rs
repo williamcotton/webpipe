@@ -14,13 +14,13 @@ impl super::Middleware for DebugMiddleware {
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         let input = &pipeline_ctx.state;
         let label = { let trimmed = config.trim(); if trimmed.is_empty() { "debug" } else { trimmed } };
         println!("{}", label);
         match serde_json::to_string_pretty(input) { Ok(pretty) => println!("{}", pretty), Err(_) => println!("{}", input), }
         // Read-only middleware - state unchanged
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 }
 
@@ -42,8 +42,8 @@ mod tests {
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
+        ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
+            Ok(crate::middleware::MiddlewareOutput::default())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {

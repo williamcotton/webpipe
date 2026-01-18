@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::{
     ast::{Pipeline, Variable},
     error::WebPipeError,
-    middleware::MiddlewareRegistry,
+    middleware::{MiddlewareOutput, MiddlewareRegistry},
     runtime::context::{CacheStore, RateLimitStore},
 };
 
@@ -23,7 +23,7 @@ pub trait MiddlewareInvoker: Send + Sync {
         env: &ExecutionEnv,
         ctx: &mut RequestContext,
         target_name: Option<&str>,
-    ) -> Result<(), WebPipeError>;
+    ) -> Result<MiddlewareOutput, WebPipeError>;
 
     /// Look up a mock value for a specific target (e.g. "query.users")
     /// Returns None for RealInvoker, Some(mock_value) for MockingInvoker in tests
@@ -91,7 +91,7 @@ impl MiddlewareInvoker for RealInvoker {
         env: &ExecutionEnv,
         ctx: &mut RequestContext,
         target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<MiddlewareOutput, WebPipeError> {
         self.registry.execute(name, args, cfg, pipeline_ctx, env, ctx, target_name).await
     }
 }

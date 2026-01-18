@@ -164,14 +164,14 @@ impl super::Middleware for RateLimitMiddleware {
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         let input = &pipeline_ctx.state;
         let cfg = parse_config(config);
 
         // Check if rate limiting is enabled
         let enabled = cfg.enabled.unwrap_or(true);
         if !enabled {
-            return Ok(());
+            return Ok(super::MiddlewareOutput::default());
         }
 
         // Validate required fields
@@ -215,7 +215,7 @@ impl super::Middleware for RateLimitMiddleware {
         }
 
         // Read-only middleware - state unchanged, rate limit info is in ctx.metadata.rate_limit_status
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 }
 
@@ -233,8 +233,8 @@ mod tests {
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
+        ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
+            Ok(crate::middleware::MiddlewareOutput::default())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {

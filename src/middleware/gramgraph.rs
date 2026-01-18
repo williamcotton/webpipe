@@ -41,7 +41,7 @@ impl super::Middleware for GramGraphMiddleware {
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         // 1. Parse Options and Variables
         let (options, variables) = if let Some(arg_expr) = args.first() {
             // Create combined input with context
@@ -115,7 +115,13 @@ impl super::Middleware for GramGraphMiddleware {
                 ))
             })?;
 
-        // 5. Process Output
+        // 5. Determine Content Type
+        let content_type = match options.format {
+            OutputFormat::Svg => "image/svg+xml",
+            OutputFormat::Png => "image/png",
+        };
+
+        // 6. Process Output
         let result_string = match options.format {
             OutputFormat::Svg => String::from_utf8(output_bytes).map_err(|_| {
                 WebPipeError::MiddlewareExecutionError(
@@ -125,10 +131,12 @@ impl super::Middleware for GramGraphMiddleware {
             OutputFormat::Png => general_purpose::STANDARD.encode(&output_bytes),
         };
 
-        // 6. Replace Pipeline State
+        // 7. Replace Pipeline State
         pipeline_ctx.state = Value::String(result_string);
 
-        Ok(())
+        Ok(super::MiddlewareOutput {
+            content_type: Some(content_type.to_string()),
+        })
     }
 
     fn behavior(&self) -> super::StateBehavior {

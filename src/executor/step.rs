@@ -871,25 +871,11 @@ async fn handle_standard_execution(
     pipeline_ctx: &mut crate::runtime::PipelineContext,
     target_name: Option<&str>,
 ) -> Result<StepResult, WebPipeError> {
-    env.invoker
+    let output = env.invoker
         .call(name, args, config, pipeline_ctx, env, ctx, target_name)
         .await?;
 
-    let content_type = if name == "handlebars" {
-        "text/html".to_string()
-    } else if name == "gg" {
-        if pipeline_ctx
-            .state
-            .as_str()
-            .map_or(false, |s| s.trim().starts_with("<svg"))
-        {
-            "image/svg+xml".to_string()
-        } else {
-            "application/json".to_string()
-        }
-    } else {
-        "application/json".to_string()
-    };
+    let content_type = output.content_type.unwrap_or_else(|| "application/json".to_string());
 
     Ok(StepResult {
         value: pipeline_ctx.state.clone(),

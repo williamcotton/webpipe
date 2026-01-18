@@ -31,7 +31,7 @@ impl super::Middleware for FetchMiddleware {
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
         target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         // Determine URL and options based on inline args vs fallback state
         let (url, method_str, headers_obj, body_obj, timeout_secs) = if !args.is_empty() {
             // New syntax: fetch(url_expr, options_expr?)
@@ -76,7 +76,7 @@ impl super::Middleware for FetchMiddleware {
 
         if url.is_empty() {
             pipeline_ctx.state = build_fetch_error_object("networkError", serde_json::json!({ "message": "Missing URL for fetch middleware" }));
-            return Ok(());
+            return Ok(super::MiddlewareOutput::default());
         }
 
         let method = Method::from_bytes(method_str.as_bytes()).unwrap_or(Method::GET);
@@ -109,7 +109,7 @@ impl super::Middleware for FetchMiddleware {
                 } else {
                     pipeline_ctx.state = build_fetch_error_object("networkError", serde_json::json!({ "message": err.to_string(), "url": url }));
                 }
-                return Ok(());
+                return Ok(super::MiddlewareOutput::default());
             }
         };
 
@@ -121,13 +121,13 @@ impl super::Middleware for FetchMiddleware {
             Ok(t) => t,
             Err(err) => {
                 pipeline_ctx.state = build_fetch_error_object("networkError", serde_json::json!({ "message": format!("Failed to read response body: {}", err), "url": url }));
-                return Ok(());
+                return Ok(super::MiddlewareOutput::default());
             }
         };
 
         if !status.is_success() {
             pipeline_ctx.state = build_fetch_error_object("httpError", serde_json::json!({ "status": status_code, "message": body_text, "url": url }));
-            return Ok(());
+            return Ok(super::MiddlewareOutput::default());
         }
 
         let response_body: Value = serde_json::from_str(&body_text).unwrap_or(Value::String(body_text));
@@ -145,7 +145,7 @@ impl super::Middleware for FetchMiddleware {
             }
         }
 
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 }
 
@@ -186,8 +186,8 @@ mod tests {
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
+        ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
+            Ok(crate::middleware::MiddlewareOutput::default())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {

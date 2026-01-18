@@ -15,7 +15,7 @@ impl super::Middleware for ValidateMiddleware {
         _env: &crate::executor::ExecutionEnv,
         _ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         let input = &pipeline_ctx.state;
         #[derive(Debug)]
         struct Rule { field: String, kind: String, min: Option<usize>, max: Option<usize> }
@@ -67,10 +67,10 @@ impl super::Middleware for ValidateMiddleware {
         }
 
         let rules = parse_rules(config);
-        if rules.is_empty() { return Ok(()); }
+        if rules.is_empty() { return Ok(super::MiddlewareOutput::default()); }
 
         let body = input.get("body");
-        let obj = match body.and_then(|b| b.as_object()) { Some(o) => o, None => { return Ok(()); } };
+        let obj = match body.and_then(|b| b.as_object()) { Some(o) => o, None => { return Ok(super::MiddlewareOutput::default()); } };
 
         for rule in rules {
             let val = obj.get(&rule.field);
@@ -88,20 +88,20 @@ impl super::Middleware for ValidateMiddleware {
                         _ => {
                             let msg = format!("Field '{}' is required and must be a non-empty string", rule.field);
                             pipeline_ctx.state = make_error(&rule.field, "required", msg);
-                            return Ok(());
+                            return Ok(super::MiddlewareOutput::default());
                         }
                     };
                     let len = s.chars().count();
                     if let Some(min) = rule.min {
                         if len < min {
                             pipeline_ctx.state = make_error(&rule.field, "minLength", format!("Field '{}' must be at least {} characters", rule.field, min));
-                            return Ok(());
+                            return Ok(super::MiddlewareOutput::default());
                         }
                     }
                     if let Some(max) = rule.max {
                         if len > max {
                             pipeline_ctx.state = make_error(&rule.field, "maxLength", format!("Field '{}' must be at most {} characters", rule.field, max));
-                            return Ok(());
+                            return Ok(super::MiddlewareOutput::default());
                         }
                     }
                 }
@@ -111,13 +111,13 @@ impl super::Middleware for ValidateMiddleware {
                         _ => {
                             let msg = format!("Field '{}' is required and must be a valid email", rule.field);
                             pipeline_ctx.state = make_error(&rule.field, "required", msg);
-                            return Ok(());
+                            return Ok(super::MiddlewareOutput::default());
                         }
                     };
                     let valid = s.contains('@') && s.contains('.') && !s.starts_with('@') && !s.ends_with('@');
                     if !valid {
                         pipeline_ctx.state = make_error(&rule.field, "email", format!("Field '{}' must be a valid email address", rule.field));
-                        return Ok(());
+                        return Ok(super::MiddlewareOutput::default());
                     }
                 }
                 _ => {}
@@ -125,7 +125,7 @@ impl super::Middleware for ValidateMiddleware {
         }
 
         // Validation passed - state unchanged
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 }
 
@@ -144,8 +144,8 @@ mod tests {
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
+        ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
+            Ok(crate::middleware::MiddlewareOutput::default())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {

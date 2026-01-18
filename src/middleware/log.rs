@@ -20,7 +20,7 @@ impl super::Middleware for LogMiddleware {
         _env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         let input = &pipeline_ctx.state;
         #[derive(Default)]
         struct StepCfg { level: Option<String>, include_body: Option<bool>, include_headers: Option<bool>, enabled: Option<bool> }
@@ -72,7 +72,7 @@ impl super::Middleware for LogMiddleware {
         );
 
         if !enabled {
-            return Ok(());
+            return Ok(super::MiddlewareOutput::default());
         }
 
         // Store log config in typed context
@@ -118,7 +118,7 @@ impl super::Middleware for LogMiddleware {
         });
 
         // Read-only middleware - state unchanged
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 
 }
@@ -141,8 +141,8 @@ mod tests {
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
+        ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
+            Ok(crate::middleware::MiddlewareOutput::default())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {

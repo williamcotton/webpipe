@@ -1066,6 +1066,28 @@ async fn respond_with_pipeline(
                     axum::http::HeaderValue::from_static("image/svg+xml")
                 );
                 resp
+            } else if content_type.starts_with("image/png") {
+                // PNG data is base64-encoded - decode it to binary
+                let body = result.as_str().unwrap_or("");
+                match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, body) {
+                    Ok(binary_data) => {
+                        let mut resp = (http_status, binary_data).into_response();
+                        resp.headers_mut().insert(
+                            axum::http::header::CONTENT_TYPE,
+                            axum::http::HeaderValue::from_static("image/png")
+                        );
+                        resp
+                    }
+                    Err(_) => {
+                        // If base64 decode fails, return as-is (shouldn't happen normally)
+                        let mut resp = (http_status, body.to_string()).into_response();
+                        resp.headers_mut().insert(
+                            axum::http::header::CONTENT_TYPE,
+                            axum::http::HeaderValue::from_static("image/png")
+                        );
+                        resp
+                    }
+                }
             } else {
                 (http_status, Json(result.clone())).into_response()
             };

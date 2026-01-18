@@ -64,7 +64,7 @@ impl super::Middleware for CacheMiddleware {
         env: &crate::executor::ExecutionEnv,
         ctx: &mut crate::executor::RequestContext,
         _target_name: Option<&str>,
-    ) -> Result<(), WebPipeError> {
+    ) -> Result<super::MiddlewareOutput, WebPipeError> {
         let input = &pipeline_ctx.state;
         #[derive(Default)]
         struct LocalCfg { enabled: Option<bool>, ttl: Option<u64>, key_tpl: Option<String> }
@@ -106,7 +106,7 @@ impl super::Middleware for CacheMiddleware {
 
         // If caching is disabled, state unchanged
         if !enabled {
-            return Ok(());
+            return Ok(super::MiddlewareOutput::default());
         }
 
         // Store cache policy in typed context
@@ -171,7 +171,7 @@ impl super::Middleware for CacheMiddleware {
             }
 
             pipeline_ctx.state = control;
-            return Ok(());
+            return Ok(super::MiddlewareOutput::default());
         }
 
         // CACHE MISS: Register deferred action to save result at pipeline end
@@ -192,7 +192,7 @@ impl super::Middleware for CacheMiddleware {
         });
 
         // Cache miss - state unchanged
-        Ok(())
+        Ok(super::MiddlewareOutput::default())
     }
 }
 
@@ -231,8 +231,8 @@ mod tests {
             _env: &crate::executor::ExecutionEnv,
             _ctx: &mut crate::executor::RequestContext,
             _target_name: Option<&str>,
-        ) -> Result<(), WebPipeError> {
-            Ok(())
+        ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
+            Ok(crate::middleware::MiddlewareOutput::default())
         }
     }
     fn dummy_env() -> crate::executor::ExecutionEnv {
