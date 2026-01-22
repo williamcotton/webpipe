@@ -6,7 +6,7 @@
 
 Web Pipe is an **experimental language and runtime** for building web applications using **pipeline-oriented request processing**.
 
-![debugger](https://github.com/user-attachments/assets/a8a803b6-a6ff-48c3-954e-bb838bb19cd3)
+![debugger](https://github.com/user-attachments/assets/22e75a0e-2e4c-4c94-9d51-23c38d208e13)
 
 Instead of separating routing, middleware, database access, templating, GraphQL, and testing into distinct frameworks or layers, Web Pipe treats them as variations of the same thing: a request flowing through a sequence of transformations over explicit JSON data. The intent is not to compete with existing web frameworks, but to explore what happens when a single execution model is applied consistently across concerns that are usually siloed.
 
