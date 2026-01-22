@@ -147,7 +147,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
                 config_type: ConfigType::Backtick,
                 condition: None,
                 parsed_join_targets: None,
-                location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None, module_id: None },
+                location: SourceLocation::new(0, 0, 0),
             },
             // Execute GraphQL with empty config (triggers dynamic mode)
             PipelineStep::Regular {
@@ -157,7 +157,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
                 config_type: ConfigType::Backtick,
                 condition: None,
                 parsed_join_targets: None,
-                location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None, module_id: None },
+                location: SourceLocation::new(0, 0, 0),
             },
         ],
     }

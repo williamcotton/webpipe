@@ -515,7 +515,7 @@ impl DapServer {
                 .map(|(i, name)| {
                     // For the top frame (index 0), use the real source location
                     // For parent frames, we don't track location yet, so use 0/None
-                    let (line, column, source) = if i == 0 {
+                    let (line, column, end_line, end_column, source) = if i == 0 {
                         // Use the file_path from the location if available, otherwise default to main file
                         let source_file = paused.location.file_path.as_ref()
                             .map(|s| s.as_str())
@@ -524,6 +524,8 @@ impl DapServer {
                         (
                             paused.location.line as i64,
                             paused.location.column as i64,
+                            Some(paused.location.end_line as i64),
+                            Some(paused.location.end_column as i64),
                             Some(Source {
                                 name: None,
                                 path: Some(source_file.to_string()),
@@ -536,7 +538,7 @@ impl DapServer {
                             })
                         )
                     } else {
-                        (0, 0, None) // Parent frames are "de-emphasized" without source
+                        (0, 0, None, None, None) // Parent frames are "de-emphasized" without source
                     };
 
                     // Encode both thread_id and stack_index into frame_id
@@ -550,8 +552,8 @@ impl DapServer {
                         source,
                         line,
                         column,
-                        end_line: None,
-                        end_column: None,
+                        end_line,
+                        end_column,
                         can_restart: None,
                         instruction_pointer_reference: None,
                         module_id: None,

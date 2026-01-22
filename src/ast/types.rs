@@ -6,6 +6,10 @@ pub struct SourceLocation {
     pub line: usize,
     /// Column number (1-indexed)
     pub column: usize,
+    /// End line number (1-indexed)
+    pub end_line: usize,
+    /// End column number (1-indexed)
+    pub end_column: usize,
     /// Byte offset from start of file
     pub offset: usize,
     /// Source file path (for multi-file debugging and error reporting)
@@ -17,15 +21,44 @@ pub struct SourceLocation {
 
 impl SourceLocation {
     pub fn new(line: usize, column: usize, offset: usize) -> Self {
-        Self { line, column, offset, file_path: None, module_id: None }
+        Self { 
+            line, 
+            column, 
+            end_line: line, 
+            end_column: column, 
+            offset, 
+            file_path: None, 
+            module_id: None 
+        }
     }
 
     pub fn with_file(line: usize, column: usize, offset: usize, file_path: String) -> Self {
-        Self { line, column, offset, file_path: Some(file_path), module_id: None }
+        Self { 
+            line, 
+            column, 
+            end_line: line, 
+            end_column: column, 
+            offset, 
+            file_path: Some(file_path), 
+            module_id: None 
+        }
     }
 
     pub fn with_module(line: usize, column: usize, offset: usize, file_path: String, module_id: usize) -> Self {
-        Self { line, column, offset, file_path: Some(file_path), module_id: Some(module_id) }
+        Self { 
+            line, 
+            column, 
+            end_line: line, 
+            end_column: column, 
+            offset, 
+            file_path: Some(file_path), 
+            module_id: Some(module_id) 
+        }
+    }
+    
+    pub fn set_end(&mut self, end_line: usize, end_column: usize) {
+        self.end_line = end_line;
+        self.end_column = end_column;
     }
 }
 

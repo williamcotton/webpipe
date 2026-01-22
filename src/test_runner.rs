@@ -770,7 +770,7 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                         (200u16, mock.clone(), "application/json".to_string(), true, String::new(), HashMap::new())
                     } else {
                         // Single-step pipeline invoking the variable's middleware
-                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), args: Vec::new(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None, location: SourceLocation { line: 0, column: 0, offset: 0, file_path: None, module_id: None } }] };
+                        let pipeline = Pipeline { steps: vec![PipelineStep::Regular { name: var.var_type.clone(), args: Vec::new(), config: var.value.clone(), config_type: crate::ast::ConfigType::Backtick, condition: None, parsed_join_targets: None, location: SourceLocation::new(0, 0, 0) }] };
                         // Build ExecutionEnv using preloaded symbols
                         let env = ExecutionEnv {
                             variables: Arc::new(variables_with_imports.clone()),

@@ -17,10 +17,27 @@ pub type Span<'a> = LocatedSpan<&'a str>;
 
 /// Extract SourceLocation from a Span
 fn location_from_span(span: Span) -> SourceLocation {
+    let line = span.location_line() as usize;
+    let column = span.get_column();
     SourceLocation {
-        line: span.location_line() as usize,
-        column: span.get_column(),
+        line,
+        column,
+        end_line: line,
+        end_column: column,
         offset: span.location_offset(),
+        file_path: None,
+        module_id: None,
+    }
+}
+
+/// Extract SourceLocation from start and end Spans
+fn location_from_spans(start: Span, end: Span) -> SourceLocation {
+    SourceLocation {
+        line: start.location_line() as usize,
+        column: start.get_column(),
+        end_line: end.location_line() as usize,
+        end_column: end.get_column(),
+        offset: start.location_offset(),
         file_path: None,
         module_id: None,
     }
@@ -598,8 +615,9 @@ fn parse_regular_step(input: Span) -> IResult<Span, PipelineStep> {
         None
     };
 
+    let end_span = input;
     let (input, _) = multispace0(input)?;
-    let location = location_from_span(start_span);
+    let location = location_from_spans(start_span, end_span);
     Ok((input, PipelineStep::Regular { name, args, config, config_type, condition, parsed_join_targets, location }))
 }
 
