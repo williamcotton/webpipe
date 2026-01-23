@@ -89,7 +89,6 @@ pub enum WebPipeError {
     #[error("Undefined scoped reference: {0}")]
     UndefinedScopedReference(String),
 
-    #[cfg(feature = "debugger")]
     #[error("Debugger error: {0}")]
     DebuggerError(String),
 }
@@ -124,7 +123,6 @@ impl WebPipeError {
             WebPipeError::CircularImport(_) => StatusCode::INTERNAL_SERVER_ERROR,
             WebPipeError::DuplicateAlias(_) => StatusCode::INTERNAL_SERVER_ERROR,
             WebPipeError::UndefinedScopedReference(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            #[cfg(feature = "debugger")]
             WebPipeError::DebuggerError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -158,7 +156,6 @@ impl WebPipeError {
             WebPipeError::CircularImport(_) => "circular_import",
             WebPipeError::DuplicateAlias(_) => "duplicate_alias",
             WebPipeError::UndefinedScopedReference(_) => "undefined_scoped_reference",
-            #[cfg(feature = "debugger")]
             WebPipeError::DebuggerError(_) => "debugger_error",
         }
     }

@@ -169,7 +169,6 @@ mod tests {
             cache: crate::runtime::context::CacheStore::new(8, 60),
             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
             module_registry: Arc::new(crate::executor::ModuleRegistry::new()),
-            #[cfg(feature = "debugger")]
             debugger: None,
         };
         let mut req_ctx = crate::executor::RequestContext::new();

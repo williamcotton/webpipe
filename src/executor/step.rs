@@ -23,7 +23,6 @@ use super::{
     types::{ExecutionMode, PipelineOutput, StepOutcome, StepResult},
 };
 
-#[cfg(feature = "debugger")]
 use super::context::StepMode;
 
 // ==================================================================================
@@ -481,7 +480,6 @@ pub fn determine_step_name(step: &PipelineStep) -> String {
 }
 
 /// Handle debugger hooks before step execution.
-#[cfg(feature = "debugger")]
 pub async fn handle_debugger_before(
     ctx: &mut StepContext<'_>,
     step: &PipelineStep,
@@ -514,7 +512,6 @@ pub async fn handle_debugger_before(
 }
 
 /// Handle debugger hooks after step execution.
-#[cfg(feature = "debugger")]
 pub async fn handle_debugger_after(ctx: &mut StepContext<'_>, step: &PipelineStep, step_name: &str) {
     if let Some(ref dbg) = ctx.env.debugger {
         let thread_id = ctx.req_ctx.debug_thread_id.unwrap_or(0);
@@ -718,7 +715,6 @@ fn spawn_async_step(
 
         let mut async_ctx = RequestContext::new();
 
-        #[cfg(feature = "debugger")]
         if let Some(ref dbg) = env_clone.debugger {
             async_ctx.debug_thread_id = Some(dbg.allocate_thread_id());
         }

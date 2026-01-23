@@ -67,7 +67,6 @@ pub struct ExecutionEnv {
 
     /// Optional debugger hook (None = zero cost in production)
     /// When enabled, before_step/after_step are called for each pipeline step
-    #[cfg(feature = "debugger")]
     pub debugger: Option<std::sync::Arc<dyn crate::debugger::DebuggerHook>>,
 }
 

@@ -85,7 +85,6 @@ async fn build_env_with_ctx(program: &webpipe::ast::Program) -> (ExecutionEnv, A
         cache: ctx.cache.clone(),
         rate_limit: ctx.rate_limit.clone(),
         module_registry: Arc::new(ModuleRegistry::new()),
-        #[cfg(feature = "debugger")]
         debugger: None,
     };
     (env, ctx)

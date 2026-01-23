@@ -455,7 +455,6 @@ pub struct WebPipeServer {
     middleware_registry: Arc<MiddlewareRegistry>,
     ctx: Arc<Context>,
     trace_enabled: bool,
-    #[cfg(feature = "debugger")]
     debugger: Option<std::sync::Arc<dyn crate::debugger::DebuggerHook>>,
 }
 
@@ -492,7 +491,6 @@ impl ServerState {
     /// SECURITY: Feature flags are extracted from the feature_flags pipeline result,
     /// NOT from user-provided JSON input (which would be a security vulnerability)
     fn create_request_context(&self, flags: HashMap<String, bool>, request_json: Value) -> crate::executor::RequestContext {
-        #[cfg(feature = "debugger")]
         let debug_thread_id = if let Some(ref debugger) = self.env.debugger {
             Some(debugger.allocate_thread_id())
         } else {
@@ -508,9 +506,7 @@ impl ServerState {
             call_log: HashMap::new(),
             profiler: crate::executor::Profiler::default(),
             request: request_json,
-            #[cfg(feature = "debugger")]
             debug_thread_id,
-            #[cfg(feature = "debugger")]
             debug_step_mode: None,
         }
     }
@@ -530,7 +526,6 @@ pub struct WebPipeRequest {
 }
 
 impl WebPipeServer {
-    #[cfg(feature = "debugger")]
     pub async fn from_program_with_debugger(
         program: Program,
         file_path: Option<PathBuf>,
@@ -548,10 +543,7 @@ impl WebPipeServer {
         program: Program,
         file_path: Option<PathBuf>,
         trace_enabled: bool,
-        #[cfg(feature = "debugger")]
         debugger: Option<std::sync::Arc<dyn crate::debugger::DebuggerHook>>,
-        #[cfg(not(feature = "debugger"))]
-        _debugger: Option<()>,
     ) -> Result<Self, WebPipeError> {
         // 1. Load module tree (if file_path exists) for nested import support
         let module_tree = if let Some(ref file_path) = file_path {
@@ -617,7 +609,6 @@ impl WebPipeServer {
             middleware_registry,
             ctx: ctx_arc,
             trace_enabled,
-            #[cfg(feature = "debugger")]
             debugger,
         })
     }
@@ -847,7 +838,6 @@ impl WebPipeServer {
             environment: std::env::var("WEBPIPE_ENV").ok(),
             cache: self.ctx.cache.clone(),
             rate_limit: self.ctx.rate_limit.clone(),
-            #[cfg(feature = "debugger")]
             debugger: self.debugger.clone(),
         });
 
@@ -1419,7 +1409,6 @@ mod tests {
             environment: None,
             cache: ctx.cache.clone(),
             rate_limit: ctx.rate_limit.clone(),
-            #[cfg(feature = "debugger")]
             debugger: None,
         };
         let state = ServerState {

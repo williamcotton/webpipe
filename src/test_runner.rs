@@ -695,8 +695,7 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                                 environment: None,
                                 cache: crate::runtime::context::CacheStore::new(8, 60),
                                 rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-                                #[cfg(feature = "debugger")]
-                                debugger: None,
+                                                                debugger: None,
                             };
 
                             // Pipeline-level mock when route uses a named pipeline
@@ -748,7 +747,6 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                             environment: None,
                             cache: crate::runtime::context::CacheStore::new(8, 60),
                             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-                            #[cfg(feature = "debugger")]
                             debugger: None,
                         };
                         let mut ctx = crate::executor::RequestContext::new();
@@ -784,7 +782,6 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                             environment: None,
                             cache: crate::runtime::context::CacheStore::new(8, 60),
                             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-                            #[cfg(feature = "debugger")]
                             debugger: None,
                         };
                         let mut ctx = crate::executor::RequestContext::new();

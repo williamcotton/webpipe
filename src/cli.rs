@@ -28,11 +28,9 @@ pub struct Cli {
     #[arg(long, help = "Enable trace mode")]
     pub trace: bool,
 
-    #[cfg(feature = "debugger")]
     #[arg(long, help = "Run in debug mode")]
     pub inspect: bool,
 
-    #[cfg(feature = "debugger")]
     #[arg(long, help = "Debug server port", default_value = "5858", value_name = "PORT")]
     pub inspect_port: u16,
 }
@@ -96,7 +94,6 @@ impl Cli {
             Some(Commands::Migrate { .. }) => OperationMode::Migrate,
             None => {
                 if let Some(file) = &self.file {
-                    #[cfg(feature = "debugger")]
                     if self.inspect {
                         return OperationMode::Inspect(file.clone());
                     }
@@ -120,7 +117,6 @@ pub enum OperationMode {
     Migrate,
     Serve(PathBuf),
     Test(PathBuf),
-    #[cfg(feature = "debugger")]
     Inspect(PathBuf),
     Help,
 }

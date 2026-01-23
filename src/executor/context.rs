@@ -40,7 +40,6 @@ impl RequestMetadata {
 }
 
 /// Debug stepping modes for step-by-step execution
-#[cfg(feature = "debugger")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StepMode {
     /// Stop at next step in same pipeline (don't enter nested pipelines)
@@ -106,11 +105,9 @@ pub struct RequestContext {
     pub request: Value,
 
     /// Debug thread ID for DAP protocol (None in production)
-    #[cfg(feature = "debugger")]
     pub debug_thread_id: Option<u64>,
 
     /// Debug stepping mode (StepOver pauses at next step)
-    #[cfg(feature = "debugger")]
     pub debug_step_mode: Option<StepMode>,
 }
 
@@ -125,9 +122,7 @@ impl RequestContext {
             call_log: HashMap::new(),
             profiler: Profiler::default(),
             request: Value::Null,
-            #[cfg(feature = "debugger")]
             debug_thread_id: None,
-            #[cfg(feature = "debugger")]
             debug_step_mode: None,
         }
     }

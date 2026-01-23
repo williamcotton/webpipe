@@ -5,11 +5,8 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use webpipe::{ast::parse_program, WebPipeServer, run_tests};
 use clap::Parser;
 
-#[cfg(feature = "debugger")]
 use std::sync::Arc;
-#[cfg(feature = "debugger")]
 use webpipe::debugger::{DapServer, dap_server::DapDebuggerHook};
-#[cfg(feature = "debugger")]
 use tokio::sync::Notify;
 
 mod cli;
@@ -49,12 +46,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cli = cli::Cli::parse();
 
     // Validate incompatible flags
-    #[cfg(feature = "debugger")]
-    {
-        if cli.test && cli.inspect {
-            eprintln!("Error: --test and --inspect cannot be used together");
-            std::process::exit(1);
-        }
+    if cli.test && cli.inspect {
+        eprintln!("Error: --test and --inspect cannot be used together");
+        std::process::exit(1);
     }
 
     match cli.mode() {
@@ -70,7 +64,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cli::OperationMode::Test(file_path) => {
             test_mode(&file_path, &cli).await?;
         }
-        #[cfg(feature = "debugger")]
         cli::OperationMode::Inspect(file_path) => {
             inspect_mode(&file_path, &cli).await?;
         }
@@ -242,7 +235,6 @@ async fn test_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Error
     }
 }
 
-#[cfg(feature = "debugger")]
 async fn inspect_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Error>> {
     let trace_mode = cli.trace;
     let inspect_port = cli.inspect_port;
@@ -272,7 +264,6 @@ async fn inspect_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Er
     run_inspect_mode(file_path, program, addr, inspect_port, trace_mode).await
 }
 
-#[cfg(feature = "debugger")]
 async fn run_inspect_mode(
     file_path: &Path,
     program: webpipe::ast::Program,

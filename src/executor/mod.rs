@@ -17,7 +17,6 @@ pub mod types;
 
 // Re-exports for backward compatibility and convenience
 pub use context::{RequestContext, RequestMetadata, Profiler};
-#[cfg(feature = "debugger")]
 pub use context::StepMode;
 pub use env::{ExecutionEnv, MiddlewareInvoker, RealInvoker};
 pub use modules::{ModuleId, ModuleMetadata, ModuleRegistry};
@@ -55,7 +54,6 @@ async fn execute_step<'a>(
     let start_time = std::time::Instant::now();
 
     // 4. Debugger Hook: before_step
-    #[cfg(feature = "debugger")]
     step::handle_debugger_before(&mut step_ctx, step, &step_name).await?;
 
     // 5. Dispatch to appropriate handler
@@ -87,7 +85,6 @@ async fn execute_step<'a>(
     };
 
     // 6. Debugger Hook: after_step
-    #[cfg(feature = "debugger")]
     step::handle_debugger_after(&mut step_ctx, step, &step_name).await;
 
     // 7. End Profiling
@@ -248,7 +245,6 @@ mod tests {
             cache: CacheStore::new(8, 60),
             rate_limit: RateLimitStore::new(1000),
             module_registry: Arc::new(ModuleRegistry::new()),
-            #[cfg(feature = "debugger")]
             debugger: None,
         }
     }
