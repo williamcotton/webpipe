@@ -150,6 +150,17 @@ impl<'a> RegularStepExecutor<'a> {
             &ctx.pipe_ctx.state,
         );
 
+        // Log pipeline calls for test assertions (spying)
+        if self.name == "pipeline" {
+            let pipeline_name = effective_config.trim();
+            let log_key = format!("pipeline.{}", pipeline_name);
+            ctx.req_ctx
+                .call_log
+                .entry(log_key)
+                .or_insert_with(Vec::new)
+                .push(effective_input.clone());
+        }
+
         if auto_named {
             ctx.pipe_ctx.state = effective_input.clone();
         }

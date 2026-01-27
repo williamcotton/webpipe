@@ -881,7 +881,7 @@ fn parse_condition(input: Span) -> IResult<Span, Condition> {
     // Check if this is a call assertion: "then call query users with ..."
     if field.fragment() == &"call" {
         // Parse call target: "query users" or "mutation createTodo"
-        let (input, call_type) = alt((tag("query"), tag("mutation"))).parse(input)?;
+        let (input, call_type) = alt((tag("query"), tag("mutation"), tag("pipeline"))).parse(input)?;
         let (input, _) = nom::character::complete::multispace1(input)?;
         let (input, call_name) = parse_identifier(input)?;
         let call_target = format!("{}.{}", call_type.fragment(), call_name);

@@ -4398,3 +4398,87 @@ GET /:city/weather.png
       | line()
       | point()
   `
+
+## Pipeline Call Assertions Demo
+
+# A pipeline that processes items and adds metadata
+pipeline processItem =
+  |> jq: `{
+    processed: true,
+    item: .item,
+    quantity: .quantity,
+    total: (.quantity * .price)
+  }`
+
+# A pipeline that validates and enriches order data
+pipeline enrichOrder =
+  |> jq: `{
+    orderId: .orderId,
+    customer: .customer,
+    items: .items,
+    enriched: true,
+    timestamp: now
+  }`
+
+# Route that uses the processItem pipeline
+GET /order/:id/process
+  |> jq: `{
+    item: "widget",
+    quantity: (.query.qty // "1" | tonumber),
+    price: 9.99,
+    orderId: .params.id
+  }`
+  |> pipeline: processItem
+  |> jq: `{
+    success: true,
+    result: .
+  }`
+
+# Route that chains multiple pipelines
+POST /order/create
+  |> jq: `{
+    orderId: "ORD-" + (now | tostring),
+    customer: .body.customer,
+    items: .body.items
+  }`
+  |> pipeline: enrichOrder
+  |> jq: `{
+    success: true,
+    order: .
+  }`
+
+describe "pipeline call assertions"
+  it "verifies pipeline was called with correct backpack state"
+    when calling GET /order/123/process?qty=5
+    then status is 200
+    and output contains `{ "success": true }`
+    and call pipeline processItem with `{ "item": "widget", "quantity": 5, "price": 9.99, "orderId": 123 }`
+
+  it "verifies enrichOrder pipeline receives order data"
+    when calling POST /order/create
+    with body `{ "customer": "John Doe", "items": ["item1", "item2"] }`
+    then status is 200
+    and output contains `{ "success": true }`
+    and call pipeline enrichOrder with `{ "customer": "John Doe", "items": ["item1", "item2"] }`
+
+describe "pipeline mocking"
+  with mock pipeline processItem returning `{
+    "processed": true,
+    "mocked": true,
+    "item": "mocked-widget",
+    "total": 999.99
+  }`
+
+  it "uses mocked pipeline response instead of real execution"
+    when executing pipeline processItem
+    with input `{ "item": "real-widget", "quantity": 10, "price": 5.00 }`
+    then output contains `{ "mocked": true }`
+    and output contains `{ "item": "mocked-widget" }`
+    and output contains `{ "total": 999.99 }`
+
+  it "can override describe-level mock at test level"
+    when executing pipeline processItem
+    with input `{ "item": "another-widget", "quantity": 1, "price": 1.00 }`
+    and mock pipeline processItem returning `{ "processed": true, "overridden": true, "custom": "value" }`
+    then output contains `{ "overridden": true }`
+    and output contains `{ "custom": "value" }`
