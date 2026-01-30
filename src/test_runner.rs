@@ -488,7 +488,27 @@ fn register_local_symbols(
     }
 }
 
+/// Original run_tests - backwards compatible
 pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, verbose: bool) -> Result<TestSummary, WebPipeError> {
+    run_tests_internal(program, file_path, verbose, None).await
+}
+
+/// Run tests with an optional debugger hook
+pub async fn run_tests_with_debugger(
+    program: Program,
+    file_path: Option<std::path::PathBuf>,
+    verbose: bool,
+    debugger: Option<Arc<dyn crate::debugger::DebuggerHook>>
+) -> Result<TestSummary, WebPipeError> {
+    run_tests_internal(program, file_path, verbose, debugger).await
+}
+
+async fn run_tests_internal(
+    program: Program,
+    file_path: Option<std::path::PathBuf>,
+    verbose: bool,
+    debugger: Option<Arc<dyn crate::debugger::DebuggerHook>>
+) -> Result<TestSummary, WebPipeError> {
     // Load imports and build complete symbol tables (also returns module_tree for reuse)
     let (named_pipelines_with_imports, variables_with_imports, module_registry, imported_configs, module_tree) =
         load_imports_for_tests(&program, file_path.as_ref())?;
@@ -695,7 +715,7 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                                 environment: None,
                                 cache: crate::runtime::context::CacheStore::new(8, 60),
                                 rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-                                                                debugger: None,
+                                debugger: debugger.clone(),
                             };
 
                             // Pipeline-level mock when route uses a named pipeline
@@ -705,6 +725,9 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                                 } else {
                                     let mut ctx = crate::executor::RequestContext::new();
                                     ctx.request = input.clone();
+                                    if let Some(ref dbg) = debugger {
+                                        ctx.debug_thread_id = Some(dbg.allocate_thread_id());
+                                    }
                                     let (out, ct, s, ctx) = crate::executor::execute_pipeline(&env, selected_pipeline, input, ctx).await?;
                                     let log = ctx.call_log.clone();
                                     (s.unwrap_or(200u16), out, ct, true, String::new(), log)
@@ -712,6 +735,9 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                             } else {
                                 let mut ctx = crate::executor::RequestContext::new();
                                 ctx.request = input.clone();
+                                if let Some(ref dbg) = debugger {
+                                    ctx.debug_thread_id = Some(dbg.allocate_thread_id());
+                                }
                                 let (out, ct, s, ctx) = crate::executor::execute_pipeline(&env, selected_pipeline, input, ctx).await?;
                                 let log = ctx.call_log.clone();
                                 (s.unwrap_or(200u16), out, ct, true, String::new(), log)
@@ -747,10 +773,13 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                             environment: None,
                             cache: crate::runtime::context::CacheStore::new(8, 60),
                             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-                            debugger: None,
+                            debugger: debugger.clone(),
                         };
                         let mut ctx = crate::executor::RequestContext::new();
                         ctx.request = input.clone();
+                        if let Some(ref dbg) = debugger {
+                            ctx.debug_thread_id = Some(dbg.allocate_thread_id());
+                        }
                         let (out, ct, status_opt, ctx) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input, ctx).await?;
                         let log = ctx.call_log.clone();
                         (status_opt.unwrap_or(200u16), out, ct, true, String::new(), log)
@@ -782,10 +811,13 @@ pub async fn run_tests(program: Program, file_path: Option<std::path::PathBuf>, 
                             environment: None,
                             cache: crate::runtime::context::CacheStore::new(8, 60),
                             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-                            debugger: None,
+                            debugger: debugger.clone(),
                         };
                         let mut ctx = crate::executor::RequestContext::new();
                         ctx.request = input.clone();
+                        if let Some(ref dbg) = debugger {
+                            ctx.debug_thread_id = Some(dbg.allocate_thread_id());
+                        }
                         let (out, ct, status_opt, ctx) = crate::executor::execute_pipeline(&env, &pipeline, input, ctx).await?;
                         let log = ctx.call_log.clone();
                         (status_opt.unwrap_or(200u16), out, ct, true, String::new(), log)

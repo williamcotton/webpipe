@@ -94,6 +94,11 @@ impl Cli {
             Some(Commands::Migrate { .. }) => OperationMode::Migrate,
             None => {
                 if let Some(file) = &self.file {
+                    // Check for combined flags first
+                    if self.test && self.inspect {
+                        return OperationMode::TestInspect(file.clone());
+                    }
+
                     if self.inspect {
                         return OperationMode::Inspect(file.clone());
                     }
@@ -118,5 +123,6 @@ pub enum OperationMode {
     Serve(PathBuf),
     Test(PathBuf),
     Inspect(PathBuf),
+    TestInspect(PathBuf),
     Help,
 }

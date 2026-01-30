@@ -8,7 +8,7 @@
 /// - Supports stepOver command for step-through debugging
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicI64, AtomicBool, Ordering};
 use dashmap::DashMap;
 use tokio::sync::{oneshot, Mutex, Notify};
 use tokio::net::TcpListener;
@@ -115,6 +115,12 @@ pub struct DapServer {
 
     /// Notifier to signal when the debug session ends (client disconnects)
     shutdown_notify: Option<Arc<Notify>>,
+
+    /// Notifier that fires when configurationDone is received
+    configuration_done: Arc<Notify>,
+
+    /// Whether configuration is complete
+    configuration_done_received: Arc<AtomicBool>,
 }
 
 /// Stride for variable references to avoid collision between threads
@@ -140,7 +146,17 @@ impl DapServer {
             client_writer: Arc::new(Mutex::new(None)),
             seq: Arc::new(AtomicI64::new(1)),
             shutdown_notify,
+            configuration_done: Arc::new(Notify::new()),
+            configuration_done_received: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Wait for DAP client to send configurationDone
+    pub async fn wait_for_configuration_done(&self) {
+        if self.configuration_done_received.load(Ordering::SeqCst) {
+            return;
+        }
+        self.configuration_done.notified().await;
     }
 
     /// Allocate a new thread ID for an incoming HTTP request
@@ -479,6 +495,8 @@ impl DapServer {
     }
 
     async fn handle_configuration_done(&self, request: Request) -> Result<(), WebPipeError> {
+        self.configuration_done_received.store(true, Ordering::SeqCst);
+        self.configuration_done.notify_waiters();
         self.send_response(request.seq, "configurationDone", None).await
     }
 

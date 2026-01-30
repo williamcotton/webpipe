@@ -2,7 +2,7 @@ use std::{error::Error, net::SocketAddr, path::Path, sync::mpsc as std_mpsc, tim
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::{sync::{mpsc as tokio_mpsc, oneshot}, signal};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use webpipe::{ast::parse_program, WebPipeServer, run_tests};
+use webpipe::{ast::parse_program, WebPipeServer, run_tests, run_tests_with_debugger};
 use clap::Parser;
 
 use std::sync::Arc;
@@ -45,12 +45,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let cli = cli::Cli::parse();
 
-    // Validate incompatible flags
-    if cli.test && cli.inspect {
-        eprintln!("Error: --test and --inspect cannot be used together");
-        std::process::exit(1);
-    }
-
     match cli.mode() {
         cli::OperationMode::Scaffold => {
             scaffold::handle_new(&cli).await?;
@@ -66,6 +60,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         cli::OperationMode::Inspect(file_path) => {
             inspect_mode(&file_path, &cli).await?;
+        }
+        cli::OperationMode::TestInspect(file_path) => {
+            test_inspect_mode(&file_path, &cli).await?;
         }
         cli::OperationMode::Help => {
             eprintln!("Error: No subcommand or file provided");
@@ -352,4 +349,100 @@ async fn run_inspect_mode(
     server.serve_with_shutdown(addr, shutdown_future).await?;
 
     Ok(())
+}
+
+async fn test_inspect_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Error>> {
+    let verbose_mode = cli.verbose;
+    let inspect_port = cli.inspect_port;
+
+    // Determine the directory for .env files (same directory as the WebPipe file)
+    let env_dir = file_path.parent().unwrap_or(Path::new("."));
+
+    // Load .env files
+    load_env_files(env_dir, false, verbose_mode);
+
+    // Parse the WebPipe file
+    let input = std::fs::read_to_string(file_path)?;
+    let (_leftover_input, program) = parse_program(&input)
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    // Convert to absolute path for breakpoint matching
+    let absolute_path = std::fs::canonicalize(file_path)
+        .map_err(|e| format!("Failed to resolve absolute path for {}: {}", file_path.display(), e))?;
+    let file_path_str = absolute_path.to_str()
+        .ok_or_else(|| format!("Path contains invalid UTF-8: {:?}", absolute_path))?
+        .to_string();
+
+    eprintln!("=================================");
+    eprintln!("WebPipe Test Debugger");
+    eprintln!("=================================");
+    eprintln!("File:        {}", file_path_str);
+    eprintln!("Debug Port:  {}", inspect_port);
+    eprintln!("=================================");
+    eprintln!();
+
+    // Create shutdown notifier
+    let shutdown_notify = Arc::new(Notify::new());
+
+    // Create DAP server
+    let dap_server = Arc::new(DapServer::new(
+        file_path_str.clone(),
+        inspect_port,
+        Some(shutdown_notify.clone())
+    ));
+
+    // Start DAP TCP listener
+    eprintln!("[DAP] Starting DAP server on 127.0.0.1:{}...", inspect_port);
+    let dap_clone = dap_server.clone();
+    tokio::spawn(async move {
+        if let Err(e) = dap_clone.start_tcp_listener().await {
+            eprintln!("[DAP] DAP server error: {}", e);
+        }
+    });
+
+    // Give DAP server time to bind
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    eprintln!("[DAP] Waiting for debugger to connect...");
+    eprintln!("  • Press F5 in VS Code to attach debugger");
+    eprintln!("  • Set breakpoints in your .wp file");
+    eprintln!();
+
+    // Wait for VS Code to connect and send configurationDone
+    dap_server.wait_for_configuration_done().await;
+
+    eprintln!("[DAP] Debugger connected, starting tests...");
+    eprintln!();
+
+    // Create debugger hook
+    let debugger_hook = Arc::new(DapDebuggerHook { server: dap_server });
+
+    // Run tests with debugger
+    match run_tests_with_debugger(program, Some(absolute_path), verbose_mode, Some(debugger_hook)).await {
+        Ok(summary) => {
+            println!();
+            println!("Test Results: {}/{} passed ({} failed)", summary.passed, summary.total, summary.failed);
+            for o in summary.outcomes {
+                if o.passed {
+                    println!("[PASS] {} :: {}", o.describe, o.test);
+                } else {
+                    println!("[FAIL] {} :: {} -> {}", o.describe, o.test, o.message);
+                }
+            }
+
+            // Signal shutdown
+            shutdown_notify.notify_one();
+
+            if summary.failed > 0 {
+                std::process::exit(1);
+            } else {
+                std::process::exit(0);
+            }
+        }
+        Err(e) => {
+            eprintln!("Test runner error: {}", e);
+            shutdown_notify.notify_one();
+            std::process::exit(1);
+        }
+    }
 }

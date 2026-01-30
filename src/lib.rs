@@ -17,4 +17,4 @@ pub mod debugger;
 pub use ast::*;
 pub use error::WebPipeError;
 pub use server::{WebPipeServer, WebPipeRequest};
-pub use test_runner::{run_tests};
+pub use test_runner::{run_tests, run_tests_with_debugger};
