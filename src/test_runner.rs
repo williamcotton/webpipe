@@ -12,6 +12,7 @@ use crate::http::request::build_request_for_tests;
 use regex::Regex;
 use scraper::{Html, Selector};
 use handlebars::Handlebars;
+use percent_encoding::percent_decode_str;
 
 #[derive(Debug, Clone)]
 struct MockResolver {
@@ -661,7 +662,7 @@ async fn run_tests_internal(
                             let params_map = m
                                 .params
                                 .iter()
-                                .map(|(k, v)| (k.to_string(), v.to_string()))
+                                .map(|(k, v)| (k.to_string(), percent_decode_str(v).decode_utf8_lossy().into_owned()))
                                 .collect::<HashMap<_, _>>();
 
                             // Evaluate JQ expressions for test body, headers, and cookies using let variables

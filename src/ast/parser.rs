@@ -1082,10 +1082,10 @@ fn parse_condition(input: Span) -> IResult<Span, Condition> {
     let (input, value) = alt((
         // backtick multi-line
         map(parse_multiline_string, |s| s.to_string()),
-        // quoted on the same line
+        // quoted on the same line — wrap in quotes so downstream JSON parsing preserves string type
         map(
             delimited(char('"'), take_until("\""), char('"')),
-            |s: Span| s.fragment().to_string()
+            |s: Span| format!("\"{}\"", s.fragment())
         ),
         // bare until end of line
         map(take_till1(|c| c == '\n'), |s: Span| s.fragment().to_string()),

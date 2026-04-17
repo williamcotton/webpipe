@@ -9,6 +9,7 @@ use axum::{
     routing::{get, on, MethodFilter},
     Router,
 };
+use percent_encoding::percent_decode_str;
 use serde_json::Value;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 use tokio::signal;
@@ -928,22 +929,22 @@ async fn unified_handler(
     }
     let (payload, path_params) = match method.as_str() {
         "GET" => match state.get_router.at(&path) {
-            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
+            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), percent_decode_str(v).decode_utf8_lossy().into_owned())).collect::<HashMap<_,_>>()),
             Err(_) => {
                 if let Some(resp) = try_serve_static(&path).await { return resp; }
                 return StatusCode::NOT_FOUND.into_response();
             },
         },
         "POST" => match state.post_router.at(&path) {
-            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
+            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), percent_decode_str(v).decode_utf8_lossy().into_owned())).collect::<HashMap<_,_>>()),
             Err(_) => return StatusCode::NOT_FOUND.into_response(),
         },
         "PUT" => match state.put_router.at(&path) {
-            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
+            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), percent_decode_str(v).decode_utf8_lossy().into_owned())).collect::<HashMap<_,_>>()),
             Err(_) => return StatusCode::NOT_FOUND.into_response(),
         },
         "DELETE" => match state.delete_router.at(&path) {
-            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), v.to_string())).collect::<HashMap<_,_>>()),
+            Ok(m) => (m.value.clone(), m.params.iter().map(|(k,v)| (k.to_string(), percent_decode_str(v).decode_utf8_lossy().into_owned())).collect::<HashMap<_,_>>()),
             Err(_) => return StatusCode::NOT_FOUND.into_response(),
         },
         _ => return StatusCode::METHOD_NOT_ALLOWED.into_response(),
