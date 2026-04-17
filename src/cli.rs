@@ -37,16 +37,19 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Create a new WebPipe project
-    New {
-        /// Project name
-        name: String,
+    /// Initialize a WebPipe project
+    Init {
+        /// Directory to initialize (defaults to current directory)
+        directory: Option<String>,
 
-        #[arg(long, help = "Create in current directory instead of new subdirectory")]
-        here: bool,
+        #[arg(long, help = "Generate CLAUDE.md with WebPipe language reference")]
+        claude: bool,
 
-        #[arg(long, help = "Include example migration for users table")]
-        with_migrations: bool,
+        #[arg(long, help = "Generate AGENTS.md with WebPipe language reference")]
+        codex: bool,
+
+        #[arg(long, help = "Generate GEMINI.md with WebPipe language reference")]
+        gemini: bool,
     },
 
     /// Database migration management
@@ -90,7 +93,7 @@ impl Cli {
     /// Determine the operational mode based on CLI arguments
     pub fn mode(&self) -> OperationMode {
         match &self.command {
-            Some(Commands::New { .. }) => OperationMode::Scaffold,
+            Some(Commands::Init { .. }) => OperationMode::Init,
             Some(Commands::Migrate { .. }) => OperationMode::Migrate,
             None => {
                 if let Some(file) = &self.file {
@@ -118,7 +121,7 @@ impl Cli {
 
 #[derive(Debug)]
 pub enum OperationMode {
-    Scaffold,
+    Init,
     Migrate,
     Serve(PathBuf),
     Test(PathBuf),

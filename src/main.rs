@@ -46,8 +46,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let cli = cli::Cli::parse();
 
     match cli.mode() {
-        cli::OperationMode::Scaffold => {
-            scaffold::handle_new(&cli).await?;
+        cli::OperationMode::Init => {
+            scaffold::handle_init(&cli)?;
         }
         cli::OperationMode::Migrate => {
             migrations::handle_migrate(&cli).await?;
@@ -68,11 +68,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             eprintln!("Error: No subcommand or file provided");
             eprintln!();
             eprintln!("Usage:");
-            eprintln!("  wp <FILE> [OPTIONS]         Run WebPipe file");
-            eprintln!("  wp new <NAME>               Create new project");
-            eprintln!("  wp migrate <COMMAND>        Manage database migrations");
+            eprintln!("  webpipe <FILE> [OPTIONS]         Run WebPipe file");
+            eprintln!("  webpipe init [DIR] [--claude]    Initialize a new project");
+            eprintln!("  webpipe migrate <COMMAND>        Manage database migrations");
             eprintln!();
-            eprintln!("Run 'wp --help' for more information");
+            eprintln!("Run 'webpipe --help' for more information");
             std::process::exit(1);
         }
     }
