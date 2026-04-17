@@ -12,9 +12,7 @@ Instead of separating routing, middleware, database access, templating, GraphQL,
 
 This repository represents an experiment in language and systems design. Stability, familiarity, and completeness are explicitly not the goal. The goal is the journey of discovery and not the destination of a popular programming language.
 
-
-
-Here is a minimal hello world you can paste into a file like `hello.wp`:
+Here is a minimal hello world:
 
 ```wp
 GET /hello/:world
@@ -30,17 +28,32 @@ describe "hello, world"
     and selector `p` text equals "hello, {{world}}"
 ```
 
-Run the server with cargo, pointing to your `.wp` file. The server listens on `127.0.0.1:7770` by default. Try opening `http://127.0.0.1:7770/hello/world`.
+### From Homebrew
 
 ```bash
-cargo run hello.wp
+brew tap williamcotton/webpipe
+brew install webpipe
+```
+
+Initialize a new project with codex, claude, and gemini support:
+
+```bash
+webpipe init . --codex --claude --gemini
+```
+
+Run the server with webpipe, pointing to your `.wp` file. The server listens on `127.0.0.1:7770` by default. Try opening `http://127.0.0.1:7770/hello/world`.
+
+```bash
+webpipe hello.wp
 ```
 
 Run tests defined inside the same `.wp` file by passing `--test`. The process exits nonzero on failure and prints a concise summary.
 
 ```bash
-cargo run hello.wp --test
+webpipe hello.wp --test
 ```
+
+### From Docker
 
 You can also try it out with Docker.
 
