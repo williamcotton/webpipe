@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(name = "wp")]
+#[command(name = "webpipe")]
 #[command(version, about = "WebPipe - Pipeline-based web API runtime", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
