@@ -44,13 +44,13 @@ webpipe init . --codex --claude --gemini
 Run the server with webpipe, pointing to your `.wp` file. The server listens on `127.0.0.1:7770` by default. Try opening `http://127.0.0.1:7770/hello/world`.
 
 ```bash
-webpipe hello.wp
+webpipe app.wp
 ```
 
 Run tests defined inside the same `.wp` file by passing `--test`. The process exits nonzero on failure and prints a concise summary.
 
 ```bash
-webpipe hello.wp --test
+webpipe app.wp --test
 ```
 
 ### From Docker
