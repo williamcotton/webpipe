@@ -14,6 +14,55 @@ POST /users/:id
 
 Supported methods: GET, POST, PUT, DELETE. Dynamic params via `:param`, accessible as `.params.param`. Query strings accessible as `.query.key`.
 
+## Full request object
+
+GET /hello/:world
+  |> debug
+  |> jq: `{ world: .params.world }`
+  |> handlebars: `<p>hello, {{world}}</p>`
+
+```bash
+$ webpipe app.wp 
+2026-04-18T01:45:26.430245Z DEBUG webpipe::runtime::context: Lua scripts directory 'scripts' not found, skipping preload
+2026-04-18T01:45:26.430506Z DEBUG webpipe::runtime::context: JavaScript scripts directory 'scripts' not found, skipping preload
+2026-04-18T01:45:26.433357Z  INFO webpipe::server: Web Pipe server starting on 127.0.0.1:7770
+debug
+{
+  "body": {},
+  "content_type": "application/json",
+  "cookies": {
+    "": ""
+  },
+  "headers": {
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-encoding": "gzip, deflate",
+    "accept-language": "en-US,en;q=0.9",
+    "connection": "keep-alive",
+    "host": "localhost:7770",
+    "priority": "u=0, i",
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "none",
+    "upgrade-insecure-requests": "1",
+    "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15"
+  },
+  "ip": "127.0.0.1",
+  "method": "GET",
+  "originalRequest": {
+    "method": "GET",
+    "params": {
+      "world": "world"
+    },
+    "query": {}
+  },
+  "params": {
+    "world": "world"
+  },
+  "path": "/hello/world",
+  "query": {}
+}
+```  
+
 ## Pipeline Operator
 
 The `|>` operator chains transformations. Each step receives the output of the previous:
@@ -61,6 +110,13 @@ GET /page
 ```
 Parameters via inline `pg([expr, ...])` or `.sqlParams` array. Returns `{ rows: [...], rowCount: N }`.
 
+Use `!raw` prefix for raw SQL (bypasses parameter escaping — use only with safe, computed values):
+```
+|> pg([(.keys | map(tostring) | join(","))]): `!raw
+  SELECT * FROM employees WHERE team_id::text = ANY(string_to_array($1, ','))
+`
+```
+
 ### fetch — HTTP requests
 ```
 # Simple GET
@@ -79,6 +135,19 @@ Parameters via inline `pg([expr, ...])` or `.sqlParams` array. Returns `{ rows: 
     }
   )
 ```
+
+### Cookies — Setting response cookies
+```
+|> jq: `{
+  message: "Response with cookies",
+  setCookies: [
+    "sessionId=abc123; HttpOnly; Secure; Max-Age=3600",
+    "userId=john; Max-Age=86400",
+    "theme=dark; Path=/"
+  ]
+}`
+```
+Set `setCookies` to an array of Set-Cookie header strings. The server applies them to the HTTP response automatically.
 
 ### lua — Lua 5.4 scripting
 ```
@@ -185,6 +254,17 @@ Supports boolean expressions in cases:
     |> jq: `{ access: "login" }`
 ```
 
+Guards can also be used as dispatch cases for data-driven branching:
+```
+|> dispatch
+  case @guard(`.tier == "premium"`):
+    |> jq: `{ message: "Premium tier", features: ["all"] }`
+  case @guard(`.tier == "standard"`):
+    |> jq: `{ message: "Standard tier", features: ["basic"] }`
+  default:
+    |> jq: `{ message: "Free tier", features: [] }`
+```
+
 ## result — Status-based branching
 ```
 |> result
@@ -223,6 +303,9 @@ Tags control when pipeline steps execute:
 |> jq: `. + { both: true }` @when(feature_a) and @when(feature_b)
 |> jq: `. + { either: true }` @when(feature_a) or @when(feature_b)
 |> jq: `. + { grouped: true }` (@when(a) or @when(b)) and @when(c)
+
+# Multiple tags on a single step
+|> fetch("https://api.example.com/admin") @result(adminData) @when(isAdmin)
 ```
 
 ## @result — Named results
@@ -376,6 +459,52 @@ graphql testMutation = `
 |> jq: `.graphqlParams = { title: .body.title, body: .body.body }`
 |> graphql: testMutation
 ```
+
+The GraphQL endpoint can be called directly via HTTP:
+```
+POST /graphql
+  with body: { "query": "query { users { id name } }", "variables": {} }
+```
+
+### DataLoader — N+1 query prevention
+
+For nested GraphQL resolvers that would otherwise cause N+1 queries, use the `loader` middleware with a batch pipeline. The loader automatically batches all parent keys and calls the pipeline once.
+
+Define a loader pipeline that receives `{ keys: [...], args: {...}, context: {...} }`:
+```
+pipeline EmployeesByTeamLoader =
+  |> pg([(.keys | map(tostring) | join(","))  , (.args.limit // 10)]): `
+    SELECT id, name, email, team_id
+    FROM (
+      SELECT id, name, email, team_id,
+        ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY id) as rn
+      FROM employees
+      WHERE team_id::text = ANY(string_to_array($1, ','))
+    ) ranked
+    WHERE rn <= $2
+  `
+  |> jq: `
+    reduce .data.rows[] as $row (
+      {};
+      .[$row.team_id | tostring] += [$row]
+    )
+  `
+```
+
+The loader pipeline must return a JSON object keyed by parent ID (e.g., `{ "1": [...], "2": [...] }`).
+
+Wire it to a nested type resolver using `loader(.parent.id)`:
+```
+resolver Team.employees =
+  |> loader(.parent.id): EmployeesByTeamLoader
+```
+
+The `loader` middleware provides:
+- `.keys` — batched parent IDs (e.g., `[1, 2, 3]`)
+- `.args` — GraphQL field arguments (e.g., `{ limit: 5 }`)
+- `.context` — request context (headers, user, etc.)
+
+This turns N+1 queries into exactly 2 queries (one for the parent list, one batched for all children).
 
 ## Test DSL
 
