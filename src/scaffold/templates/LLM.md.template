@@ -69,10 +69,35 @@ The `|>` operator chains transformations. Each step receives the output of the p
 
 ```
 GET /api/data
-  |> jq: `{ id: .params.id }`
-  |> pg: `SELECT * FROM users WHERE id = $1`
+  |> jq: `{ id: (.params.id | tonumber) }`
+  |> pg([.id]): `SELECT * FROM users WHERE id = $1`
   |> jq: `.data.rows[0]`
   |> handlebars: `<h1>{{name}}</h1>`
+```
+
+## Variables
+
+Variables let you name reusable middleware snippets and reference them later with the same middleware.
+
+```
+jq weatherData = `{
+  "latitude": 30.27,
+  "longitude": -97.74,
+  "temperature": 38.0
+}`
+
+pg teamsQuery = `SELECT * FROM teams`
+
+GET /weather
+  |> jq: weatherData
+
+GET /teams
+  |> pg: teamsQuery
+```
+
+Syntax:
+```
+<middleware> <name> = `<code>`
 ```
 
 ## Built-in Middleware
@@ -149,6 +174,70 @@ Use `!raw` prefix for raw SQL (bypasses parameter escaping — use only with saf
 ```
 Set `setCookies` to an array of Set-Cookie header strings. The server applies them to the HTTP response automatically.
 
+### Response headers — setHeaders, setCookies
+These fields in middleware output are actually applied to the HTTP response:
+
+```
+|> jq: `{
+  setHeaders: {
+    "Location": "/users/123",
+    "X-Request-ID": (.headers["x-request-id"] // "generated")
+  },
+  setCookies: [
+    "sessionId=abc123; HttpOnly; Secure; Max-Age=3600"
+  ],
+  data: {
+    id: 123,
+    created: true
+  }
+}`
+```
+
+- `setHeaders` adds or overrides response headers.
+- `setCookies` adds `Set-Cookie` headers.
+- Plain `status` and `contentType` fields are not interpreted by the runtime. They stay in the JSON payload unless your own pipeline reads them.
+
+To set an actual HTTP status, use `result` branch codes:
+```
+POST /users
+  |> pg([.body.name]): `INSERT INTO users (name) VALUES ($1) RETURNING id`
+  |> result
+    ok(201):
+      |> jq: `{
+        id: .data.rows[0].id,
+        created: true,
+        setHeaders: {
+          "Location": ("/users/" + (.data.rows[0].id | tostring))
+        }
+      }`
+```
+
+To set a non-200 status from your own logic, create an error and branch on it:
+```
+GET /users/:id
+  |> pg([.params.id]): `SELECT * FROM users WHERE id = $1`
+  |> jq: `
+    if .data.rowCount == 0 then
+      { errors: [{ type: "notFound", message: "User not found" }] }
+    else
+      .data.rows[0]
+    end
+  `
+  |> result
+    ok(200):
+      |> jq: `.`
+    notFound(404):
+      |> jq: `{ error: .errors[0].message }`
+```
+
+Actual response content type comes from middleware output metadata, not a `contentType` field in JSON:
+
+- `handlebars` sets `text/html`
+- `gg` sets `image/svg+xml` or `image/png`
+- Cached responses preserve the cached content type
+
+`setHeaders: { "Content-Type": ... }` can change the header string, but it does not change how WebPipe serializes the body.
+
 ### lua — Lua 5.4 scripting
 ```
 |> lua: `
@@ -156,7 +245,7 @@ Set `setCookies` to an array of Set-Cookie header strings. The server applies th
   return { id = id }
 `
 ```
-Globals: `request`, `getEnv(name)`, `requireScript(name)`, `executeSql(query, params)`.
+Helpers available in scripts: `request`, `context`, `getEnv(name)`, `requireScript(name)`, `executeSql(query, params)`, `getFlag(name)`, `setFlag(name, bool)`, `getWhen(name)`, `setWhen(name, bool)`.
 
 ### js — JavaScript (Boa engine)
 ```
@@ -165,16 +254,16 @@ Globals: `request`, `getEnv(name)`, `requireScript(name)`, `executeSql(query, pa
   return { userId };
 `
 ```
-Same globals as lua.
+Same script helpers as lua: `request`, `context`, `getEnv(name)`, `requireScript(name)`, `executeSql(query, params)`, `getFlag(name)`, `setFlag(name, bool)`, `getWhen(name)`, `setWhen(name, bool)`.
 
 ### auth — Authentication
 ```
 |> auth: "login"
 |> auth: "logout"
 |> auth: "register"
-|> auth: "verify"
 |> auth: "required"
 |> auth: "optional"
+|> auth: "type:admin"
 ```
 
 ### validate — Input validation
@@ -280,6 +369,53 @@ Guards can also be used as dispatch cases for data-driven branching:
     |> jq: `{ error: "Internal server error" }`
 ```
 
+`result` routes execution based on the current `.errors` array:
+- If `.errors` is missing or empty, `ok(...)` runs.
+- Otherwise WebPipe matches `.errors[0].type` against the branch name, such as `validationError`, `authError`, or `sqlError`.
+- If no branch matches, `default(...)` runs.
+- The status code in parentheses becomes the HTTP status for that branch, and that branch's pipeline output becomes the new response.
+
+## Middleware error types
+
+`result` only branches on structured pipeline errors stored in `.errors`. Only some middlewares write those branchable error objects. Others abort the request with a top-level runtime/config failure instead.
+
+Branchable `.errors` written into pipeline state:
+
+- `auth` -> `authError { message }`
+- `validate` -> `validationError { field, context, rule, message }`
+- `pg` -> `sqlError { message, sqlstate?, severity?, query }`
+- `fetch` -> `networkError { message, url? }`, `timeoutError { message }`, `httpError { status, message, url }`
+
+Built-in middleware error behavior:
+
+- `jq` -> no `.errors`; failures are usually top-level `middleware_execution_error`
+- `auth` -> branchable `authError`; database/config failures can also abort with top-level `database_error` or `config_error`
+- `validate` -> branchable `validationError`
+- `pg` -> branchable `sqlError`; bad inline args can abort with top-level `middleware_execution_error`; missing DB or empty SQL can abort with top-level `database_error`
+- `handlebars` -> no `.errors`; failures are usually top-level `middleware_execution_error`
+- `fetch` -> branchable `networkError`, `timeoutError`, `httpError`; bad inline args can also abort with top-level `middleware_execution_error`
+- `cache` -> no middleware-specific `.errors` during normal execution
+- `lua` -> no `.errors`; failures are usually top-level `middleware_execution_error`
+- `js` -> no `.errors`; failures are usually top-level `middleware_execution_error`
+- `log` -> no middleware-specific `.errors` during normal execution
+- `debug` -> no middleware-specific `.errors` during normal execution
+- `join` -> no `.errors`; invalid config aborts with top-level `config_error`
+- `graphql` -> no WebPipe `.errors`; invalid config or invalid inline variable args abort with top-level `config_error` or `middleware_execution_error`; GraphQL execution failures are returned in GraphQL response format `{ data, errors }`
+- `rateLimit` -> no `.errors`; invalid config aborts with top-level `config_error`; exceeded limits abort with top-level `rate_limit_exceeded`
+- `gg` -> no `.errors`; failures are usually top-level `middleware_execution_error`
+
+If a middleware aborts with a top-level runtime/config error, `result` will not catch it. Use `result` only for `.errors` values already present in pipeline state.
+
+Custom middleware output can also create your own branchable errors:
+```
+|> jq: `{
+  errors: [{ type: "customError", message: "Something failed" }]
+}`
+|> result
+  customError(400):
+    |> jq: `{ error: .errors[0].message }`
+```
+
 ## Conditional Execution Tags
 
 Tags control when pipeline steps execute:
@@ -330,6 +466,8 @@ pg getUserQuery = `SELECT * FROM users`
 
 ## Feature Flags
 
+`featureFlags` is a special pipeline that runs before every route. Use it to set request-scoped flags once, then reference them later with `@flag(...)`, `$context.flags` in JQ, or `getFlag(...)` in Lua.
+
 ```
 featureFlags =
   |> lua: `
@@ -337,6 +475,10 @@ featureFlags =
     setFlag("beta", (math.random() > 0.5))
     return {}
   `
+
+GET /dashboard
+  |> jq: `{ experimental: ($context.flags.experimental // false), beta: ($context.flags.beta // false) }`
+  |> jq: `. + { betaEnabled: true }` @flag(beta)
 ```
 
 ## @when — Runtime conditions
@@ -365,12 +507,12 @@ pg usersQuery = `SELECT * FROM users`
 handlebars welcomeTemplate = `<h1>Welcome {{name}}</h1>`
 
 pipeline withAuth =
-  |> auth: "verify"
+  |> auth: "required"
   |> jq: `. + { authenticated: true }`
 
 GET /protected
   |> pipeline: withAuth
-  |> jq: `.data`
+  |> jq: `{ authenticated: .authenticated, user: .user }`
 ```
 
 Pipelines can receive inline arguments:
@@ -411,6 +553,7 @@ config auth {
   cookieSecure: false
   cookieHttpOnly: true
   cookieSameSite: "Lax"
+  cookiePath: "/"
 }
 
 config cache { enabled: true, defaultTtl: 60 }
@@ -428,17 +571,23 @@ graphqlSchema = `
 `
 
 query users =
-  |> pg([.limit // 10]): `SELECT * FROM users LIMIT $1`
+  |> pg([.args.limit // .limit // 10]): `SELECT * FROM users LIMIT $1`
   |> jq: `.data.rows`
 
 mutation createUser =
-  |> pg([.name, .email]): `INSERT INTO users (name, email) VALUES ($1, $2) RETURNING *`
+  |> pg([.args.name // .name, .args.email // .email]): `INSERT INTO users (name, email) VALUES ($1, $2) RETURNING *`
   |> jq: `.data.rows[0]`
 
 resolver User.posts =
-  |> pg([.id]): `SELECT * FROM posts WHERE user_id = $1`
+  |> pg([.parent.id]): `SELECT * FROM posts WHERE user_id = $1`
   |> jq: `.data.rows`
 ```
+
+Resolver input shape:
+- Root `query` and `mutation` pipelines receive GraphQL arguments both flattened at the top level, such as `.id` or `.limit`, and grouped under `.args`.
+- Nested `resolver Type.field` pipelines also receive `.parent` for the parent object and `.context` for the caller's request/pipeline state.
+- Prefer `.args.foo` in new code. The flattened `.foo` form is kept for backward compatibility.
+- Example: `resolver User.posts` should usually read the parent object via `.parent.id`.
 
 GraphQL middleware supports inline variables:
 ```
@@ -499,10 +648,25 @@ resolver Team.employees =
   |> loader(.parent.id): EmployeesByTeamLoader
 ```
 
+`loader(...)` arguments work like this:
+- The first argument is a JQ expression evaluated against each parent object. Those values are batched into `.keys`.
+- The optional second argument is an object expression passed through as `.args`.
+
 The `loader` middleware provides:
-- `.keys` — batched parent IDs (e.g., `[1, 2, 3]`)
-- `.args` — GraphQL field arguments (e.g., `{ limit: 5 }`)
+- `.keys` — batched values from the first loader argument (e.g., `[1, 2, 3]`)
+- `.args` — the optional object from the second loader argument (e.g., `{ limit: 5 }`)
 - `.context` — request context (headers, user, etc.)
+
+Example with GraphQL field arguments:
+```
+resolver Team.employees =
+  |> loader(.parent.id, { limit: .args.limit, offset: .args.offset }): EmployeesByTeamLoader
+```
+
+If the resolver is called for teams `1`, `2`, and `3` with `limit: 5`, the loader pipeline receives input like:
+```
+{ "keys": [1, 2, 3], "args": { "limit": 5 }, "context": { ... } }
+```
 
 This turns N+1 queries into exactly 2 queries (one for the parent list, one batched for all children).
 
@@ -528,6 +692,7 @@ describe "feature name"
     and with cookies `{ "session_id": "abc123" }`
     then status is 200
     and status in 200..299
+    and contentType is "application/json"
     and output equals `{ "success": true }`
     and output contains `{ "success": true }`
     and output matches `^<p>hello.*</p>$`
@@ -536,7 +701,7 @@ describe "feature name"
     and output `.message` contains "feature"
     and output `.items | length` equals 5
     and output `.data.teams | type` equals `"array"`
-    and header "Content-Type" equals "application/json"
+    and header "X-Request-ID" equals "req-123"
     and header "Set-Cookie" contains `session=alice_token`
     and selector `h1` exists
     and selector `#missing` does not exist
