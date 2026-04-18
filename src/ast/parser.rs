@@ -1391,7 +1391,7 @@ fn parse_describe(input: Span) -> IResult<Span, Describe> {
 pub fn parse_program(input: &str) -> IResult<&str, Program> {
     // Wrap the input string in a Span to track location
     let span_input = Span::new(input);
-    let (span_remaining, _) = multispace0::<Span, nom::error::Error<Span>>(span_input)
+    let (span_remaining, _) = skip_ws_and_comments(span_input)
         .map_err(|e| e.map_input(|s| *s.fragment()))?;
 
     let mut configs = Vec::new();
@@ -1409,7 +1409,7 @@ pub fn parse_program(input: &str) -> IResult<&str, Program> {
     let mut remaining = span_remaining;
 
     while !remaining.fragment().is_empty() {
-        let (new_remaining, _) = multispace0::<Span, nom::error::Error<Span>>(remaining)
+        let (new_remaining, _) = skip_ws_and_comments(remaining)
             .map_err(|e| e.map_input(|s| *s.fragment()))?;
         if new_remaining.fragment().is_empty() {
             break;
