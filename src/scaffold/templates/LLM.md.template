@@ -75,6 +75,10 @@ GET /api/data
   |> handlebars: `<h1>{{name}}</h1>`
 ```
 
+The output of each step is merged into the current state except:
+ - if the output is not an object, it replaces the current state.
+ - for the last step, which replaces the current state.
+
 ## Variables
 
 Variables let you name reusable middleware snippets and reference them later with the same middleware.
@@ -524,6 +528,8 @@ GET /team/:id
   |> pipeline({ sqlParams: [.params.id] }): getTeam
 ```
 
+When you call a pipeline, its output is fed back into the parent using normal state semantics. If the helper returns an object, it merges into the current state. If it returns an array, scalar, or `null`, it replaces the current state.
+
 ## Imports
 
 ```
@@ -668,11 +674,26 @@ If the resolver is called for teams `1`, `2`, and `3` with `limit: 5`, the loade
 { "keys": [1, 2, 3], "args": { "limit": 5 }, "context": { ... } }
 ```
 
+Best practice for JQ-based loaders: capture `.keys` before any `reduce` or `map` that changes JQ's `.` context. Inside a `reduce`, `.` refers to the accumulator, so `.keys` will be `null` unless you save it first.
+
+```
+pipeline MyLoader =
+  |> jq: `
+    .keys as $keys |         # Capture keys before reduce
+    reduce .items[] as $item (
+      {};
+      if ($keys | contains([$item.id])) then .[$item.id] = $item else . end
+    )
+  `
+```
+
 This turns N+1 queries into exactly 2 queries (one for the parent list, one batched for all children).
 
 ## Test DSL
 
 Tests live in the same `.wp` file as routes:
+
+Note: `describe` / `it` blocks use a declarative test DSL. They cannot contain pipeline steps such as `|> debug` or `|> middleware: ...`.
 
 ```
 describe "feature name"
@@ -823,6 +844,13 @@ and call query users with `{ "limit": 10 }`
 and call mutation createUser with `{ "name": "Alice", "email": "alice@example.com" }`
 and call pipeline processItem with `{ "item": "widget", "quantity": 5, "price": 9.99 }`
 ```
+
+## Common Pitfalls for Agents
+
+- Test boundaries: `it` blocks are for declarative test setup and assertions only. Do not place `|>` pipeline steps inside a test case.
+- Loader scoping: in JQ loaders, capture `.keys` or other input fields into variables before `reduce` or similar expressions that change what `.` means.
+- Pipeline call semantics are shape-dependent: object outputs from `|> pipeline: helper` merge into the caller's current state, while arrays, scalars, and `null` replace it.
+- Mock data and static snippets: prefer `jq variableName = \`...\`` for reusable JSON snippets, then reference them with `|> jq: variableName`.
 
 ## Running
 
