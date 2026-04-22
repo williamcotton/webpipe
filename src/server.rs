@@ -51,11 +51,19 @@ fn tag_expr_has_needs_flags(expr: &crate::ast::TagExpr) -> bool {
 /// Recursive function to detect if a pipeline requires feature flags
 fn pipeline_needs_flags(
     pipeline: &Pipeline,
-    named_pipelines: &HashMap<(Option<usize>, String), Arc<Pipeline>>
+    named_pipelines: &HashMap<(Option<usize>, String), Arc<Pipeline>>,
+    registry: &MiddlewareRegistry,
 ) -> bool {
     for step in &pipeline.steps {
         match step {
-            PipelineStep::Regular { name, config, condition, .. } => {
+            PipelineStep::Regular {
+                name,
+                config,
+                config_present,
+                condition,
+                location,
+                ..
+            } => {
                 if let Some(expr) = condition {
                     // 1. Direct Usage: @flag(...)
                     if tag_expr_has_flag(expr) {
@@ -68,12 +76,26 @@ fn pipeline_needs_flags(
                     }
                 }
 
-                // 3. Recursive Reference: |> pipeline: name (local only for now)
-                if name == "pipeline" {
-                    let target = config.trim();
-                    let key = (None, target.to_string());
-                    if let Some(sub) = named_pipelines.get(&key) {
-                        if pipeline_needs_flags(sub, named_pipelines) {
+                let shorthand_pipeline =
+                    !config_present && *name != "loader" && registry.get_behavior(name).is_none();
+
+                // 3. Recursive Reference: |> pipeline: name or |> localPipeline
+                if *name == "pipeline" || shorthand_pipeline {
+                    let target = if *name == "pipeline" {
+                        config.trim()
+                    } else {
+                        name.trim()
+                    };
+                    let module_key = (location.module_id, target.to_string());
+                    let sub = named_pipelines.get(&module_key).or_else(|| {
+                        if location.module_id.is_some() {
+                            named_pipelines.get(&(None, target.to_string()))
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(sub) = sub {
+                        if pipeline_needs_flags(sub, named_pipelines, registry) {
                             return true;
                         }
                     }
@@ -82,21 +104,21 @@ fn pipeline_needs_flags(
             PipelineStep::Result { branches, .. } => {
                 // 4. Recursive Branching: |> result ...
                 for branch in branches {
-                    if pipeline_needs_flags(&branch.pipeline, named_pipelines) {
+                    if pipeline_needs_flags(&branch.pipeline, named_pipelines, registry) {
                         return true;
                     }
                 }
             },
             PipelineStep::If { condition, then_branch, else_branch, .. } => {
                 // 5. If/Else blocks: check condition, then, and else branches
-                if pipeline_needs_flags(condition, named_pipelines) {
+                if pipeline_needs_flags(condition, named_pipelines, registry) {
                     return true;
                 }
-                if pipeline_needs_flags(then_branch, named_pipelines) {
+                if pipeline_needs_flags(then_branch, named_pipelines, registry) {
                     return true;
                 }
                 if let Some(else_pipe) = else_branch {
-                    if pipeline_needs_flags(else_pipe, named_pipelines) {
+                    if pipeline_needs_flags(else_pipe, named_pipelines, registry) {
                         return true;
                     }
                 }
@@ -109,20 +131,20 @@ fn pipeline_needs_flags(
                         return true;
                     }
                     // Check if branch pipeline needs flags
-                    if pipeline_needs_flags(&branch.pipeline, named_pipelines) {
+                    if pipeline_needs_flags(&branch.pipeline, named_pipelines, registry) {
                         return true;
                     }
                 }
                 // Check default branch if present
                 if let Some(default_pipe) = default {
-                    if pipeline_needs_flags(default_pipe, named_pipelines) {
+                    if pipeline_needs_flags(default_pipe, named_pipelines, registry) {
                         return true;
                     }
                 }
             }
             PipelineStep::Foreach { pipeline, .. } => {
                 // 7. Foreach blocks: check inner pipeline
-                if pipeline_needs_flags(pipeline, named_pipelines) {
+                if pipeline_needs_flags(pipeline, named_pipelines, registry) {
                     return true;
                 }
             }
@@ -146,6 +168,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
                     variables: (.body.variables // {})
                 }"#.to_string(),
                 config_type: ConfigType::Backtick,
+                config_present: true,
                 condition: None,
                 parsed_join_targets: None,
                 location: SourceLocation::new(0, 0, 0),
@@ -156,6 +179,7 @@ pub fn create_graphql_endpoint_pipeline() -> Pipeline {
                 args: vec![],
                 config: "".to_string(),
                 config_type: ConfigType::Backtick,
+                config_present: false,
                 condition: None,
                 parsed_join_targets: None,
                 location: SourceLocation::new(0, 0, 0),
@@ -764,7 +788,7 @@ impl WebPipeServer {
             };
 
             // Static analysis: determine if this route needs flags
-            let needs_flags = pipeline_needs_flags(&pipeline, &named_pipelines);
+            let needs_flags = pipeline_needs_flags(&pipeline, &named_pipelines, &self.middleware_registry);
 
             let payload = RoutePayload {
                 pipeline: pipeline.clone(),
@@ -806,7 +830,7 @@ impl WebPipeServer {
                     let graphql_pipeline = Arc::new(create_graphql_endpoint_pipeline());
 
                     // Check if pipeline needs flags (should be false for our simple pipeline)
-                    let needs_flags = pipeline_needs_flags(&graphql_pipeline, &named_pipelines);
+                    let needs_flags = pipeline_needs_flags(&graphql_pipeline, &named_pipelines, &self.middleware_registry);
 
                     let payload = RoutePayload {
                         pipeline: graphql_pipeline,
@@ -1423,7 +1447,7 @@ mod tests {
         };
         // Craft a tiny pipeline that sets cookies via jq
         let p_set_cookie = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "jq".to_string(), args: Vec::new(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0, end_line: 0, end_column: 0, file_path: None, module_id: None } }
+            crate::ast::PipelineStep::Regular { name: "jq".to_string(), args: Vec::new(), config: "{ setCookies: [\"a=b\"] }".to_string(), config_type: crate::ast::ConfigType::Quoted, config_present: true, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0, end_line: 0, end_column: 0, file_path: None, module_id: None } }
         ]});
         let resp = respond_with_pipeline(
             state.clone(),
@@ -1442,7 +1466,7 @@ mod tests {
 
         // Pipeline that renders HTML
         let p_html = Arc::new(Pipeline { steps: vec![
-            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0, end_line: 0, end_column: 0, file_path: None, module_id: None } }
+            crate::ast::PipelineStep::Regular { name: "handlebars".to_string(), args: Vec::new(), config: "<p>OK</p>".to_string(), config_type: crate::ast::ConfigType::Quoted, config_present: true, condition: None, parsed_join_targets: None, location: crate::ast::SourceLocation { line: 0, column: 0, offset: 0, end_line: 0, end_column: 0, file_path: None, module_id: None } }
         ]});
         let resp2 = respond_with_pipeline(
             state,

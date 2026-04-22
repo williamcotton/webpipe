@@ -603,6 +603,7 @@ fn parse_regular_step(input: Span) -> IResult<Span, PipelineStep> {
         parse_step_config(i)
     }).parse(input)?;
 
+    let config_present = config_pair.is_some();
     let (config, config_type) = config_pair.unwrap_or((String::new(), ConfigType::Quoted));
 
     // Parse optional condition (tag expression)
@@ -618,7 +619,16 @@ fn parse_regular_step(input: Span) -> IResult<Span, PipelineStep> {
     let end_span = input;
     let (input, _) = multispace0(input)?;
     let location = location_from_spans(start_span, end_span);
-    Ok((input, PipelineStep::Regular { name, args, config, config_type, condition, parsed_join_targets, location }))
+    Ok((input, PipelineStep::Regular {
+        name,
+        args,
+        config,
+        config_type,
+        config_present,
+        condition,
+        parsed_join_targets,
+        location,
+    }))
 }
 
 fn parse_result_step(input: Span) -> IResult<Span, PipelineStep> {
@@ -1658,6 +1668,50 @@ pipeline test =
         if let PipelineStep::Regular { condition, .. } = &pipeline.steps[1] {
             assert!(condition.is_none());
         }
+    }
+
+    #[test]
+    fn parse_and_format_configless_regular_steps() {
+        let src = r#"
+pipeline test =
+  |> withAuth
+  |> handlebars: ``
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+        let pipeline = &program.pipelines[0].pipeline;
+
+        if let PipelineStep::Regular {
+            name,
+            config,
+            config_present,
+            ..
+        } = &pipeline.steps[0]
+        {
+            assert_eq!(name, "withAuth");
+            assert_eq!(config, "");
+            assert!(!config_present);
+        } else {
+            panic!("Expected shorthand regular step");
+        }
+
+        if let PipelineStep::Regular {
+            name,
+            config,
+            config_present,
+            ..
+        } = &pipeline.steps[1]
+        {
+            assert_eq!(name, "handlebars");
+            assert_eq!(config, "");
+            assert!(*config_present);
+        } else {
+            panic!("Expected explicit empty-config step");
+        }
+
+        let displayed = format!("{}", pipeline);
+        assert!(displayed.contains("|> withAuth"));
+        assert!(!displayed.contains("|> withAuth:"));
+        assert!(displayed.contains("|> handlebars: ``"));
     }
 
     #[test]

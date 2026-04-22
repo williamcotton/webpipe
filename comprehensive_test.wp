@@ -4482,3 +4482,32 @@ describe "pipeline mocking"
     and mock pipeline processItem returning `{ "processed": true, "overridden": true, "custom": "value" }`
     then output contains `{ "overridden": true }`
     and output contains `{ "custom": "value" }`
+
+## Pipeline Sugar Demo
+# Demonstrates shorthand named pipeline calls without explicit `pipeline:` syntax
+
+pipeline withSugar =
+  |> jq: `{ sugar: true }`
+
+pipeline getSugarParams =
+  |> jq: `{ test: .params[0] }`
+
+GET /pipeline-sugar
+  |> withSugar
+
+GET /pipeline-sugar/params/:id
+  |> getSugarParams({ params: [.params.id] })
+
+GET /pipeline-sugar/invalid
+  |> nonExistantPipeline
+
+describe "pipeline sugar"
+  it "returns sugar"
+    when calling GET /pipeline-sugar
+    then status is 200
+    and output contains `{ "sugar": true }`
+
+  it "returns params"
+    when calling GET /pipeline-sugar/params/123
+    then status is 200
+    and output contains `{ "test": 123 }`

@@ -213,6 +213,9 @@ pub enum PipelineStep {
         args: Vec<String>,
         config: String,
         config_type: ConfigType,
+        /// True when the step included an explicit `: config` segment.
+        /// This lets us distinguish `|> helper` from `|> helper: ""`.
+        config_present: bool,
         /// Optional tag expression for conditional execution
         /// Supports boolean expressions: @when(a) and @when(b), @flag(x) or @env(dev)
         condition: Option<TagExpr>,

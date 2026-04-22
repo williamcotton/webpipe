@@ -153,7 +153,7 @@ impl Display for TagExpr {
 impl Display for PipelineStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PipelineStep::Regular { name, args, config, config_type, condition, .. } => {
+            PipelineStep::Regular { name, args, config, config_type, config_present, condition, .. } => {
                 // Format arguments if present
                 let args_str = if !args.is_empty() {
                     format!("({})", args.join(", "))
@@ -161,12 +161,16 @@ impl Display for PipelineStep {
                     String::new()
                 };
 
-                let formatted_config = match config_type {
-                    ConfigType::Backtick => format!("`{}`", config),
-                    ConfigType::Quoted => format!("\"{}\"", config),
-                    ConfigType::Identifier => config.clone(),
-                };
-                write!(f, "  |> {}{}: {}", name, args_str, formatted_config)?;
+                write!(f, "  |> {}{}", name, args_str)?;
+
+                if *config_present {
+                    let formatted_config = match config_type {
+                        ConfigType::Backtick => format!("`{}`", config),
+                        ConfigType::Quoted => format!("\"{}\"", config),
+                        ConfigType::Identifier => config.clone(),
+                    };
+                    write!(f, ": {}", formatted_config)?;
+                }
 
                 // Append condition if present
                 if let Some(cond) = condition {
@@ -412,4 +416,3 @@ impl Display for TypeResolver {
         write!(f, "{}", self.pipeline)
     }
 }
-

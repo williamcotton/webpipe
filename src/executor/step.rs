@@ -89,6 +89,7 @@ pub struct RegularStepExecutor<'a> {
     name: &'a str,
     args: &'a [String],
     config: &'a str,
+    config_present: bool,
     condition: &'a Option<TagExpr>,
     parsed_join_targets: Option<&'a Vec<String>>,
     location: &'a SourceLocation,
@@ -100,6 +101,7 @@ impl<'a> RegularStepExecutor<'a> {
         name: &'a str,
         args: &'a [String],
         config: &'a str,
+        config_present: bool,
         condition: &'a Option<TagExpr>,
         parsed_join_targets: Option<&'a Vec<String>>,
         location: &'a SourceLocation,
@@ -108,6 +110,7 @@ impl<'a> RegularStepExecutor<'a> {
             name,
             args,
             config,
+            config_present,
             condition,
             parsed_join_targets,
             location,
@@ -122,18 +125,20 @@ impl<'a> RegularStepExecutor<'a> {
         }
 
         let is_last_step = ctx.is_last_step();
+        let effective_name = self.effective_name(ctx.env);
+        let raw_config = self.raw_config(ctx.env);
 
         // 2. Determine Execution Mode
-        let mode = detect_execution_mode(self.name, self.condition);
+        let mode = detect_execution_mode(effective_name, self.condition);
 
         // 3. Async Fast Path (returns early, no state merge)
         if let ExecutionMode::Async(async_name) = mode {
             spawn_async_step(
                 ctx.env,
                 ctx.req_ctx,
-                self.name,
+                effective_name,
                 self.args,
-                self.config,
+                raw_config,
                 self.location,
                 ctx.pipe_ctx.state.clone(),
                 async_name,
@@ -145,13 +150,13 @@ impl<'a> RegularStepExecutor<'a> {
         let (effective_config, effective_input, auto_named) = resolve_config_and_autoname(
             ctx.env,
             self.location,
-            self.name,
-            self.config,
+            effective_name,
+            raw_config,
             &ctx.pipe_ctx.state,
         );
 
         // Log pipeline calls for test assertions (spying)
-        if self.name == "pipeline" {
+        if effective_name == "pipeline" {
             let pipeline_name = effective_config.trim();
             let log_key = format!("pipeline.{}", pipeline_name);
             ctx.req_ctx
@@ -170,14 +175,33 @@ impl<'a> RegularStepExecutor<'a> {
 
         // 5. Execute Core Logic
         let step_result = self
-            .run_core_logic(mode, ctx, &effective_config, effective_input, target_name.as_deref())
+            .run_core_logic(
+                mode,
+                ctx,
+                effective_name,
+                &effective_config,
+                effective_input,
+                target_name.as_deref(),
+            )
             .await?;
 
         // 6. Apply State Changes
-        self.apply_result_to_state(ctx, step_result.value, target_name.as_deref(), is_last_step);
+        self.apply_result_to_state(
+            ctx,
+            effective_name,
+            step_result.value,
+            target_name.as_deref(),
+            is_last_step,
+        );
 
         // 7. Update Metadata
-        self.update_metadata(ctx, step_result.content_type, step_result.status_code, is_last_step);
+        self.update_metadata(
+            ctx,
+            effective_name,
+            step_result.content_type,
+            step_result.status_code,
+            is_last_step,
+        );
 
         // 8. Cache Control Check
         if let Some(outcome) = self.check_cache_stop(ctx) {
@@ -194,11 +218,34 @@ impl<'a> RegularStepExecutor<'a> {
         Ok(StepOutcome::Continue)
     }
 
+    fn is_pipeline_shorthand(&self, env: &ExecutionEnv) -> bool {
+        regular_step_is_pipeline_shorthand(env, self.name, self.config_present)
+    }
+
+    fn effective_name(&self, env: &ExecutionEnv) -> &'a str {
+        if self.name == "pipeline" || self.is_pipeline_shorthand(env) {
+            "pipeline"
+        } else {
+            self.name
+        }
+    }
+
+    fn raw_config(&self, env: &ExecutionEnv) -> &'a str {
+        if self.name == "pipeline" {
+            self.config
+        } else if self.is_pipeline_shorthand(env) {
+            self.name
+        } else {
+            self.config
+        }
+    }
+
     /// Execute the core step logic based on execution mode.
     async fn run_core_logic(
         &self,
         mode: ExecutionMode,
         ctx: &mut StepContext<'_>,
+        effective_name: &str,
         config: &str,
         input: Value,
         target_name: Option<&str>,
@@ -216,7 +263,7 @@ impl<'a> RegularStepExecutor<'a> {
                 handle_standard_execution(
                     ctx.env,
                     ctx.req_ctx,
-                    self.name,
+                    effective_name,
                     self.args,
                     config,
                     &mut temp_ctx,
@@ -232,12 +279,13 @@ impl<'a> RegularStepExecutor<'a> {
     fn apply_result_to_state(
         &self,
         ctx: &mut StepContext,
+        effective_name: &str,
         new_value: Value,
         target_name: Option<&str>,
         is_last_step: bool,
     ) {
         // Data-fetching middleware support result wrapping under .data.<target>
-        let should_wrap = target_name.is_some() && matches!(self.name, "pg" | "fetch" | "graphql");
+        let should_wrap = target_name.is_some() && matches!(effective_name, "pg" | "fetch" | "graphql");
 
         if should_wrap {
             let target = target_name.unwrap();
@@ -246,7 +294,7 @@ impl<'a> RegularStepExecutor<'a> {
             let behavior = ctx
                 .env
                 .registry
-                .get_behavior(self.name)
+                .get_behavior(effective_name)
                 .unwrap_or(crate::middleware::StateBehavior::Merge);
             update_pipeline_state(ctx.pipe_ctx, new_value, behavior, is_last_step);
         }
@@ -277,12 +325,16 @@ impl<'a> RegularStepExecutor<'a> {
     fn update_metadata(
         &self,
         ctx: &mut StepContext,
+        effective_name: &str,
         content_type: String,
         status: Option<u16>,
         is_last_step: bool,
     ) {
         if content_type != "application/json" || is_last_step {
-            if self.name == "pipeline" || is_last_step || self.name == "handlebars" || self.name == "gg"
+            if effective_name == "pipeline"
+                || is_last_step
+                || effective_name == "handlebars"
+                || effective_name == "gg"
             {
                 ctx.output.content_type = content_type;
             }
@@ -570,6 +622,17 @@ fn detect_execution_mode(name: &str, condition: &Option<TagExpr>) -> ExecutionMo
     }
 }
 
+fn regular_step_is_pipeline_shorthand(
+    env: &ExecutionEnv,
+    name: &str,
+    config_present: bool,
+) -> bool {
+    !config_present
+        && name != "pipeline"
+        && name != "loader"
+        && env.registry.get_behavior(name).is_none()
+}
+
 /// Update pipeline state after a step execution.
 fn update_pipeline_state(
     pipeline_ctx: &mut crate::runtime::PipelineContext,
@@ -706,8 +769,6 @@ fn spawn_async_step(
     input: Value,
     async_name: String,
 ) {
-    use super::resolver::parse_scoped_ref;
-
     let env_clone = env.clone();
     let name_clone = name.to_string();
     let args_clone = args.to_vec();
@@ -732,24 +793,7 @@ fn spawn_async_step(
 
         if name_clone == "pipeline" {
             let pipeline_name = effective_config.trim();
-            let (alias, name) = parse_scoped_ref(pipeline_name);
-
-            let module_id_opt = if let Some(alias) = alias {
-                if let Some(step_module_id) = location_clone.module_id {
-                    if let Some(step_module) = env_clone.module_registry.get_module(step_module_id) {
-                        step_module.import_map.get(&alias).copied()
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                location_clone.module_id
-            };
-
-            let key = (module_id_opt, name);
-            if let Some(p) = env_clone.named_pipelines.get(&key) {
+            if let Some(p) = resolve_named_pipeline(&env_clone, &location_clone, pipeline_name) {
                 let pipeline_input = if !args_clone.is_empty() {
                     let arg_value = crate::runtime::jq::evaluate(&args_clone[0], &effective_input)
                         .map_err(|e| {
@@ -811,29 +855,9 @@ fn handle_recursive_pipeline<'a>(
     input: Value,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StepResult, WebPipeError>> + Send + 'a>>
 {
-    use super::resolver::parse_scoped_ref;
-
     Box::pin(async move {
         let pipeline_name = config.trim();
-        let (alias, name) = parse_scoped_ref(pipeline_name);
-
-        let module_id_opt = if let Some(alias) = alias {
-            if let Some(step_module_id) = location.module_id {
-                if let Some(step_module) = env.module_registry.get_module(step_module_id) {
-                    step_module.import_map.get(&alias).copied()
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            location.module_id
-        };
-
-        let key = (module_id_opt, name);
-
-        if let Some(pipeline) = env.named_pipelines.get(&key) {
+        if let Some(pipeline) = resolve_named_pipeline(env, location, pipeline_name) {
             let pipeline_input = if !args.is_empty() {
                 let arg_value = crate::runtime::jq::evaluate(&args[0], &input).map_err(|e| {
                     WebPipeError::MiddlewareExecutionError(format!(
@@ -866,6 +890,40 @@ fn handle_recursive_pipeline<'a>(
             Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
         }
     })
+}
+
+fn resolve_named_pipeline<'a>(
+    env: &'a ExecutionEnv,
+    location: &SourceLocation,
+    pipeline_name: &str,
+) -> Option<&'a std::sync::Arc<Pipeline>> {
+    use super::resolver::parse_scoped_ref;
+
+    let (alias, name) = parse_scoped_ref(pipeline_name);
+
+    let module_id_opt = if let Some(ref alias) = alias {
+        if let Some(step_module_id) = location.module_id {
+            if let Some(step_module) = env.module_registry.get_module(step_module_id) {
+                step_module.import_map.get(alias).copied()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        location.module_id
+    };
+
+    env.named_pipelines
+        .get(&(module_id_opt, name.clone()))
+        .or_else(|| {
+            if alias.is_none() && module_id_opt.is_some() {
+                env.named_pipelines.get(&(None, name))
+            } else {
+                None
+            }
+        })
 }
 
 /// Execute standard middleware.
@@ -902,6 +960,7 @@ mod tests {
             args: vec![],
             config: ".data".to_string(),
             config_type: crate::ast::ConfigType::Backtick,
+            config_present: true,
             condition: None,
             parsed_join_targets: None,
             location: SourceLocation::default(),
@@ -916,6 +975,7 @@ mod tests {
             args: vec![],
             config: "auth".to_string(),
             config_type: crate::ast::ConfigType::Identifier,
+            config_present: true,
             condition: None,
             parsed_join_targets: None,
             location: SourceLocation::default(),
@@ -930,6 +990,7 @@ mod tests {
             args: vec![],
             config: ".data".to_string(),
             config_type: crate::ast::ConfigType::Backtick,
+            config_present: true,
             condition: None,
             parsed_join_targets: None,
             location: SourceLocation::with_file(1, 1, 0, "/path/to/main.wp".to_string()),
