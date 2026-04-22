@@ -2,6 +2,24 @@
 
 WebPipe is a pipeline-based web API runtime. Files use the `.wp` extension.
 
+## Read This First
+
+- A `.wp` file mixes two syntaxes:
+  - Runtime pipelines and routes use `|>` steps.
+  - Tests use a declarative DSL with `describe`, `it`, `when`, `with`, `then`, and `and`.
+- Do not put pipeline steps such as `|> debug` or `|> jq: ...` inside a test case. Build routes and pipelines above; exercise them from `describe` / `it`.
+- WebPipe uses backpack-style state semantics:
+  - If a step returns an object, it merges into the current state.
+  - If a step returns an array, scalar, or `null`, it replaces the current state.
+  - The final step's output becomes the response.
+- Pipeline calls follow the same shape rules on both sides:
+  - `|> pipeline({ ... }): helper` computes the child input first.
+  - If the current state and the inline args are both objects, they merge for the child call.
+  - Otherwise, the inline args replace the child input.
+  - When the helper returns, its output merges back if it is an object; otherwise it replaces the caller's state.
+- GraphQL loaders are easiest to reason about if you think of them as ordinary pipelines receiving `{ keys, args, context }`. When debugging a loader, execute that pipeline directly in a test with `with input`.
+- In tests, `with body`, `with headers`, `with cookies`, `with input`, `mock ... returning`, and `call ... with` all accept JQ expressions, so prefer JQ over Handlebars-style interpolation for structured payloads.
+
 ## Routes
 
 ```
@@ -528,7 +546,9 @@ GET /team/:id
   |> pipeline({ sqlParams: [.params.id] }): getTeam
 ```
 
-When you call a pipeline, its output is fed back into the parent using normal state semantics. If the helper returns an object, it merges into the current state. If it returns an array, scalar, or `null`, it replaces the current state.
+When you call a pipeline with inline args, WebPipe computes the child input first. If the current state and the inline args are both objects, they merge for the child call. Otherwise, the inline args replace the child input.
+
+When the helper returns, its output is fed back into the parent using normal state semantics. If the helper returns an object, it merges into the current state. If it returns an array, scalar, or `null`, it replaces the current state.
 
 ## Imports
 
@@ -673,6 +693,8 @@ If the resolver is called for teams `1`, `2`, and `3` with `limit: 5`, the loade
 ```
 { "keys": [1, 2, 3], "args": { "limit": 5 }, "context": { ... } }
 ```
+
+For debugging, you can also execute the loader pipeline directly in a test by passing that same shape via `with input`.
 
 Best practice for JQ-based loaders: capture `.keys` before any `reduce` or `map` that changes JQ's `.` context. Inside a `reduce`, `.` refers to the accumulator, so `.keys` will be `null` unless you save it first.
 
@@ -819,6 +841,8 @@ it "tests a variable"
   then output `.rows | length` equals 3
 ```
 
+This is also the easiest way to debug helper pipelines and loaders in isolation. If a pipeline returns HTML, selector assertions work here too.
+
 ### Mock targets
 
 ```
@@ -839,6 +863,8 @@ it "with override"
 ```
 
 ### Call assertions (spying)
+Call assertions accept the same JQ expression syntax as `with body`, `with input`, and mock return values, so they can reference `let` variables as `.varName` or `$varName`.
+
 ```
 and call query users with `{ "limit": 10 }`
 and call mutation createUser with `{ "name": "Alice", "email": "alice@example.com" }`
