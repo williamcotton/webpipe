@@ -4888,7 +4888,7 @@ dependencies = [
 
 [[package]]
 name = "webpipe"
-version = "2.0.71"
+version = "2.0.72"
 dependencies = [
  "anyhow",
  "argon2",
