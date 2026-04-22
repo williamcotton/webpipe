@@ -79,6 +79,7 @@ async fn execute_step<'a>(
             )
             .execute(&mut step_ctx)
             .await
+            .map_err(|e| e.with_source_location(location))
         }
         PipelineStep::Result { branches, .. } => {
             step::handle_result_step(branches, &mut step_ctx).await
@@ -209,6 +210,9 @@ mod tests {
                     return Ok(crate::middleware::MiddlewareOutput {
                         content_type: Some("text/html".to_string()),
                     });
+                }
+                "fail" => {
+                    return Err(WebPipeError::MiddlewareExecutionError(cfg.to_string()));
                 }
                 "echo" => {
                     // Try to parse config as JSON and merge with input
@@ -928,5 +932,121 @@ mod tests {
 
         assert_eq!(ct, "text/html");
         assert_eq!(out, serde_json::json!("<p></p>"));
+    }
+
+    #[tokio::test]
+    async fn regular_step_error_includes_source_location() {
+        let env = env_with_vars(vec![]);
+        let mut location = crate::ast::SourceLocation::with_file(3, 1, 0, "main.wp".to_string());
+        location.set_end(5, 1);
+
+        let pipeline = Pipeline {
+            steps: vec![PipelineStep::Regular {
+                name: "fail".to_string(),
+                args: Vec::new(),
+                config: "boom".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                config_present: true,
+                condition: None,
+                parsed_join_targets: None,
+                location,
+            }],
+        };
+
+        let err = match execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await {
+            Ok(_) => panic!("expected pipeline to fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err.to_string(),
+            "At main.wp:3-5: Middleware execution failed: boom"
+        );
+    }
+
+    #[tokio::test]
+    async fn async_step_error_includes_source_location_in_join_result() {
+        let env = env_with_vars(vec![]);
+
+        let pipeline = Pipeline {
+            steps: vec![
+                PipelineStep::Regular {
+                    name: "fail".to_string(),
+                    args: Vec::new(),
+                    config: "async boom".to_string(),
+                    config_type: crate::ast::ConfigType::Quoted,
+                    config_present: true,
+                    condition: single_tag("async", false, vec!["task1"]),
+                    parsed_join_targets: None,
+                    location: crate::ast::SourceLocation::with_file(9, 1, 0, "async.wp".to_string()),
+                },
+                PipelineStep::Regular {
+                    name: "join".to_string(),
+                    args: Vec::new(),
+                    config: "task1".to_string(),
+                    config_type: crate::ast::ConfigType::Quoted,
+                    config_present: true,
+                    condition: None,
+                    parsed_join_targets: Some(vec!["task1".to_string()]),
+                    location: crate::ast::SourceLocation::default(),
+                },
+            ],
+        };
+
+        let (out, _ct, _st, _ctx) =
+            execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new())
+                .await
+                .unwrap();
+
+        let error = out["async"]["task1"]["error"].as_str();
+        assert_eq!(
+            error,
+            Some("At async.wp:9: Middleware execution failed: async boom")
+        );
+    }
+
+    #[tokio::test]
+    async fn nested_pipeline_error_is_not_wrapped_twice() {
+        let mut env = env_with_vars(vec![]);
+        let mut named_pipelines = HashMap::new();
+        named_pipelines.insert(
+            (None, "child".to_string()),
+            Arc::new(Pipeline {
+                steps: vec![PipelineStep::Regular {
+                    name: "fail".to_string(),
+                    args: Vec::new(),
+                    config: "child boom".to_string(),
+                    config_type: crate::ast::ConfigType::Quoted,
+                    config_present: true,
+                    condition: None,
+                    parsed_join_targets: None,
+                    location: crate::ast::SourceLocation::with_file(7, 1, 0, "child.wp".to_string()),
+                }],
+            }),
+        );
+        env.named_pipelines = Arc::new(named_pipelines);
+
+        let pipeline = Pipeline {
+            steps: vec![PipelineStep::Regular {
+                name: "pipeline".to_string(),
+                args: Vec::new(),
+                config: "child".to_string(),
+                config_type: crate::ast::ConfigType::Identifier,
+                config_present: true,
+                condition: None,
+                parsed_join_targets: None,
+                location: crate::ast::SourceLocation::with_file(20, 1, 0, "main.wp".to_string()),
+            }],
+        };
+
+        let err = match execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await {
+            Ok(_) => panic!("expected pipeline to fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err.to_string(),
+            "At child.wp:7: Middleware execution failed: child boom"
+        );
     }
 }

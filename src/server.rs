@@ -1141,18 +1141,19 @@ async fn respond_with_pipeline(
             response
         }
         Err(e) => {
+            let details = e.display_pipeline_details();
             // Use debug logging for rate limits (expected during testing), warn for actual errors
             match &e {
                 crate::error::WebPipeError::RateLimitExceeded(_) => {
-                    debug!("Rate limit exceeded: {}", e);
+                    debug!("Rate limit exceeded: {}", details);
                 }
                 _ => {
-                    warn!("Pipeline execution failed: {}", e);
+                    warn!("Pipeline execution failed: {}", details);
                 }
             }
             let error_response = serde_json::json!({
                 "error": "Pipeline execution failed",
-                "details": e.to_string()
+                "details": details
             });
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response)).into_response()
         }

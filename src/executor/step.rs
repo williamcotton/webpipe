@@ -801,7 +801,8 @@ fn spawn_async_step(
                                 "pipeline argument evaluation failed: {}",
                                 e
                             ))
-                        })?;
+                        })
+                        .map_err(|e| e.with_source_location(&location_clone))?;
 
                     if let (Some(input_obj), Some(arg_obj)) =
                         (effective_input.as_object(), arg_value.as_object())
@@ -819,10 +820,13 @@ fn spawn_async_step(
                 };
 
                 let (val, _ct, _st, ctx) =
-                    super::execute_pipeline(&env_clone, p, pipeline_input, async_ctx).await?;
+                    super::execute_pipeline(&env_clone, p, pipeline_input, async_ctx)
+                        .await
+                        .map_err(|e| e.with_source_location(&location_clone))?;
                 Ok((val, ctx.profiler))
             } else {
-                Err(WebPipeError::PipelineNotFound(pipeline_name.to_string()))
+                Err(WebPipeError::PipelineNotFound(pipeline_name.to_string())
+                    .with_source_location(&location_clone))
             }
         } else {
             let mut pipeline_ctx = crate::runtime::PipelineContext::new(effective_input);
@@ -837,7 +841,8 @@ fn spawn_async_step(
                     &mut async_ctx,
                     None,
                 )
-                .await?;
+                .await
+                .map_err(|e| e.with_source_location(&location_clone))?;
             Ok((pipeline_ctx.state, async_ctx.profiler))
         }
     });

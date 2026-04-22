@@ -8,6 +8,13 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum WebPipeError {
+    #[error("At {location}: {source}")]
+    Located {
+        location: String,
+        #[source]
+        source: Box<WebPipeError>,
+    },
+
     #[error("Parse error: {0}")]
     ParseError(String),
 
@@ -94,8 +101,31 @@ pub enum WebPipeError {
 }
 
 impl WebPipeError {
+    fn format_middleware_details(message: &str) -> String {
+        if let Some((summary, payload)) = message.split_once(": ") {
+            format!("Middleware execution failed, {summary}:\n{payload}")
+        } else {
+            format!("Middleware execution failed:\n{message}")
+        }
+    }
+
+    pub fn with_source_location(self, location: &crate::ast::SourceLocation) -> Self {
+        let Some(location) = location.error_label() else {
+            return self;
+        };
+
+        match self {
+            WebPipeError::Located { .. } => self,
+            other => WebPipeError::Located {
+                location,
+                source: Box::new(other),
+            },
+        }
+    }
+
     pub fn status_code(&self) -> StatusCode {
         match self {
+            WebPipeError::Located { source, .. } => source.status_code(),
             WebPipeError::ParseError(_) => StatusCode::BAD_REQUEST,
             WebPipeError::RouteNotFound(_) => StatusCode::NOT_FOUND,
             WebPipeError::PipelineNotFound(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -129,6 +159,7 @@ impl WebPipeError {
 
     pub fn error_type(&self) -> &'static str {
         match self {
+            WebPipeError::Located { source, .. } => source.error_type(),
             WebPipeError::ParseError(_) => "parse_error",
             WebPipeError::RouteNotFound(_) => "route_not_found",
             WebPipeError::PipelineNotFound(_) => "pipeline_not_found",
@@ -159,6 +190,21 @@ impl WebPipeError {
             WebPipeError::DebuggerError(_) => "debugger_error",
         }
     }
+
+    pub fn display_pipeline_details(&self) -> String {
+        match self {
+            WebPipeError::Located { location, source } => match source.as_ref() {
+                WebPipeError::MiddlewareExecutionError(message) => {
+                    format!("At {location}\n{}", Self::format_middleware_details(message))
+                }
+                other => format!("At {location}\n{other}"),
+            },
+            WebPipeError::MiddlewareExecutionError(message) => {
+                Self::format_middleware_details(message)
+            }
+            other => other.to_string(),
+        }
+    }
 }
 
 impl IntoResponse for WebPipeError {
@@ -185,6 +231,7 @@ pub type Result<T> = std::result::Result<T, WebPipeError>;
 mod tests {
     use super::*;
     use axum::body;
+    use crate::ast::SourceLocation;
 
     #[test]
     fn status_code_mapping_basic() {
@@ -205,5 +252,49 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["error"]["type"], serde_json::json!("bad_request"));
         assert_eq!(v["error"]["status"], serde_json::json!(400));
+    }
+
+    #[test]
+    fn located_error_delegates_status_and_type() {
+        let loc = SourceLocation::with_file(4, 1, 0, "app.wp".to_string());
+        let err = WebPipeError::BadRequest("oops".into()).with_source_location(&loc);
+        assert_eq!(err.status_code(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(err.error_type(), "bad_request");
+        assert_eq!(err.to_string(), "At app.wp:4: Bad request: oops");
+    }
+
+    #[test]
+    fn located_error_is_not_wrapped_twice() {
+        let loc = SourceLocation::with_file(4, 1, 0, "app.wp".to_string());
+        let err = WebPipeError::BadRequest("oops".into())
+            .with_source_location(&loc)
+            .with_source_location(&loc);
+        assert_eq!(err.to_string(), "At app.wp:4: Bad request: oops");
+    }
+
+    #[test]
+    fn display_pipeline_details_formats_structured_middleware_payload() {
+        let loc = SourceLocation::with_file(4493, 1, 0, "/tmp/test.wp".to_string());
+        let err = WebPipeError::MiddlewareExecutionError(
+            "JQ compilation error: [(File { code: \".context as $context | .state | { test: params[0] }\", path: () }, [(\"params\", Filter(0))])]".into()
+        ).with_source_location(&loc);
+
+        assert_eq!(
+            err.display_pipeline_details(),
+            "At /tmp/test.wp:4493\nMiddleware execution failed, JQ compilation error:\n[(File { code: \".context as $context | .state | { test: params[0] }\", path: () }, [(\"params\", Filter(0))])]"
+        );
+    }
+
+    #[test]
+    fn display_pipeline_details_formats_any_middleware_payload() {
+        let loc = SourceLocation::with_file(12, 1, 0, "/tmp/test.wp".to_string());
+        let err = WebPipeError::MiddlewareExecutionError(
+            "Handlebars render error: missing key `title`".into()
+        ).with_source_location(&loc);
+
+        assert_eq!(
+            err.display_pipeline_details(),
+            "At /tmp/test.wp:12\nMiddleware execution failed, Handlebars render error:\nmissing key `title`"
+        );
     }
 }

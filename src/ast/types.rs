@@ -60,6 +60,31 @@ impl SourceLocation {
         self.end_line = end_line;
         self.end_column = end_column;
     }
+
+    /// Render a compact label for runtime error messages.
+    pub fn error_label(&self) -> Option<String> {
+        let start_line = self.line;
+        if start_line == 0 {
+            return None;
+        }
+
+        let end_line = if self.end_line >= start_line {
+            self.end_line
+        } else {
+            start_line
+        };
+
+        let line_label = if end_line > start_line {
+            format!("{start_line}-{end_line}")
+        } else {
+            start_line.to_string()
+        };
+
+        match self.file_path.as_deref() {
+            Some(path) if !path.is_empty() => Some(format!("{path}:{line_label}")),
+            _ => Some(format!("line {line_label}")),
+        }
+    }
 }
 
 /// Import statement for file-based modules
@@ -361,4 +386,34 @@ pub enum DomAssertType {
     Count,
     /// Check a specific attribute value (e.g., "href")
     Attribute(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SourceLocation;
+
+    #[test]
+    fn source_location_error_label_with_file() {
+        let loc = SourceLocation::with_file(12, 3, 0, "app.wp".to_string());
+        assert_eq!(loc.error_label().as_deref(), Some("app.wp:12"));
+    }
+
+    #[test]
+    fn source_location_error_label_with_range() {
+        let mut loc = SourceLocation::with_file(12, 3, 0, "app.wp".to_string());
+        loc.set_end(16, 1);
+        assert_eq!(loc.error_label().as_deref(), Some("app.wp:12-16"));
+    }
+
+    #[test]
+    fn source_location_error_label_without_file() {
+        let loc = SourceLocation::new(7, 1, 0);
+        assert_eq!(loc.error_label().as_deref(), Some("line 7"));
+    }
+
+    #[test]
+    fn source_location_error_label_missing_line() {
+        let loc = SourceLocation::default();
+        assert_eq!(loc.error_label(), None);
+    }
 }
