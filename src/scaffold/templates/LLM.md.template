@@ -8,6 +8,8 @@ WebPipe is a pipeline-based web API runtime. Files use the `.wp` extension.
   - Runtime pipelines and routes use `|>` steps.
   - Tests use a declarative DSL with `describe`, `it`, `when`, `with`, `then`, and `and`.
 - Do not put pipeline steps such as `|> debug` or `|> jq: ...` inside a test case. Build routes and pipelines above; exercise them from `describe` / `it`.
+- When confused about the runtime request shape, current state, or what a step is receiving, temporarily insert `|> debug` into the route or pipeline near the suspicious step and inspect the printed JSON. Use `debug` in runtime pipelines, not inside `describe` / `it`.
+- For terminal diagnostics, prefer `webpipe-lsp check file.wp` when available. Before relying on it, check whether `webpipe-lsp` is installed because it may not exist in the environment. If it is unavailable, fall back to `webpipe app.wp --test`, careful file inspection, and targeted `|> debug` instrumentation.
 - WebPipe uses backpack-style state semantics:
   - If a step returns an object, it merges into the current state.
   - If a step returns an array, scalar, or `null`, it replaces the current state.
@@ -19,6 +21,17 @@ WebPipe is a pipeline-based web API runtime. Files use the `.wp` extension.
   - When the helper returns, its output merges back if it is an object; otherwise it replaces the caller's state.
 - GraphQL loaders are easiest to reason about if you think of them as ordinary pipelines receiving `{ keys, args, context }`. When debugging a loader, execute that pipeline directly in a test with `with input`.
 - In tests, `with body`, `with headers`, `with cookies`, `with input`, `mock ... returning`, and `call ... with` all accept JQ expressions, so prefer JQ over Handlebars-style interpolation for structured payloads.
+- The test DSL is order-sensitive. Inside an `it` block, use this safe canonical order:
+  - optional `let ...`
+  - `when calling ...` or `when executing ...`
+  - optional `with ...` / `and with ...`
+  - optional `and mock ...`
+  - `then ...` / `and ...` assertions
+- Do not put `with body`, `with headers`, `with cookies`, or `with input` before `when`. Avoid pre-`when` test-local mocks; use `and mock ...` after the trigger instead.
+- If a real middleware config such as `config pg` exists, tests may still attempt the live dependency even when calls are mocked. For pure mock-driven tests, remove/comment the real config or isolate the tests in a file without that live config.
+- For multi-step routes and templates, prefer `@result(name)` and then read from `data.name` instead of relying on the implicit current state after several merges and replacements.
+- A generic mock like `with mock pg returning ...` is a catch-all. When the same middleware is called multiple times in one route or pipeline, prefer named mocks such as `with mock pg.getTasksQuery returning ...`.
+- If later tests seem to disappear or the runner reports fewer tests than expected, suspect malformed test DSL above that point. The parser can stop consuming the file without producing a clear syntax error.
 
 ## Routes
 
@@ -129,11 +142,53 @@ Syntax:
 |> jq: `{ result: .data, count: (.items | length) }`
 ```
 
+#### JQ execution context
+
+Internally, the JQ middleware wraps every user expression in a filter that separates pipeline state from ambient context:
+
+```
+.context as $context | .state | <your expression>
+```
+
+This means:
+- `.` (dot) inside your expression refers to the current pipeline state — the mutable "backpack" containing `.body`, `.params`, `.query`, `.tasks`, etc.
+- `$context` is a bound JQ variable giving read-only access to flags, conditions, env, and request metadata.
+- The pipeline state (`.`) is the full merged object at that point in the route — it includes request fields (`.body`, `.params`, `.query`, `.headers`, `.method`, `.path`) plus any fields added by earlier pipeline steps.
+
+#### Capture outer fields before iteration
+
+Because `.` changes meaning inside JQ iteration constructs (`.[]`, `map`, `reduce`, etc.), fields from the top-level state are **not accessible** once you descend into a sub-expression. This is standard JQ scoping, but it causes a specific problem in WebPipe: the test runner may pre-validate routes with empty or null request fields (e.g., `.body` is `null`), causing "cannot use null as iterable" errors that don't appear during normal HTTP requests.
+
+**Always capture request-level fields into JQ variables before iterating:**
+
+```
+# BAD — .body is inaccessible inside .tasks[], and may be null during test-runner validation
+|> jq: `
+  .tasks[] |
+  if .id == 1 then .title = (.body.title // .title) else . end
+`
+
+# GOOD — capture .body before entering .tasks[]
+|> jq: `
+  (.body) as $body |
+  (.params.id | tonumber) as $id |
+  [.tasks[] |
+    if .id == $id then .title = ($body.title // .title) else . end
+  ]
+`
+```
+
+This applies to `.body`, `.params`, `.query`, `.headers`, and any other top-level state fields you need inside array iteration or `reduce`.
+
 ### handlebars — Template rendering
 ```
 |> handlebars: `<h1>Hello {{name}}</h1>`
 |> handlebars: `{{#each items}}<li>{{this.title}}</li>{{/each}}`
 ```
+
+Handlebars does not support JavaScript-like property access on arrays. There is no `{{items.length}}` — compute counts in a prior `jq` or `lua` step and pass them as a named field (e.g., `itemCount`).
+
+HTML attributes containing special characters like double colons (e.g., `hx-on::after-request`) can conflict with WebPipe's backtick-delimited template parsing. Avoid such attributes in Handlebars templates, or use alternative HTMX patterns (e.g., `hx-on` with a single event name).
 
 Partials can be defined as variables and referenced with `{{>partialName}}`:
 ```
@@ -269,6 +324,8 @@ Actual response content type comes from middleware output metadata, not a `conte
 ```
 Helpers available in scripts: `request`, `context`, `getEnv(name)`, `requireScript(name)`, `executeSql(query, params)`, `getFlag(name)`, `setFlag(name, bool)`, `getWhen(name)`, `setWhen(name, bool)`.
 
+`context` is immutable ambient data (flags, conditions, env, request metadata). It is not part of the mutable pipeline state. Do not write to `context` expecting persistence or side effects — use `request` for the mutable "backpack" that flows through pipeline steps. `context` is read-only; writes to it are silently ignored.
+
 ### js — JavaScript (Boa engine)
 ```
 |> js: `
@@ -277,6 +334,8 @@ Helpers available in scripts: `request`, `context`, `getEnv(name)`, `requireScri
 `
 ```
 Same script helpers as lua: `request`, `context`, `getEnv(name)`, `requireScript(name)`, `executeSql(query, params)`, `getFlag(name)`, `setFlag(name, bool)`, `getWhen(name)`, `setWhen(name, bool)`.
+
+The same `context` vs `request` distinction applies: `context` is read-only ambient data, `request` is the mutable pipeline state.
 
 ### auth — Authentication
 ```
@@ -550,6 +609,8 @@ When you call a pipeline with inline args, WebPipe computes the child input firs
 
 When the helper returns, its output is fed back into the parent using normal state semantics. If the helper returns an object, it merges into the current state. If it returns an array, scalar, or `null`, it replaces the current state.
 
+For testability, keep shared pipelines pure — they should read data from their input (what the caller passes), not from `context`. Since `context` is immutable ambient data and not populated with custom state in pipeline tests (`when executing pipeline ... with input`), a pipeline that reads from `context` instead of its input will silently receive `nil`/empty values. Route-level steps should prepare the data and pass it into the pipeline via normal pipeline call semantics.
+
 ## Imports
 
 ```
@@ -717,6 +778,30 @@ Tests live in the same `.wp` file as routes:
 
 Note: `describe` / `it` blocks use a declarative test DSL. They cannot contain pipeline steps such as `|> debug` or `|> middleware: ...`.
 
+### Safe `it` block shape
+
+Use this exact shape when generating tests:
+
+```
+it "does something"
+  let userId = 123
+  let email = "test@example.com"
+
+  when calling POST /users/{{userId}}
+  with headers `{ "x-api-key": "secret" }`
+  and with body `{ "email": $email }`
+  and with cookies `{ "session_id": "abc123" }`
+  and mock pg.createUserQuery returning `{ "rows": [{ "id": 123, "email": $email }] }`
+  then status is 200
+  and output `.rows[0].email` equals "{{email}}"
+```
+
+Treat any other ordering as risky. In particular:
+
+- Do not put `with body`, `with headers`, `with cookies`, or `with input` before `when`.
+- Do not rely on pre-`when` test-level mocks. Put test-local mocks after the trigger as `and mock ...`.
+- If you need shared mocks for many tests, put them at describe scope with `with mock ...`.
+
 ```
 describe "feature name"
   # Describe-level variables are shared across all tests in this block
@@ -728,11 +813,13 @@ describe "feature name"
 
   it "does something"
     let userId = 123
+    let email = "test@example.com"
 
     when calling GET /users/{{userId}}
     with headers `{ "x-api-key": "secret" }`
-    and with body `{ "email": "test@example.com" }`
+    and with body `{ "email": $email }`
     and with cookies `{ "session_id": "abc123" }`
+    and mock pg.auditQuery returning `{ "rows": [] }`
     then status is 200
     and status in 200..299
     and contentType is "application/json"
@@ -791,6 +878,8 @@ describe "scoping"
     # role is "admin" here
 ```
 
+Keep `let` declarations at the top of the `it` block, before `when`. Do not interleave `let` with `with body`, `with input`, or test-local mocks.
+
 ### JQ expressions in test data
 
 Body, headers, cookies, input, and mock returning values all support JQ expressions. Let variables are accessible as `.varName` or `$varName`:
@@ -821,6 +910,8 @@ it "uses JQ in mocks"
   then output `.rows[0].id` equals {{userId}}
 ```
 
+Use `{{varName}}` for paths and string assertions. Use `$varName` or `.varName` inside backticked structured values. Do not use Handlebars interpolation inside backticked JSON/JQ payloads.
+
 ### Query strings in route calls
 
 ```
@@ -848,7 +939,7 @@ This is also the easiest way to debug helper pipelines and loaders in isolation.
 ```
 # Describe-level mocks
 with mock query users returning `[{ "id": 1, "name": "Alice" }]`
-and mock mutation createUser returning `{ "id": 99 }`
+with mock mutation createUser returning `{ "id": 99 }`
 with mock pg.usersQuery returning `{ "rows": [] }`
 with mock pg returning `{ "rows": [] }`
 with mock pipeline myHelper returning `{ "result": true }`
@@ -862,6 +953,22 @@ it "with override"
   and mock pipeline processItem returning `{ "mocked": true }`
 ```
 
+Mocking guidance:
+
+- Use describe-level `with mock ...` for defaults shared across many tests.
+- Use test-level `and mock ...` for per-test overrides after `when`.
+- Use named mocks like `pg.getTasksQuery` when a route or pipeline makes multiple `pg` calls.
+- Use a generic mock like `pg` only when every call can return the same payload.
+
+### Real config vs. mocks
+
+If the file contains a real middleware config such as `config pg = ...`, the test runner may still try to initialize or connect to that dependency even if all calls are mocked. For pure mock-based tests in environments without that dependency:
+
+- remove or comment out the real config in the test file, or
+- move the tests into a `.wp` file that does not configure the live dependency
+
+Do not assume that adding `with mock pg ...` is enough to suppress all real initialization.
+
 ### Call assertions (spying)
 Call assertions accept the same JQ expression syntax as `with body`, `with input`, and mock return values, so they can reference `let` variables as `.varName` or `$varName`.
 
@@ -874,18 +981,34 @@ and call pipeline processItem with `{ "item": "widget", "quantity": 5, "price": 
 ## Common Pitfalls for Agents
 
 - Test boundaries: `it` blocks are for declarative test setup and assertions only. Do not place `|>` pipeline steps inside a test case.
+- Runtime debugging: if the request shape or state flow is unclear, add `|> debug` around the suspicious runtime step, inspect the emitted JSON, then remove it once the issue is understood.
+- CLI diagnostics are optional: check whether `webpipe-lsp` is installed before suggesting or invoking it. Do not assume every environment has the `webpipe-lsp` command on `PATH`.
+- Test ordering: keep `it` blocks in the canonical order `let` -> `when` -> `with` -> `and mock` -> assertions.
+- Silent skips: if a test file reports fewer tests than expected, inspect the block immediately before the missing tests for malformed DSL or bad ordering.
+- JQ iteration scoping: inside `.tasks[]`, `map(...)`, or `reduce`, the `.` context changes and top-level state fields like `.body`, `.params`, `.query` become inaccessible. Always capture them into JQ variables (e.g., `(.body) as $body`) **before** entering the iteration. The test runner pre-validates routes with null/empty request fields, so `.body.field` inside an iteration can crash with "cannot use null as iterable" even though runtime requests work fine.
 - Loader scoping: in JQ loaders, capture `.keys` or other input fields into variables before `reduce` or similar expressions that change what `.` means.
 - Pipeline call semantics are shape-dependent: object outputs from `|> helper` merge into the caller's current state, while arrays, scalars, and `null` replace it.
+- Named results: for multi-step routes, prefer `@result(name)` and then read from `data.name` in later jq/handlebars steps and test assertions. This is more reliable than depending on the implicit current state after multiple merges.
 - Mock data and static snippets: prefer `jq variableName = \`...\`` for reusable JSON snippets, then reference them with `|> jq: variableName`.
+- `context` is read-only: do not write to `context` in Lua/JS expecting mutable shared state or cross-request persistence. Use `request` for pipeline state. Writes to `context` are silently ignored.
+- Handlebars has no `.length`: arrays do not expose a `length` property in Handlebars. Compute counts in a `jq` or `lua` step and pass them as a named field (e.g., `todoCount`).
+- Special characters in HTML attributes: double colons and other special characters in Handlebars template attributes (e.g., `hx-on::after-request`) can cause parse errors. Use alternative patterns.
+- Pipeline testability: pipelines tested via `when executing pipeline ... with input` receive only the explicit input. They cannot read custom data from `context`. Keep shared pipelines pure — accept data through input, not `context`.
+- Non-ASCII in comments: avoid unicode box-drawing or other non-ASCII characters in `.wp` comments (e.g., `# ── Section ──────`). They can silently break the parser and cause entire `describe` blocks to be skipped without error. Use plain ASCII only (e.g., `# --- Section ---`).
+- `jq` variables are whole-step only: a `jq variableName = \`...\`` variable can only be used as the entire step expression (`|> jq: variableName`), not embedded inside another jq expression (`|> jq: \`{ foo: variableName }\``). To combine seed data with request fields, use a jq step that builds the full object inline.
+- HTMX partial responses: for HTMX apps, mutating endpoints (POST/PUT/DELETE) should return HTML fragments (not full pages) for `hx-swap`. Only the initial page load route needs the full `<html>` document.
+- Handlebars partials from variables: a `handlebars varName = \`...\`` variable works as a partial (`{{>varName}}`) only when referenced from inside another handlebars variable template. Inline handlebars steps (`|> handlebars: \`{{>varName}}\``) may fail with "Partial not found". To share template fragments, either inline the template in each step or use a single handlebars variable for the full template.
 
 ## Running
 
 ```bash
 webpipe app.wp                         # Serve on 127.0.0.1:7770
-webpipe app.wp --port 8080             # Custom port
+PORT=8080 webpipe app.wp               # Custom port
 webpipe app.wp --test                  # Run tests
 webpipe app.wp --test --verbose        # Verbose tests
 webpipe app.wp --inspect               # Debug mode
+command -v webpipe-lsp >/dev/null && webpipe-lsp check app.wp
+command -v webpipe-lsp >/dev/null && webpipe-lsp check app.wp --json
 ```
 
 ## Comments
