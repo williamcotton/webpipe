@@ -3,16 +3,32 @@ use crate::executor::env::ExecutionEnv;
 use crate::ast::{SourceLocation, TagExpr, ResultBranch, ResultBranchType};
 use crate::executor::tags::get_result_from_tag_expr;
 
+fn is_valid_identifier_part(s: &str) -> bool {
+    let mut chars = s.chars();
+
+    match chars.next() {
+        Some(first) if first.is_ascii_alphanumeric() || first == '_' => {}
+        _ => return false,
+    }
+
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
 /// Parse a scoped reference: "namespace::name" OR "name"
 /// Returns (namespace, name) where namespace is None for local references
 pub fn parse_scoped_ref(config: &str) -> (Option<String>, String) {
-    if let Some(idx) = config.find("::") {
-        let namespace = config[..idx].to_string();
-        let name = config[idx+2..].to_string();
-        (Some(namespace), name)
-    } else {
-        (None, config.to_string())
+    let trimmed = config.trim();
+
+    if let Some((namespace, name)) = trimmed.split_once("::") {
+        if !name.contains("::")
+            && is_valid_identifier_part(namespace)
+            && is_valid_identifier_part(name)
+        {
+            return (Some(namespace.to_string()), name.to_string());
+        }
     }
+
+    (None, config.to_string())
 }
 
 pub fn resolve_config_and_autoname(
@@ -155,4 +171,24 @@ pub fn select_branch<'a>(
     branches
         .iter()
         .find(|b| matches!(b.branch_type, ResultBranchType::Default))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_scoped_ref;
+
+    #[test]
+    fn parse_scoped_ref_accepts_identifier_style_refs() {
+        let (alias, name) = parse_scoped_ref("auth::login");
+        assert_eq!(alias.as_deref(), Some("auth"));
+        assert_eq!(name, "login");
+    }
+
+    #[test]
+    fn parse_scoped_ref_ignores_double_colons_inside_templates() {
+        let template = r#"<form hx-on::after-request="this.reset()">"#;
+        let (alias, name) = parse_scoped_ref(template);
+        assert!(alias.is_none());
+        assert_eq!(name, template);
+    }
 }
