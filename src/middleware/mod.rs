@@ -7,6 +7,7 @@ use std::sync::Arc;
 mod jq;
 mod auth;
 mod validate;
+mod assert;
 mod pg;
 mod handlebars;
 mod fetch;
@@ -23,6 +24,7 @@ mod gramgraph;
 pub use jq::{JqMiddleware, eval_bool as jq_eval_bool};
 pub use auth::AuthMiddleware;
 pub use validate::ValidateMiddleware;
+pub use assert::AssertMiddleware;
 pub use pg::PgMiddleware;
 pub use handlebars::HandlebarsMiddleware;
 pub use fetch::FetchMiddleware;
@@ -109,6 +111,7 @@ impl MiddlewareRegistry {
         registry.register("jq", Box::new(JqMiddleware::new()));
         registry.register("auth", Box::new(AuthMiddleware { ctx: ctx.clone() }));
         registry.register("validate", Box::new(ValidateMiddleware));
+        registry.register("assert", Box::new(AssertMiddleware));
         registry.register("pg", Box::new(PgMiddleware { ctx: ctx.clone() }));
         registry.register("handlebars", Box::new(HandlebarsMiddleware::new_with_ctx(ctx.clone())));
         registry.register("fetch", Box::new(FetchMiddleware { ctx: ctx.clone() }));
@@ -233,5 +236,4 @@ mod tests {
         match err { WebPipeError::MiddlewareNotFound(_) => {}, other => panic!("unexpected: {:?}", other) }
     }
 }
-
 

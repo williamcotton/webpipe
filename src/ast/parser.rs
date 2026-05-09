@@ -1567,6 +1567,68 @@ template`
     }
 
     #[test]
+    fn parse_assert_variable_and_pipeline_steps() {
+        let src = r#"
+assert TeamsPageState = `{
+  data: {
+    rows: [{ id: string, name: string }],
+    rowCount: number
+  }
+}`
+
+GET /teams
+  |> pg: teamsQuery
+  |> assert: TeamsPageState
+  |> jq: `{ names: .data.rows | map(.name) }`
+
+GET /inline-teams
+  |> pg: teamsQuery
+  |> assert: `{
+    data: {
+      rows: [{ id: string, name: string }],
+      rowCount: number
+    }
+  }`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+
+        let assert_var = program
+            .variables
+            .iter()
+            .find(|variable| variable.var_type == "assert" && variable.name == "TeamsPageState")
+            .expect("assert variable should parse");
+        assert!(assert_var.value.contains("rowCount: number"));
+
+        let named_route = &program.routes[0];
+        if let PipelineRef::Inline(pipeline) = &named_route.pipeline {
+            match &pipeline.steps[1] {
+                PipelineStep::Regular { name, config, config_type, .. } => {
+                    assert_eq!(name, "assert");
+                    assert_eq!(config, "TeamsPageState");
+                    assert!(matches!(config_type, ConfigType::Identifier));
+                }
+                _ => panic!("expected regular assert step"),
+            }
+        } else {
+            panic!("expected inline route pipeline");
+        }
+
+        let inline_route = &program.routes[1];
+        if let PipelineRef::Inline(pipeline) = &inline_route.pipeline {
+            match &pipeline.steps[1] {
+                PipelineStep::Regular { name, config, config_type, .. } => {
+                    assert_eq!(name, "assert");
+                    assert!(config.contains("rows: [{ id: string, name: string }]"));
+                    assert!(matches!(config_type, ConfigType::Backtick));
+                }
+                _ => panic!("expected regular assert step"),
+            }
+        } else {
+            panic!("expected inline route pipeline");
+        }
+    }
+
+    #[test]
     fn parse_tags_on_regular_steps() {
         let src = r#"
 pipeline test =

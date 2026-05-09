@@ -5,7 +5,8 @@ use axum::{routing::get, Json, Router};
 
 use webpipe::ast::{parse_program, Pipeline};
 use webpipe::executor::{execute_pipeline, ExecutionEnv, ModuleRegistry, RealInvoker};
-use webpipe::middleware::MiddlewareRegistry;
+use webpipe::middleware::{AssertMiddleware, JqMiddleware, MiddlewareRegistry};
+use webpipe::runtime::context::{CacheStore, RateLimitStore};
 use webpipe::runtime::Context;
 use webpipe::ast::Variable;
 
@@ -51,6 +52,37 @@ async fn build_env(program: &webpipe::ast::Program) -> ExecutionEnv {
     }
 }
 
+fn build_assert_env(program: &webpipe::ast::Program) -> ExecutionEnv {
+    let mut registry = MiddlewareRegistry::empty();
+    registry.register("assert", Box::new(AssertMiddleware));
+    registry.register("jq", Box::new(JqMiddleware::new()));
+    let registry = Arc::new(registry);
+
+    let named: HashMap<(Option<usize>, String), Arc<Pipeline>> = program
+        .pipelines
+        .iter()
+        .map(|p| ((None, p.name.clone()), Arc::new(p.pipeline.clone())))
+        .collect();
+
+    let variables_map: HashMap<(Option<usize>, String, String), Variable> = program.variables
+        .iter()
+        .map(|v| ((None, v.var_type.clone(), v.name.clone()), v.clone()))
+        .collect();
+
+    ExecutionEnv {
+        variables: Arc::new(variables_map),
+        named_pipelines: Arc::new(named),
+        imports: Arc::new(std::collections::HashMap::new()),
+        invoker: Arc::new(RealInvoker::new(registry.clone())),
+        registry,
+        environment: None,
+        cache: CacheStore::new(8, 60),
+        rate_limit: RateLimitStore::new(1000),
+        module_registry: Arc::new(ModuleRegistry::new()),
+        debugger: None,
+    }
+}
+
 #[tokio::test]
 async fn validate_jq_result_branching() {
     let src = r#"
@@ -75,6 +107,61 @@ pipeline p =
     let input = serde_json::json!({"body": {"name": "Al"}});
     let (_out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
     assert_eq!(status, Some(200));
+}
+
+#[tokio::test]
+async fn named_assert_contract_refines_without_leaking_result_name() {
+    let src = r#"
+assert PersonState = `{
+  id: string | number,
+  name: string,
+  email?: email
+}`
+
+pipeline p =
+  |> assert: PersonState
+"#;
+    let (_rest, program) = parse_program(src).unwrap();
+    let env = build_assert_env(&program);
+    let pipeline = find_pipeline_owned(&program, "p");
+
+    let input = serde_json::json!({
+        "id": "123",
+        "name": "Ada"
+    });
+    let (out, _ct, _status, _ctx) = execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
+
+    assert_eq!(out["name"], serde_json::json!("Ada"));
+    assert!(out.get("resultName").is_none());
+    assert!(out.get("errors").is_none());
+}
+
+#[tokio::test]
+async fn failed_assert_selects_validation_error_result_branch() {
+    let src = r#"
+assert PersonState = `{
+  id: string | number,
+  name: string
+}`
+
+pipeline p =
+  |> assert: PersonState
+  |> result
+    validationError(400):
+      |> jq: `{ field: .errors[0].field, message: .errors[0].message }`
+    ok(200):
+      |> jq: `{ ok: true }`
+"#;
+    let (_rest, program) = parse_program(src).unwrap();
+    let env = build_assert_env(&program);
+    let pipeline = find_pipeline_owned(&program, "p");
+
+    let input = serde_json::json!({ "id": "123" });
+    let (out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
+
+    assert_eq!(status, Some(400));
+    assert_eq!(out["field"], serde_json::json!("name"));
+    assert!(out["message"].as_str().unwrap().contains("Missing required field"));
 }
 
 #[tokio::test]
@@ -155,5 +242,4 @@ pipeline processData =
     assert_eq!(out1, out2);
     assert_eq!(out2["articles"][0], serde_json::json!("fetched content"));
 }
-
 

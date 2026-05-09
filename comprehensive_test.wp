@@ -379,7 +379,7 @@ GET /test5
   }`
   |> result
     ok(200):
-      |> jq: `{success: true, data: .result}`
+      |> jq: `{success: true, data: .}`
     authRequired(401):
       |> jq: `{
         error: "Authentication required",
@@ -616,8 +616,7 @@ POST /debug/test-hash
   |> auth: "register"
   |> jq: `{
     message: "Test hash generation (this will fail but show us what's happening)",
-    body: .body,
-    errors: .errors
+    body: .body
   }`
 
 config cache {
@@ -1449,6 +1448,28 @@ GET /dashboard
     </html>
   `
 
+assert WeatherResponse = `{
+  async: {
+    openmeteo: {
+      error?: string,
+      data: {
+        response: {
+          current_weather: { temperature: number }
+        }
+      }
+    },
+    goweather: {
+      error?: string,
+      data: {
+        response: {
+          description: string,
+          temperature?: string
+        }
+      }
+    }
+  }
+}`
+
 GET /weather/:city
   |> jq: `{
     fetchUrl: "https://api.open-meteo.com/v1/forecast?latitude=52.52&longitude=13.41&current_weather=true",
@@ -1461,9 +1482,10 @@ GET /weather/:city
   }` 
   |> fetch: `_` @async(goweather)
   |> join: `openmeteo,goweather`
+  |> assert: WeatherResponse
   |> jq: `{
     city: .params.city,
-    temperature: (.async.openmeteo.data.response.current_weather.temperature // .async.goweather.data.temperature),
+    temperature: (.async.openmeteo.data.response.current_weather.temperature // .async.goweather.data.response.temperature),
     description: (.async.goweather.data.response.description // "Data from Open-Meteo"),
     sources: {
       openmeteo: (.async.openmeteo.error // "success"),
@@ -4511,3 +4533,44 @@ describe "pipeline sugar"
     when calling GET /pipeline-sugar/params/123
     then status is 200
     and output contains `{ "test": 123 }`
+
+# Pipeline type-checking demo: this one is intentionally valid.
+assert TeamsPageState = `{
+  data: {
+    rows: [{ id: number, name: string }],
+    rowCount: number
+  }
+}`
+
+GET /type-checking/assert-ok
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT * FROM teams`
+  |> assert: TeamsPageState
+  |> result
+    validationError(500):
+      |> jq: `{ error: .errors[0].message, field: .errors[0].field }`
+    ok(200):
+      |> jq: `{ names: .data.rows | map(.name) }`
+
+
+assert TeamsPageStateIncorrect = `{
+  data: {
+    rows: [{ id: number, user: string }],
+    rowCount: number
+  }
+}`
+
+GET /type-checking/assert-runtime-error
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT * FROM teams`
+  |> assert: TeamsPageStateIncorrect
+  |> result
+    validationError(500):
+      |> jq: `{ error: .errors[0].message, field: .errors[0].field }`
+    ok(200):
+      |> jq: `{ names: .data.rows | map(.user) }`
+
+# Pipeline type-checking demo: this one intentionally has a type error.
+# The LSP should report that .data.rows may be missing before this jq stage.
+GET /type-checking/assert-error
+  |> jq: `{ names: .data.rows | map(.name) }`
