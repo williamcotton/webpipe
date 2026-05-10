@@ -135,6 +135,61 @@ Syntax:
 <middleware> <name> = `<code>`
 ```
 
+## Pipeline Type Checking
+
+When `webpipe-lsp` is installed, `webpipe-lsp check file.wp` performs a compile-time shape check over each route and pipeline. It treats a WebPipe program as a typed pipeline:
+
+```
+route input -> jq -> pg/fetch/graphql/auth/validate/assert -> jq -> handlebars/result
+```
+
+The checker infers:
+
+- route params from declarations such as `GET /users/:id`
+- request fields: `.method`, `.path`, `.params`, `.query`, `.headers`, `.cookies`, `.body`
+- `validate` body refinements
+- `assert` contracts
+- known envelopes for `pg`, `fetch`, `graphql`, `auth`, `result`, `@async`, and `join`
+- jq object constructors, field access, arrays, `map`, `select`, `if`, and common JSON-shape transforms through jqtype
+
+Example:
+
+```
+GET /hello/:world
+  |> jq: `{ world: .params.world }`
+  |> handlebars: `<p>hello, {{world}}</p>`
+```
+
+The checker can infer approximately:
+
+```
+route input = {
+  method: "GET",
+  params: { world: string | number },
+  query: { ... },
+  body: { ... },
+  cookies: { ... }
+}
+
+after jq = {
+  world: string | number,
+  params: { world: string | number },
+  query: { ... },
+  ...
+}
+
+after handlebars = string /* text/html */
+```
+
+WebPipe's runtime uses backpack-style state, and the checker models that:
+
+- Object outputs from most middleware merge into the current state.
+- Transform middleware such as `jq`, `pg`, `graphql`, `lua`, and `js` replace user data but preserve system/request keys such as `.params`, `.query`, `.headers`, `.cookies`, `.method`, `.path`, `.body`, `.data`, and `.async` when they are not terminal.
+- `assert` overlays a declared shape onto the current pipeline shape; it should refine the state without erasing route params or other backpack fields.
+- `@async(name)` stores a branch output in a side channel, and `join` merges it back under `.async.name`.
+
+Use `webpipe-lsp check file.wp` to catch mistakes such as reading `.data.rows` before a `pg` step or reading fields that are not present in an `assert` contract. The checker is intentionally gradual: opaque stages such as `lua`, `js`, raw SQL, and unknown external fetch responses are `unknown` unless refined by `assert` or `validate`.
+
 ## Built-in Middleware
 
 ### jq — JSON transformation
@@ -157,7 +212,7 @@ This means:
 
 #### Capture outer fields before iteration
 
-Because `.` changes meaning inside JQ iteration constructs (`.[]`, `map`, `reduce`, etc.), fields from the top-level state are **not accessible** once you descend into a sub-expression. This is standard JQ scoping, but it causes a specific problem in WebPipe: the test runner may pre-validate routes with empty or null request fields (e.g., `.body` is `null`), causing "cannot use null as iterable" errors that don't appear during normal HTTP requests.
+Because `.` changes meaning inside JQ iteration constructs (`.[]`, `map`, `reduce`, etc.), fields from the top-level state are **not accessible** once you descend into a sub-expression. This is standard JQ scoping, but it causes a specific problem in WebPipe: the test runner may pre-validate routes with empty or null request fields (e.g., `.body` is `null`), producing "cannot use null as iterable" `jqError` failures that don't appear during normal HTTP requests. (As of the current runtime these surface as branchable `jqError` in `.errors` rather than aborting the request, so a downstream `result jqError(...)` branch can catch them — but it's still cleaner to avoid the failure.)
 
 **Always capture request-level fields into JQ variables before iterating:**
 
@@ -356,6 +411,128 @@ The same `context` vs `request` distinction applies: `context` is read-only ambi
 `
 ```
 
+`validate` checks request body fields at runtime and refines `.body` for later static type checking. It is mainly for user input before business logic.
+
+### assert — Runtime shape assertion and static refinement
+
+Use `assert` after opaque or external stages to declare the contract for the value currently flowing through the pipeline. It is both:
+
+- a runtime validation boundary
+- a compile-time type refinement boundary for later `jq`, `handlebars`, `result`, and other checked stages
+
+Inline assertion:
+
+```
+GET /teams
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT * FROM teams`
+  |> assert: `{
+    data: {
+      rows: [{ id: string | number, name: string }],
+      rowCount: number
+    }
+  }`
+  |> jq: `{ names: .data.rows | map(.name) }`
+```
+
+Named assertion contract:
+
+```
+assert TeamsPageState = `{
+  data: {
+    rows: [{ id: string | number, name: string }],
+    rowCount: number
+  }
+}`
+
+GET /teams
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT * FROM teams`
+  |> assert: TeamsPageState
+  |> jq: `{ names: .data.rows | map(.name) }`
+```
+
+`assert` is especially useful after dynamic middleware:
+
+```
+GET /lua/:id/example
+  |> lua: `
+    return {
+      message = "Hello from Lua!",
+      id = request.params.id,
+      name = request.query.name
+    }
+  `
+  |> assert: `{
+    message: string,
+    id: string | number,
+    name: string
+  }`
+  |> jq: `{
+    label: .message + " " + (.id | tostring),
+    name: .name
+  }`
+```
+
+Supported schema syntax:
+
+```
+{
+  id: string | number,
+  email?: string,
+  name: string | null,
+  active: boolean,
+  type: "validationError",
+  rows: [{ id: number, name: string }],
+  metadata: { ... }
+}
+```
+
+Schema features:
+
+- primitive types: `string`, `number`, `boolean`/`bool`, `null`, `email`, `unknown`/`any`
+- string length ranges: `string(3..50)`, `string(..100)`, `string(8..)`
+- optional fields with `?`
+- unions with `|`
+- arrays with `[type]` or `[{ ... }]`
+- literal strings, numbers, booleans
+- open objects with `...`
+
+Runtime behavior:
+
+- On success, the value continues unchanged.
+- On failure, `assert` writes a branchable validation error envelope:
+
+```
+{
+  "errors": [{
+    "type": "validationError",
+    "field": "data.rows[0].name",
+    "context": "data.rows[0].name",
+    "rule": "assert",
+    "code": "assert_failed",
+    "message": "Missing required field $.data.rows[0].name"
+  }]
+}
+```
+
+Handle assertion failures with `result` when you want a specific response:
+
+```
+|> assert: TeamsPageState
+|> result
+  validationError(500):
+    |> jq: `{ error: .errors[0].message, field: .errors[0].field }`
+  ok(200):
+    |> jq: `{ names: .data.rows | map(.name) }`
+```
+
+Important runtime caveats:
+
+- `assert` only runs when the route, pipeline, or variable is actually executed. A route declaration alone is not a test.
+- Array item schemas validate existing elements. `rows: [{ name: string }]` passes for `rows: []` because there are no elements to inspect.
+- If an assertion failure is followed by a `jq` step that ignores `.errors`, that later step can hide the failure. Put `result` immediately after `assert` when the failure must become an HTTP/test-visible error.
+
 ### cache — Response caching
 ```
 |> cache: `
@@ -458,34 +635,64 @@ Guards can also be used as dispatch cases for data-driven branching:
 
 ## Middleware error types
 
-`result` only branches on structured pipeline errors stored in `.errors`. Only some middlewares write those branchable error objects. Others abort the request with a top-level runtime/config failure instead.
+`result` branches on structured pipeline errors stored in `.errors`. Two layers produce them:
 
-Branchable `.errors` written into pipeline state:
+1. **Domain-specific envelopes** written by certain middlewares to describe the failure (e.g., `sqlError` from `pg`, `validationError` from `validate`/`assert`, `httpError` from `fetch`).
+2. **Generic middleware-execution errors** automatically produced by the executor whenever any middleware step raises an internal execution failure. These take the shape `<name>Error` (e.g., `jqError`, `handlebarsError`, `luaError`) and are matchable by `result` exactly like the domain envelopes.
+
+Domain `.errors` written into pipeline state:
 
 - `auth` -> `authError { message }`
 - `validate` -> `validationError { field, context, rule, message }`
-- `pg` -> `sqlError { message, sqlstate?, severity?, query }`
+- `assert` -> `validationError { field, context, rule: "assert", code: "assert_failed", message }` (shape failures)
+- `pg` -> `sqlError { message, sqlstate?, severity?, query }` (query failures)
 - `fetch` -> `networkError { message, url? }`, `timeoutError { message }`, `httpError { status, message, url }`
+
+Generic middleware-execution `.errors` (auto-produced when a middleware step raises a `MiddlewareExecutionError`):
+
+```
+{ "errors": [{
+    "type": "<middlewareName>Error",
+    "message": "<original error message>",
+    "step": "<middlewareName>",
+    "location": "<file:line>"   // when known
+}] }
+```
+
+Concrete examples: `jqError` (jq parse/execution), `handlebarsError` (template compile/render), `luaError`, `jsError`, `assertError` (schema parse), `pgError` (bad inline args), `fetchError` (bad inline args), `ggError`, `graphqlError`. The naming rule is always `<middlewareName>Error` derived from the step name in the pipeline.
 
 Built-in middleware error behavior:
 
-- `jq` -> no `.errors`; failures are usually top-level `middleware_execution_error`
-- `auth` -> branchable `authError`; database/config failures can also abort with top-level `database_error` or `config_error`
+- `jq` -> branchable `jqError` for parse/execution failures
+- `auth` -> branchable `authError`; database/config failures still abort with top-level `database_error` or `config_error`
 - `validate` -> branchable `validationError`
-- `pg` -> branchable `sqlError`; bad inline args can abort with top-level `middleware_execution_error`; missing DB or empty SQL can abort with top-level `database_error`
-- `handlebars` -> no `.errors`; failures are usually top-level `middleware_execution_error`
-- `fetch` -> branchable `networkError`, `timeoutError`, `httpError`; bad inline args can also abort with top-level `middleware_execution_error`
+- `assert` -> branchable `validationError` for shape failures; branchable `assertError` for schema parse failures
+- `pg` -> branchable `sqlError` for query failures; branchable `pgError` for bad inline args; missing DB or empty SQL still abort with top-level `database_error`
+- `handlebars` -> branchable `handlebarsError` for template compile/render failures
+- `fetch` -> branchable `networkError`, `timeoutError`, `httpError`; branchable `fetchError` for bad inline args
 - `cache` -> no middleware-specific `.errors` during normal execution
-- `lua` -> no `.errors`; failures are usually top-level `middleware_execution_error`
-- `js` -> no `.errors`; failures are usually top-level `middleware_execution_error`
+- `lua` -> branchable `luaError` for script failures
+- `js` -> branchable `jsError` for script failures
 - `log` -> no middleware-specific `.errors` during normal execution
 - `debug` -> no middleware-specific `.errors` during normal execution
-- `join` -> no `.errors`; invalid config aborts with top-level `config_error`
-- `graphql` -> no WebPipe `.errors`; invalid config or invalid inline variable args abort with top-level `config_error` or `middleware_execution_error`; GraphQL execution failures are returned in GraphQL response format `{ data, errors }`
+- `join` -> branchable `joinError` for join-level execution failures; invalid static config still aborts with top-level `config_error`
+- `graphql` -> branchable `graphqlError` for inline-variable-arg failures; invalid static config still aborts with top-level `config_error`; GraphQL execution failures are returned in GraphQL response format `{ data, errors }`
 - `rateLimit` -> no `.errors`; invalid config aborts with top-level `config_error`; exceeded limits abort with top-level `rate_limit_exceeded`
-- `gg` -> no `.errors`; failures are usually top-level `middleware_execution_error`
+- `gg` -> branchable `ggError` for chart generation failures
 
-If a middleware aborts with a top-level runtime/config error, `result` will not catch it. Use `result` only for `.errors` values already present in pipeline state.
+Top-level (non-branchable) failures still bypass `result`: `middleware_not_found`, `pipeline_not_found`, `config_error`, `database_error`, `rate_limit_exceeded`, IO/JSON parsing errors, and other system-level conditions. Everything else — including the `cannot use null as iterable` family of jq errors — is now catchable.
+
+Catching a generic middleware-execution error in `result`:
+
+```
+GET /teams
+  |> jq: `{ names: .data.rows | map(.name) }`
+  |> result
+    jqError(500):
+      |> jq: `{ error: .errors[0].message, at: .errors[0].location }`
+    ok(200):
+      |> jq: `.`
+```
 
 Custom middleware output can also create your own branchable errors:
 ```
@@ -985,7 +1192,7 @@ and call pipeline processItem with `{ "item": "widget", "quantity": 5, "price": 
 - CLI diagnostics are optional: check whether `webpipe-lsp` is installed before suggesting or invoking it. Do not assume every environment has the `webpipe-lsp` command on `PATH`.
 - Test ordering: keep `it` blocks in the canonical order `let` -> `when` -> `with` -> `and mock` -> assertions.
 - Silent skips: if a test file reports fewer tests than expected, inspect the block immediately before the missing tests for malformed DSL or bad ordering.
-- JQ iteration scoping: inside `.tasks[]`, `map(...)`, or `reduce`, the `.` context changes and top-level state fields like `.body`, `.params`, `.query` become inaccessible. Always capture them into JQ variables (e.g., `(.body) as $body`) **before** entering the iteration. The test runner pre-validates routes with null/empty request fields, so `.body.field` inside an iteration can crash with "cannot use null as iterable" even though runtime requests work fine.
+- JQ iteration scoping: inside `.tasks[]`, `map(...)`, or `reduce`, the `.` context changes and top-level state fields like `.body`, `.params`, `.query` become inaccessible. Always capture them into JQ variables (e.g., `(.body) as $body`) **before** entering the iteration. The test runner pre-validates routes with null/empty request fields, so `.body.field` inside an iteration can produce a "cannot use null as iterable" `jqError` even though runtime requests work fine; this is now branchable via `result jqError(...)` but is still better avoided up front.
 - Loader scoping: in JQ loaders, capture `.keys` or other input fields into variables before `reduce` or similar expressions that change what `.` means.
 - Pipeline call semantics are shape-dependent: object outputs from `|> helper` merge into the caller's current state, while arrays, scalars, and `null` replace it.
 - Named results: for multi-step routes, prefer `@result(name)` and then read from `data.name` in later jq/handlebars steps and test assertions. This is more reliable than depending on the implicit current state after multiple merges.
@@ -996,6 +1203,8 @@ and call pipeline processItem with `{ "item": "widget", "quantity": 5, "price": 
 - Pipeline testability: pipelines tested via `when executing pipeline ... with input` receive only the explicit input. They cannot read custom data from `context`. Keep shared pipelines pure — accept data through input, not `context`.
 - Non-ASCII in comments: avoid unicode box-drawing or other non-ASCII characters in `.wp` comments (e.g., `# ── Section ──────`). They can silently break the parser and cause entire `describe` blocks to be skipped without error. Use plain ASCII only (e.g., `# --- Section ---`).
 - `jq` variables are whole-step only: a `jq variableName = \`...\`` variable can only be used as the entire step expression (`|> jq: variableName`), not embedded inside another jq expression (`|> jq: \`{ foo: variableName }\``). To combine seed data with request fields, use a jq step that builds the full object inline.
+- `assert` is not a compile-time-only annotation: it runs at runtime and writes `.errors` on failure. Add a `result validationError(...)` branch right after it if failures must be visible as a response or test assertion.
+- Empty arrays satisfy array item assertions vacuously. If you need to prove row fields, test with non-empty mock data or add an explicit count check in jq/result logic.
 - HTMX partial responses: for HTMX apps, mutating endpoints (POST/PUT/DELETE) should return HTML fragments (not full pages) for `hx-swap`. Only the initial page load route needs the full `<html>` document.
 - Handlebars partials from variables: a `handlebars varName = \`...\`` variable works as a partial (`{{>varName}}`) only when referenced from inside another handlebars variable template. Inline handlebars steps (`|> handlebars: \`{{>varName}}\``) may fail with "Partial not found". To share template fragments, either inline the template in each step or use a single handlebars variable for the full template.
 

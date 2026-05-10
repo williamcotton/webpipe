@@ -130,6 +130,25 @@ pub fn extract_error_type(input: &Value) -> Option<String> {
     None
 }
 
+/// Build a state value of the form { errors: [{ type, message, step, location? }] }
+/// from a middleware failure so it can be matched by a downstream `result` block.
+pub fn make_middleware_error_value(
+    middleware_name: &str,
+    message: &str,
+    location: Option<&str>,
+) -> Value {
+    let mut err = serde_json::Map::new();
+    err.insert("type".to_string(), Value::String(format!("{middleware_name}Error")));
+    err.insert("message".to_string(), Value::String(message.to_string()));
+    err.insert("step".to_string(), Value::String(middleware_name.to_string()));
+    if let Some(loc) = location {
+        err.insert("location".to_string(), Value::String(loc.to_string()));
+    }
+    let mut root = serde_json::Map::new();
+    root.insert("errors".to_string(), Value::Array(vec![Value::Object(err)]));
+    Value::Object(root)
+}
+
 /// Determine the target name for result wrapping with correct precedence:
 /// 1. @result(name) tag (highest priority)
 /// 2. resultName from state (legacy explicit + auto-named)

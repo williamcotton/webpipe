@@ -4572,5 +4572,12 @@ GET /type-checking/assert-runtime-error
 
 # Pipeline type-checking demo: this one intentionally has a type error.
 # The LSP should report that .data.rows may be missing before this jq stage.
-GET /type-checking/assert-error
-  |> jq: `{ names: .data.rows | map(.name) }`
+  GET /type-checking/assert-error
+    |> jq: `{ names: .data.rows | map(.name) }`                                                                                    
+    |> result                                                                                                                      
+      jqError(500):                                                                                                                
+        |> jq: `{ error: .errors[0].message }`                                                                                     
+      ok(200):                                                                                                                     
+        |> jq: `{ names: .data.rows | map(.name) }`
+      default(500):
+        |> jq: `{ error: "Internal server error" }`

@@ -68,7 +68,7 @@ async fn execute_step<'a>(
             location,
             ..
         } => {
-            step::RegularStepExecutor::new(
+            let raw = step::RegularStepExecutor::new(
                 name,
                 args,
                 config,
@@ -79,7 +79,23 @@ async fn execute_step<'a>(
             )
             .execute(&mut step_ctx)
             .await
-            .map_err(|e| e.with_source_location(location))
+            .map_err(|e| e.with_source_location(location));
+
+            match raw {
+                Ok(outcome) => Ok(outcome),
+                Err(err) => {
+                    if let Some((message, loc_str)) = extract_middleware_failure(&err) {
+                        step_ctx.pipe_ctx.state = resolver::make_middleware_error_value(
+                            name,
+                            &message,
+                            loc_str.as_deref(),
+                        );
+                        Ok(StepOutcome::Continue)
+                    } else {
+                        Err(err)
+                    }
+                }
+            }
         }
         PipelineStep::Result { branches, .. } => {
             step::handle_result_step(branches, &mut step_ctx).await
@@ -104,6 +120,22 @@ async fn execute_step<'a>(
     step_ctx.req_ctx.profiler.pop();
 
     result
+}
+
+/// If `err` represents a middleware execution failure (optionally wrapped in
+/// `Located`), return its message and source-location label so the executor
+/// can surface it as a state error matchable from a `result` block.
+fn extract_middleware_failure(err: &WebPipeError) -> Option<(String, Option<String>)> {
+    match err {
+        WebPipeError::MiddlewareExecutionError(msg) => Some((msg.clone(), None)),
+        WebPipeError::Located { location, source } => match source.as_ref() {
+            WebPipeError::MiddlewareExecutionError(msg) => {
+                Some((msg.clone(), Some(location.clone())))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Internal pipeline execution that accepts a mutable RequestContext
@@ -277,6 +309,66 @@ mod tests {
         let (out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
         assert!(out.is_object());
         assert_eq!(status, Some(201));
+    }
+
+    #[tokio::test]
+    async fn middleware_error_is_catchable_in_result_block() {
+        // A failing middleware (`fail`) should produce state errors of type
+        // `<name>Error` so a downstream `result` block can match on it.
+        let env = env_with_vars(vec![]);
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "fail".to_string(),
+                args: Vec::new(),
+                config: "boom".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                config_present: true,
+                condition: None,
+                parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
+            },
+            PipelineStep::Result { branches: vec![
+                crate::ast::ResultBranch {
+                    branch_type: crate::ast::ResultBranchType::Custom("failError".to_string()),
+                    status_code: 500,
+                    pipeline: Pipeline { steps: vec![] },
+                    location: crate::ast::SourceLocation::default(),
+                },
+                crate::ast::ResultBranch {
+                    branch_type: crate::ast::ResultBranchType::Ok,
+                    status_code: 200,
+                    pipeline: Pipeline { steps: vec![] },
+                    location: crate::ast::SourceLocation::default(),
+                },
+            ], location: crate::ast::SourceLocation::default() }
+        ]};
+        let (out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
+        assert_eq!(status, Some(500));
+        assert_eq!(out["errors"][0]["type"], serde_json::json!("failError"));
+        assert_eq!(out["errors"][0]["message"], serde_json::json!("boom"));
+        assert_eq!(out["errors"][0]["step"], serde_json::json!("fail"));
+    }
+
+    #[tokio::test]
+    async fn middleware_error_with_no_result_block_surfaces_in_state() {
+        // Without a result block the failure stays in state — same shape as
+        // an unhandled `pg` failure today.
+        let env = env_with_vars(vec![]);
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "fail".to_string(),
+                args: Vec::new(),
+                config: "kaboom".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                config_present: true,
+                condition: None,
+                parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
+            },
+        ]};
+        let (out, _ct, _status, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
+        assert_eq!(out["errors"][0]["type"], serde_json::json!("failError"));
+        assert_eq!(out["errors"][0]["message"], serde_json::json!("kaboom"));
     }
 
     #[tokio::test]
@@ -953,15 +1045,14 @@ mod tests {
             }],
         };
 
-        let err = match execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await {
-            Ok(_) => panic!("expected pipeline to fail"),
-            Err(err) => err,
-        };
+        let (out, _ct, _st, _ctx) =
+            execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new())
+                .await
+                .unwrap();
 
-        assert_eq!(
-            err.to_string(),
-            "At main.wp:3-5: Middleware execution failed: boom"
-        );
+        assert_eq!(out["errors"][0]["type"], serde_json::json!("failError"));
+        assert_eq!(out["errors"][0]["message"], serde_json::json!("boom"));
+        assert_eq!(out["errors"][0]["location"], serde_json::json!("main.wp:3-5"));
     }
 
     #[tokio::test]
@@ -1039,14 +1130,15 @@ mod tests {
             }],
         };
 
-        let err = match execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await {
-            Ok(_) => panic!("expected pipeline to fail"),
-            Err(err) => err,
-        };
+        let (out, _ct, _st, _ctx) =
+            execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new())
+                .await
+                .unwrap();
 
-        assert_eq!(
-            err.to_string(),
-            "At child.wp:7: Middleware execution failed: child boom"
-        );
+        // The inner failure is converted to a state error tagged with the
+        // inner step's location — never re-wrapped by the outer pipeline call.
+        assert_eq!(out["errors"][0]["type"], serde_json::json!("failError"));
+        assert_eq!(out["errors"][0]["message"], serde_json::json!("child boom"));
+        assert_eq!(out["errors"][0]["location"], serde_json::json!("child.wp:7"));
     }
 }
