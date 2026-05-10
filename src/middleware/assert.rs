@@ -45,7 +45,7 @@ impl super::Middleware for AssertMiddleware {
         })?;
 
         if let Err(err) = validate_value(&pipeline_ctx.state, &schema, "$") {
-            pipeline_ctx.state = make_validation_error(&err.path, &err.message);
+            pipeline_ctx.state = make_assertion_error(&err.path, &err.message);
         }
 
         Ok(super::MiddlewareOutput::default())
@@ -215,11 +215,11 @@ fn display_json(value: &Value) -> String {
     }
 }
 
-fn make_validation_error(path: &str, message: &str) -> Value {
+fn make_assertion_error(path: &str, message: &str) -> Value {
     let field = path.strip_prefix("$.").unwrap_or(path);
     serde_json::json!({
         "errors": [{
-            "type": "validationError",
+            "type": "assertionError",
             "field": field,
             "context": field,
             "rule": "assert",
@@ -609,7 +609,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn assert_failure_emits_validation_error_envelope() {
+    async fn assert_failure_emits_assertion_error_envelope() {
         let mw = AssertMiddleware;
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
@@ -630,7 +630,7 @@ mod tests {
 
         assert_eq!(
             pipeline_ctx.state["errors"][0]["type"],
-            serde_json::json!("validationError")
+            serde_json::json!("assertionError")
         );
         assert_eq!(
             pipeline_ctx.state["errors"][0]["field"],
@@ -648,14 +648,14 @@ mod tests {
         let env = dummy_env();
         let mut ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({
-            "type": "validationError",
+            "type": "ready",
             "name": null,
             "roles": ["admin", "editor"]
         }));
 
         mw.execute(
             &[],
-            r#"{ type: "validationError", email?: string, name: string | null, roles: [string] }"#,
+            r#"{ type: "ready", email?: string, name: string | null, roles: [string] }"#,
             &mut pipeline_ctx,
             &env,
             &mut ctx,

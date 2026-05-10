@@ -4547,7 +4547,7 @@ GET /type-checking/assert-ok
   |> pg: `SELECT * FROM teams`
   |> assert: TeamsPageState
   |> result
-    validationError(500):
+    assertionError(500):
       |> jq: `{ error: .errors[0].message, field: .errors[0].field }`
     ok(200):
       |> jq: `{ names: .data.rows | map(.name) }`
@@ -4565,7 +4565,7 @@ GET /type-checking/assert-runtime-error
   |> pg: `SELECT * FROM teams`
   |> assert: TeamsPageStateIncorrect
   |> result
-    validationError(500):
+    assertionError(500):
       |> jq: `{ error: .errors[0].message, field: .errors[0].field }`
     ok(200):
       |> jq: `{ names: .data.rows | map(.user) }`
@@ -4573,7 +4573,7 @@ GET /type-checking/assert-runtime-error
 # Pipeline type-checking demo: this one intentionally has a type error.
 # The LSP should report that .data.rows may be missing before this jq stage.
   GET /type-checking/assert-error
-    |> jq: `{ names: .data.rows | map(.name) }`                                                                                    
+    |> jq: `{ names: .data.rows | map(.name) }`
     |> result                                                                                                                      
       jqError(500):                                                                                                                
         |> jq: `{ error: .errors[0].message }`                                                                                     

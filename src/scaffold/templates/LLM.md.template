@@ -482,7 +482,7 @@ Supported schema syntax:
   email?: string,
   name: string | null,
   active: boolean,
-  type: "validationError",
+  type: "assertionError",
   rows: [{ id: number, name: string }],
   metadata: { ... }
 }
@@ -501,12 +501,12 @@ Schema features:
 Runtime behavior:
 
 - On success, the value continues unchanged.
-- On failure, `assert` writes a branchable validation error envelope:
+- On failure, `assert` writes a branchable assertion error envelope:
 
 ```
 {
   "errors": [{
-    "type": "validationError",
+    "type": "assertionError",
     "field": "data.rows[0].name",
     "context": "data.rows[0].name",
     "rule": "assert",
@@ -521,7 +521,7 @@ Handle assertion failures with `result` when you want a specific response:
 ```
 |> assert: TeamsPageState
 |> result
-  validationError(500):
+  assertionError(500):
     |> jq: `{ error: .errors[0].message, field: .errors[0].field }`
   ok(200):
     |> jq: `{ names: .data.rows | map(.name) }`
@@ -637,14 +637,14 @@ Guards can also be used as dispatch cases for data-driven branching:
 
 `result` branches on structured pipeline errors stored in `.errors`. Two layers produce them:
 
-1. **Domain-specific envelopes** written by certain middlewares to describe the failure (e.g., `sqlError` from `pg`, `validationError` from `validate`/`assert`, `httpError` from `fetch`).
+1. **Domain-specific envelopes** written by certain middlewares to describe the failure (e.g., `sqlError` from `pg`, `validationError` from `validate`, `assertionError` from `assert`, `httpError` from `fetch`).
 2. **Generic middleware-execution errors** automatically produced by the executor whenever any middleware step raises an internal execution failure. These take the shape `<name>Error` (e.g., `jqError`, `handlebarsError`, `luaError`) and are matchable by `result` exactly like the domain envelopes.
 
 Domain `.errors` written into pipeline state:
 
 - `auth` -> `authError { message }`
 - `validate` -> `validationError { field, context, rule, message }`
-- `assert` -> `validationError { field, context, rule: "assert", code: "assert_failed", message }` (shape failures)
+- `assert` -> `assertionError { field, context, rule: "assert", code: "assert_failed", message }` (shape failures)
 - `pg` -> `sqlError { message, sqlstate?, severity?, query }` (query failures)
 - `fetch` -> `networkError { message, url? }`, `timeoutError { message }`, `httpError { status, message, url }`
 
@@ -666,7 +666,7 @@ Built-in middleware error behavior:
 - `jq` -> branchable `jqError` for parse/execution failures
 - `auth` -> branchable `authError`; database/config failures still abort with top-level `database_error` or `config_error`
 - `validate` -> branchable `validationError`
-- `assert` -> branchable `validationError` for shape failures; branchable `assertError` for schema parse failures
+- `assert` -> branchable `assertionError` for shape failures; branchable `assertError` for schema parse failures
 - `pg` -> branchable `sqlError` for query failures; branchable `pgError` for bad inline args; missing DB or empty SQL still abort with top-level `database_error`
 - `handlebars` -> branchable `handlebarsError` for template compile/render failures
 - `fetch` -> branchable `networkError`, `timeoutError`, `httpError`; branchable `fetchError` for bad inline args
@@ -1203,7 +1203,7 @@ and call pipeline processItem with `{ "item": "widget", "quantity": 5, "price": 
 - Pipeline testability: pipelines tested via `when executing pipeline ... with input` receive only the explicit input. They cannot read custom data from `context`. Keep shared pipelines pure — accept data through input, not `context`.
 - Non-ASCII in comments: avoid unicode box-drawing or other non-ASCII characters in `.wp` comments (e.g., `# ── Section ──────`). They can silently break the parser and cause entire `describe` blocks to be skipped without error. Use plain ASCII only (e.g., `# --- Section ---`).
 - `jq` variables are whole-step only: a `jq variableName = \`...\`` variable can only be used as the entire step expression (`|> jq: variableName`), not embedded inside another jq expression (`|> jq: \`{ foo: variableName }\``). To combine seed data with request fields, use a jq step that builds the full object inline.
-- `assert` is not a compile-time-only annotation: it runs at runtime and writes `.errors` on failure. Add a `result validationError(...)` branch right after it if failures must be visible as a response or test assertion.
+- `assert` is not a compile-time-only annotation: it runs at runtime and writes `.errors` on failure. Add a `result assertionError(...)` branch right after it if failures must be visible as a response or test assertion.
 - Empty arrays satisfy array item assertions vacuously. If you need to prove row fields, test with non-empty mock data or add an explicit count check in jq/result logic.
 - HTMX partial responses: for HTMX apps, mutating endpoints (POST/PUT/DELETE) should return HTML fragments (not full pages) for `hx-swap`. Only the initial page load route needs the full `<html>` document.
 - Handlebars partials from variables: a `handlebars varName = \`...\`` variable works as a partial (`{{>varName}}`) only when referenced from inside another handlebars variable template. Inline handlebars steps (`|> handlebars: \`{{>varName}}\``) may fail with "Partial not found". To share template fragments, either inline the template in each step or use a single handlebars variable for the full template.

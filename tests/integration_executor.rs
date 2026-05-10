@@ -137,7 +137,7 @@ pipeline p =
 }
 
 #[tokio::test]
-async fn failed_assert_selects_validation_error_result_branch() {
+async fn failed_assert_selects_assertion_error_result_branch() {
     let src = r#"
 assert PersonState = `{
   id: string | number,
@@ -147,7 +147,7 @@ assert PersonState = `{
 pipeline p =
   |> assert: PersonState
   |> result
-    validationError(400):
+    assertionError(400):
       |> jq: `{ field: .errors[0].field, message: .errors[0].message }`
     ok(200):
       |> jq: `{ ok: true }`
@@ -242,4 +242,3 @@ pipeline processData =
     assert_eq!(out1, out2);
     assert_eq!(out2["articles"][0], serde_json::json!("fetched content"));
 }
-
