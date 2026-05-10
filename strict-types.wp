@@ -1,0 +1,64 @@
+# Strict pipeline type checking demo.
+# Run:
+#   webpipe-lsp check strict-types.wp
+#   webpipe-lsp check strict-types.wp --strict-types
+#
+# This file enables strict mode in source, so both commands should report the
+# intentionally failing route at the bottom.
+
+config typecheck {
+  strict: true
+}
+
+assert TeamsPageState = `{
+  data: {
+    rows: [{ id: string | number, name: string }],
+    rowCount: number
+  }
+}`
+
+assert LuaGreeting = `{
+  message: string,
+  id: string | number
+}`
+
+# Valid: pg produces opaque row fields, then assert refines them before jq reads
+# .data.rows[].name.
+GET /strict/teams-ok
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT id, name FROM teams`
+  |> assert: TeamsPageState
+  |> jq: `{
+    names: .data.rows | map(.name),
+    count: .data.rowCount
+  }`
+
+# Valid: request body starts unknown on POST, then validate refines .body before
+# jq reads fields from it.
+POST /strict/login-ok
+  |> validate: `{
+    login: string(3..50),
+    password: string(6..100)
+  }`
+  |> jq: `{
+    login: .body.login,
+    passwordLength: (.body.password | length)
+  }`
+
+# Valid: lua output is opaque, then assert gives the checker a concrete contract.
+GET /strict/lua-ok/:id
+  |> lua: `
+    return {
+      message = "Hello from Lua",
+      id = request.params.id
+    }
+  `
+  |> assert: LuaGreeting
+  |> jq: `{ label: .message + " " + (.id | tostring) }`
+
+# Intentional strict type error: pg row fields are consumed without an assert.
+# Expected diagnostic: .data.rows[] comes from an unasserted pg result.
+GET /strict/teams-error
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT id, name FROM teams`
+  |> jq: `{ names: .data.rows | map(.name) }`

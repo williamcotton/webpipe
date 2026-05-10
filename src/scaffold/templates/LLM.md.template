@@ -188,7 +188,50 @@ WebPipe's runtime uses backpack-style state, and the checker models that:
 - `assert` overlays a declared shape onto the current pipeline shape; it should refine the state without erasing route params or other backpack fields.
 - `@async(name)` stores a branch output in a side channel, and `join` merges it back under `.async.name`.
 
-Use `webpipe-lsp check file.wp` to catch mistakes such as reading `.data.rows` before a `pg` step or reading fields that are not present in an `assert` contract. The checker is intentionally gradual: opaque stages such as `lua`, `js`, raw SQL, and unknown external fetch responses are `unknown` unless refined by `assert` or `validate`.
+Use `webpipe-lsp check file.wp` to catch mistakes such as reading `.data.rows` before a `pg` step or reading fields that are not present in an `assert` contract. The checker is intentionally gradual by default: opaque stages such as `lua`, `js`, raw SQL, and unknown external fetch responses are `unknown` unless refined by `assert` or `validate`.
+
+Enable strict mode when you want the LSP/CLI to reject unrefined opaque values:
+
+```
+config typecheck {
+  strict: true
+}
+```
+
+or:
+
+```bash
+webpipe-lsp check app.wp --strict-types
+```
+
+Strict mode tracks unknown "type debt" from `pg`, `fetch`, `graphql`, `lua`, `js`, raw `pg !raw`, async joins, named pipelines, and request bodies. It requires:
+
+- `assert` after opaque output stages before reading or returning their payloads
+- `validate` or `assert` before reading unknown request body fields
+
+This is valid in strict mode:
+
+```
+GET /teams
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT * FROM teams`
+  |> assert: `{
+    data: {
+      rows: [{ id: string | number, name: string }],
+      rowCount: number
+    }
+  }`
+  |> jq: `{ names: .data.rows | map(.name) }`
+```
+
+This is a strict type error because row fields came from unasserted SQL output:
+
+```
+GET /teams
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT * FROM teams`
+  |> jq: `{ names: .data.rows | map(.name) }`
+```
 
 ## Built-in Middleware
 
@@ -1218,6 +1261,7 @@ webpipe app.wp --test --verbose        # Verbose tests
 webpipe app.wp --inspect               # Debug mode
 command -v webpipe-lsp >/dev/null && webpipe-lsp check app.wp
 command -v webpipe-lsp >/dev/null && webpipe-lsp check app.wp --json
+command -v webpipe-lsp >/dev/null && webpipe-lsp check app.wp --strict-types
 ```
 
 ## Comments
