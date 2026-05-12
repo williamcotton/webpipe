@@ -52,6 +52,10 @@ impl super::Middleware for ValidateMiddleware {
                         rules.push(Rule { field, kind: "string".to_string(), min, max });
                     } else if rhs.starts_with("email") {
                         rules.push(Rule { field, kind: "email".to_string(), min: None, max: None });
+                    } else if rhs.starts_with("boolean") || rhs.starts_with("bool") {
+                        rules.push(Rule { field, kind: "boolean".to_string(), min: None, max: None });
+                    } else if rhs.starts_with("number") {
+                        rules.push(Rule { field, kind: "number".to_string(), min: None, max: None });
                     } else {
                         continue;
                     }
@@ -76,15 +80,8 @@ impl super::Middleware for ValidateMiddleware {
             let val = obj.get(&rule.field);
             match rule.kind.as_str() {
                 "string" => {
-                    let s_owned: Option<String> = match val {
-                        Some(Value::String(s)) => Some(s.clone()),
-                        Some(Value::Number(n)) => Some(n.to_string()),
-                        Some(Value::Bool(b)) => Some(b.to_string()),
-                        Some(Value::Null) | None => None,
-                        Some(_) => None,
-                    };
-                    let s = match s_owned.as_deref() {
-                        Some(v) if !v.is_empty() => v,
+                    let s = match val {
+                        Some(Value::String(s)) if !s.is_empty() => s.clone(),
                         _ => {
                             let msg = format!("Field '{}' is required and must be a non-empty string", rule.field);
                             pipeline_ctx.state = make_error(&rule.field, "required", msg);
@@ -103,6 +100,20 @@ impl super::Middleware for ValidateMiddleware {
                             pipeline_ctx.state = make_error(&rule.field, "maxLength", format!("Field '{}' must be at most {} characters", rule.field, max));
                             return Ok(super::MiddlewareOutput::default());
                         }
+                    }
+                }
+                "boolean" => {
+                    if !matches!(val, Some(Value::Bool(_))) {
+                        let msg = format!("Field '{}' is required and must be a boolean", rule.field);
+                        pipeline_ctx.state = make_error(&rule.field, "required", msg);
+                        return Ok(super::MiddlewareOutput::default());
+                    }
+                }
+                "number" => {
+                    if !matches!(val, Some(Value::Number(_))) {
+                        let msg = format!("Field '{}' is required and must be a number", rule.field);
+                        pipeline_ctx.state = make_error(&rule.field, "required", msg);
+                        return Ok(super::MiddlewareOutput::default());
                     }
                 }
                 "email" => {
@@ -191,6 +202,74 @@ mod tests {
         assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("maxLength"));
         // ok
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"name": "abc"}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert!(pipeline_ctx.state.get("errors").is_none());
+    }
+
+    #[tokio::test]
+    async fn string_rule_rejects_non_string_values() {
+        let mw = ValidateMiddleware;
+        let env = dummy_env();
+        let mut ctx = crate::executor::RequestContext::new();
+        let cfg = "{ title: string(1..200) }";
+        // number
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"title": 42}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("required"));
+        // bool
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"title": true}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("required"));
+        // null
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"title": null}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("required"));
+    }
+
+    #[tokio::test]
+    async fn boolean_rule_accepts_and_rejects() {
+        let mw = ValidateMiddleware;
+        let env = dummy_env();
+        let mut ctx = crate::executor::RequestContext::new();
+        let cfg = "{ completed: boolean }";
+        // missing
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["type"], serde_json::json!("validationError"));
+        // wrong type
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"completed": "nope"}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("required"));
+        // true
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"completed": true}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert!(pipeline_ctx.state.get("errors").is_none());
+        // false
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"completed": false}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert!(pipeline_ctx.state.get("errors").is_none());
+    }
+
+    #[tokio::test]
+    async fn number_rule_accepts_and_rejects() {
+        let mw = ValidateMiddleware;
+        let env = dummy_env();
+        let mut ctx = crate::executor::RequestContext::new();
+        let cfg = "{ count: number }";
+        // missing
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["type"], serde_json::json!("validationError"));
+        // wrong type
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"count": "10"}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert_eq!(pipeline_ctx.state["errors"][0]["rule"], serde_json::json!("required"));
+        // integer
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"count": 7}}));
+        mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
+        assert!(pipeline_ctx.state.get("errors").is_none());
+        // float
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"body": {"count": 1.5}}));
         mw.execute(&[], cfg, &mut pipeline_ctx, &env, &mut ctx, None).await.unwrap();
         assert!(pipeline_ctx.state.get("errors").is_none());
     }

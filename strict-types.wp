@@ -10,28 +10,35 @@ config typecheck {
   strict: true
 }
 
-assert TeamsPageState = `{
-  data: {
-    rows: [{ id: string | number, name: string }],
-    rowCount: number
-  }
-}`
-
 assert LuaGreeting = `{
   message: string,
   id: string | number
 }`
 
+pipeline getTeams =
+  |> pg: `SELECT id, name FROM teams`
+  |> assert: `{
+    data: {
+      rows: [{ id: string | number, name: string }],
+      rowCount: number
+    }
+  }`
+  |> jq: `{
+    teams: .data.rows,
+    teamCount: .data.rowCount
+  }`
+
+pipeline teamsOutput = 
+  |> jq: `{
+    names: .teams | map(.name),
+    count: .teamCount
+  }`
+
 # Valid: pg produces opaque row fields, then assert refines them before jq reads
 # .data.rows[].name.
 GET /strict/teams-ok
-  |> jq: `{ sqlParams: [] }`
-  |> pg: `SELECT id, name FROM teams`
-  |> assert: TeamsPageState
-  |> jq: `{
-    names: .data.rows | map(.name),
-    count: .data.rowCount
-  }`
+  |> getTeams
+  |> teamsOutput
 
 # Valid: request body starts unknown on POST, then validate refines .body before
 # jq reads fields from it.
