@@ -324,6 +324,8 @@ pub struct Describe {
     pub variables: Vec<(String, String, LetValueFormat)>,
     pub mocks: Vec<Mock>,
     pub tests: Vec<It>,
+    /// Source location for debugging and error reporting
+    pub location: SourceLocation,
 }
 
 #[derive(Debug, Clone)]
@@ -343,6 +345,8 @@ pub struct It {
     pub headers: Option<String>,
     pub cookies: Option<String>,
     pub conditions: Vec<Condition>,
+    /// Source location for debugging and error reporting
+    pub location: SourceLocation,
 }
 
 #[derive(Debug, Clone)]

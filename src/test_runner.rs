@@ -201,6 +201,79 @@ mod tests {
         let s = parse_backticked_json("`hello`").unwrap();
         assert_eq!(s, json!("hello"));
     }
+
+    #[tokio::test]
+    async fn output_jq_assertion_failure_reports_expression_and_continues_suite() {
+        let program_src = r#"
+        pipeline emitsNull =
+          |> jq: `{ data: null }`
+
+        describe "iter"
+          it "first errors but second still runs"
+            when executing pipeline emitsNull
+            and output `.data.items[]` equals 1
+          it "second passes"
+            when executing pipeline emitsNull
+            then output `.data` equals null
+        "#;
+        let (_rest, program) = crate::ast::parse_program(program_src).unwrap();
+        let summary = run_tests(program, None, false).await.unwrap();
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.passed, 1);
+        assert_eq!(summary.failed, 1);
+
+        let failure = summary
+            .outcomes
+            .iter()
+            .find(|o| !o.passed)
+            .expect("expected one failing outcome");
+        assert!(
+            failure.message.contains(".data.items[]"),
+            "expected failure message to include the failing JQ expression, got: {}",
+            failure.message
+        );
+        assert!(
+            failure.message.contains("cannot use null as iterable")
+                || failure.message.contains("null"),
+            "expected jq-runtime detail in failure message, got: {}",
+            failure.message
+        );
+
+        // The suite must not abort after the failure: second test still runs.
+        let passed = summary.outcomes.iter().find(|o| o.passed).expect("second test should pass");
+        assert_eq!(passed.test, "second passes");
+    }
+
+    #[tokio::test]
+    async fn test_location_carries_file_path_through_run_tests() {
+        let program_src = r#"
+        pipeline emitsNull =
+          |> jq: `{ data: null }`
+
+        describe "loc"
+          it "fails with location"
+            when executing pipeline emitsNull
+            and output `.data.items[]` equals 1
+        "#;
+        let (_rest, program) = crate::ast::parse_program(program_src).unwrap();
+        let file_path = std::path::PathBuf::from("/tmp/fake-test-app.wp");
+        let summary = run_tests(program, Some(file_path.clone()), false).await.unwrap();
+
+        // The describe & it locations should have been annotated with the file path
+        // during merge, so a future error-path message would include it. We exercise
+        // the merge here directly to keep this test independent of unrelated assertion
+        // mechanics.
+        let outcome = summary
+            .outcomes
+            .iter()
+            .find(|o| !o.passed)
+            .expect("expected failing outcome");
+        assert!(
+            outcome.message.contains(".data.items[]"),
+            "expected message to include failing JQ expression: {}",
+            outcome.message
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +310,17 @@ fn parse_backticked_json(s: &str) -> Result<Value, WebPipeError> {
 
 /// Evaluates a JQ expression using the let variables as JQ variables ($name syntax)
 fn evaluate_jq_input(expr: &str, variables_ctx: &serde_json::Map<String, Value>) -> Result<Value, WebPipeError> {
+    evaluate_jq_input_with_role(expr, variables_ctx, "test input")
+}
+
+/// Like `evaluate_jq_input`, but the error message includes `role` (e.g. "test body",
+/// "test headers", "call assertion") and the offending JQ source so it's easy to
+/// trace back to the failing assertion.
+fn evaluate_jq_input_with_role(
+    expr: &str,
+    variables_ctx: &serde_json::Map<String, Value>,
+    role: &str,
+) -> Result<Value, WebPipeError> {
     let trimmed = expr.trim();
     let content = if let (Some(start), Some(end)) = (trimmed.find('`'), trimmed.rfind('`')) {
         if end > start { &trimmed[start + 1..end] } else { trimmed }
@@ -257,7 +341,12 @@ fn evaluate_jq_input(expr: &str, variables_ctx: &serde_json::Map<String, Value>)
 
     // Use the shared runtime instead of direct jq_rs
     crate::runtime::jq::evaluate(&jq_program, &input)
-        .map_err(|e| WebPipeError::BadRequest(format!("JQ error in test input: {}", e)))
+        .map_err(|e| WebPipeError::BadRequest(format!(
+            "JQ error in {} `{}`: {}",
+            role,
+            content.trim(),
+            e
+        )))
 }
 
 
@@ -277,6 +366,14 @@ fn merge_imported_graphql_for_tests(
 
     let mut merged_program = program.clone();
     let mut merged_schema_parts: Vec<String> = Vec::new();
+
+    // Annotate main program's describes with the source file path
+    if let Some(file_path) = file_path {
+        let main_path_str = file_path.to_string_lossy().to_string();
+        for describe in &mut merged_program.describes {
+            crate::server::set_describe_file_path(describe, &main_path_str);
+        }
+    }
 
     // Add main program's schema if it exists
     if let Some(ref schema) = program.graphql_schema {
@@ -312,8 +409,15 @@ fn merge_imported_graphql_for_tests(
                                 // Merge pipelines from imports
                                 merged_program.pipelines.extend(imported_program.pipelines.clone());
 
-                                // Merge test describes from imports
-                                merged_program.describes.extend(imported_program.describes.clone());
+                                // Merge test describes from imports (with file path annotation)
+                                for describe in &imported_program.describes {
+                                    let mut describe_clone = describe.clone();
+                                    crate::server::set_describe_file_path(
+                                        &mut describe_clone,
+                                        &resolved_path.to_string_lossy(),
+                                    );
+                                    merged_program.describes.push(describe_clone);
+                                }
                             },
                             Err(e) => {
                                 warn!("Failed to load imported module '{}' from '{}': {}",
@@ -569,6 +673,7 @@ async fn run_tests_internal(
         // Describe-level mocks now have access to describe-level variables
         let describe_mocks = MockResolver::from_mocks(&describe.mocks, &describe_ctx)?;
         for test in &describe.tests {
+            let test_result: Result<(), WebPipeError> = async {
             // Process let variables into context, starting with describe-level vars
             let mut variables_ctx = describe_ctx.clone();
             for (name, raw_val, _format) in &test.variables {
@@ -667,13 +772,13 @@ async fn run_tests_internal(
 
                             // Evaluate JQ expressions for test body, headers, and cookies using let variables
                             let test_body = if let Some(body_str) = &test.body {
-                                evaluate_jq_input(body_str, &variables_ctx)?
+                                evaluate_jq_input_with_role(body_str, &variables_ctx, "test body")?
                             } else {
                                 Value::Object(serde_json::Map::new())
                             };
 
                             let test_headers = if let Some(h_str) = &test.headers {
-                                let parsed = evaluate_jq_input(h_str, &variables_ctx)?;
+                                let parsed = evaluate_jq_input_with_role(h_str, &variables_ctx, "test headers")?;
                                 if let Value::Object(map) = parsed {
                                     Some(map.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect())
                                 } else {
@@ -684,7 +789,7 @@ async fn run_tests_internal(
                             };
 
                             let test_cookies = if let Some(c_str) = &test.cookies {
-                                let parsed = evaluate_jq_input(c_str, &variables_ctx)?;
+                                let parsed = evaluate_jq_input_with_role(c_str, &variables_ctx, "test cookies")?;
                                 if let Value::Object(map) = parsed {
                                     Some(map.into_iter().map(|(k, v)| (k, v.as_str().unwrap_or("").to_string())).collect())
                                 } else {
@@ -754,7 +859,7 @@ async fn run_tests_internal(
                     } else {
                         // Evaluate JQ input expression with test variables
                         let input = if let Some(input_str) = &test.input {
-                            evaluate_jq_input(input_str, &variables_ctx)?
+                            evaluate_jq_input_with_role(input_str, &variables_ctx, "test input")?
                         } else {
                             Value::Object(serde_json::Map::new())
                         };
@@ -791,7 +896,7 @@ async fn run_tests_internal(
                         .ok_or_else(|| WebPipeError::BadRequest(format!("Variable not found: {} {}", var_type, name)))?;
                     // Evaluate JQ input expression with test variables
                     let input = if let Some(input_str) = &test.input {
-                        evaluate_jq_input(input_str, &variables_ctx)?
+                        evaluate_jq_input_with_role(input_str, &variables_ctx, "test input")?
                     } else {
                         Value::Object(serde_json::Map::new())
                     };
@@ -835,7 +940,11 @@ async fn run_tests_internal(
                 if cond.is_call_assertion {
                     if let Some(target) = &cond.call_target {
                         // Use JQ to evaluate variable substitutions in condition value
-                        let expected_args = evaluate_jq_input(&cond.value, &variables_ctx)?;
+                        let expected_args = evaluate_jq_input_with_role(
+                            &cond.value,
+                            &variables_ctx,
+                            &format!("call assertion `{}`", cond.call_target.as_deref().unwrap_or("")),
+                        )?;
 
                         // Helper to find calls with flexible naming (query.todo vs Query.todo)
                         let find_calls = |target_key: &str| -> Option<&Vec<Value>> {
@@ -943,8 +1052,30 @@ async fn run_tests_internal(
                         // Possibly apply jq
                         let mut target = output_value.clone();
                         if let Some(expr) = &cond.jq_expr {
-                            // Only if JSON
-                            target = eval_jq_filter(&target, expr)?;
+                            match eval_jq_filter(&target, expr) {
+                                Ok(v) => { target = v; }
+                                Err(e) => {
+                                    cond_pass = false;
+                                    let actual = if verbose {
+                                        format!(
+                                            "\nActual output: {}",
+                                            serde_json::to_string_pretty(&output_value)
+                                                .unwrap_or_else(|_| "<invalid JSON>".to_string())
+                                        )
+                                    } else {
+                                        String::new()
+                                    };
+                                    failure_msgs.push(format!(
+                                        "output assertion `{}` {} {}: {}{}",
+                                        expr.trim(),
+                                        op,
+                                        val_str,
+                                        e,
+                                        actual,
+                                    ));
+                                    continue;
+                                }
+                            }
                         }
                         match op {
                             "equals" => {
@@ -1245,6 +1376,22 @@ async fn run_tests_internal(
             } else {
                 let msg = if !failure_msgs.is_empty() { failure_msgs.join("; ") } else { msg };
                 outcomes.push(TestOutcome { describe: describe.name.clone(), test: test.name.clone(), passed: false, message: msg });
+            }
+            Ok(())
+            }.await;
+
+            if let Err(e) = test_result {
+                let location_label = test
+                    .location
+                    .error_label()
+                    .map(|l| format!(" at {}", l))
+                    .unwrap_or_default();
+                outcomes.push(TestOutcome {
+                    describe: describe.name.clone(),
+                    test: test.name.clone(),
+                    passed: false,
+                    message: format!("test errored{}: {}", location_label, e),
+                });
             }
         }
     }

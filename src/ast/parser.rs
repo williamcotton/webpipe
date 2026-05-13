@@ -1254,6 +1254,7 @@ fn parse_and_with_clause(input: Span) -> IResult<Span, (String, String)> {
 
 fn parse_it(input: Span) -> IResult<Span, It> {
     let (input, _) = skip_ws_and_comments(input)?;
+    let it_start = input;
     let (input, _) = tag("it")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char('"')(input)?;
@@ -1336,12 +1337,14 @@ fn parse_it(input: Span) -> IResult<Span, It> {
         body: body_opt,
         headers: headers_opt,
         cookies: cookies_opt,
-        conditions
+        conditions,
+        location: location_from_span(it_start),
     }))
 }
 
 fn parse_describe(input: Span) -> IResult<Span, Describe> {
     let (input, _) = skip_ws_and_comments(input)?;
+    let describe_start = input;
     let (input, _) = tag("describe")(input)?;
     let (input, _) = multispace0(input)?;
     let (input, _) = char('"')(input)?;
@@ -1393,7 +1396,8 @@ fn parse_describe(input: Span) -> IResult<Span, Describe> {
         name: name.fragment().to_string(),
         variables,
         mocks,
-        tests
+        tests,
+        location: location_from_span(describe_start),
     }))
 }
 

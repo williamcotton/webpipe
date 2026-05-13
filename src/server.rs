@@ -231,6 +231,18 @@ pub(crate) fn set_pipeline_module_info(pipeline: &mut Pipeline, file_path: &str,
     }
 }
 
+/// Set `file_path` on a `Describe` and all of its tests' source locations.
+pub(crate) fn set_describe_file_path(describe: &mut crate::ast::Describe, file_path: &str) {
+    if describe.location.file_path.is_none() {
+        describe.location.file_path = Some(file_path.to_string());
+    }
+    for test in &mut describe.tests {
+        if test.location.file_path.is_none() {
+            test.location.file_path = Some(file_path.to_string());
+        }
+    }
+}
+
 /// Load imports and collect configs from imported modules
 fn load_imported_configs(
     program: &Program,
@@ -358,8 +370,12 @@ pub(crate) fn merge_from_module_tree_for_tests(
         // Merge variables (no module_id needed here - handled in router)
         merged.variables.extend(module_info.program.variables.clone());
 
-        // Merge test describes
-        merged.describes.extend(module_info.program.describes.clone());
+        // Merge test describes (annotating describe/it source locations with file path)
+        for describe in &module_info.program.describes {
+            let mut describe_clone = describe.clone();
+            set_describe_file_path(&mut describe_clone, &file_path_str);
+            merged.describes.push(describe_clone);
+        }
     }
 
     // Combine all schema parts into a single schema
