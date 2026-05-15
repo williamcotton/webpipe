@@ -33,6 +33,53 @@ fn load_env_files(env_dir: &Path, override_existing: bool, debug: bool) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cli_for_inspect(serve: bool) -> cli::Cli {
+        cli::Cli {
+            command: None,
+            file: None,
+            address: None,
+            port: None,
+            test: false,
+            run: false,
+            serve,
+            verbose: false,
+            trace: false,
+            inspect: true,
+            inspect_port: 5858,
+            script_args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn inspect_uses_script_mode_for_root_main_pipeline() {
+        let src = r#"
+pipeline main =
+  |> jq: `{ ok: true }`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+
+        assert!(inspect_runs_standalone_script(&program, &cli_for_inspect(false)));
+    }
+
+    #[test]
+    fn inspect_serve_flag_keeps_http_mode_when_main_exists() {
+        let src = r#"
+pipeline main =
+  |> jq: `{ ok: true }`
+
+GET /
+  |> jq: `{ route: true }`
+"#;
+        let (_rest, program) = parse_program(src).unwrap();
+
+        assert!(!inspect_runs_standalone_script(&program, &cli_for_inspect(true)));
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize tracing
@@ -350,6 +397,22 @@ async fn inspect_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Er
     let env_dir = file_path.parent().unwrap_or(Path::new("."));
     load_env_files(env_dir, false, cli.verbose);
 
+    if std::env::var("WEBPIPE_PUBLIC_DIR").is_err() {
+        let public_path = env_dir.join("public");
+        if let Some(s) = public_path.to_str() {
+            std::env::set_var("WEBPIPE_PUBLIC_DIR", s);
+        }
+    }
+
+    // Parse the WebPipe file
+    let input = std::fs::read_to_string(file_path)?;
+    let (_leftover_input, program) = parse_program(&input)
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    if inspect_runs_standalone_script(&program, cli) {
+        return run_script_inspect_mode(file_path, program, inspect_port, trace_mode).await;
+    }
+
     // Determine address
     let default_addr = "127.0.0.1:7770".to_string();
     let addr_str = if let Some(port) = cli.port {
@@ -363,12 +426,100 @@ async fn inspect_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Er
     };
     let addr: SocketAddr = addr_str.parse()?;
 
-    // Parse the WebPipe file
-    let input = std::fs::read_to_string(file_path)?;
-    let (_leftover_input, program) = parse_program(&input)
-        .map_err(|e| format!("Parse error: {}", e))?;
-
     run_inspect_mode(file_path, program, addr, inspect_port, trace_mode).await
+}
+
+fn inspect_runs_standalone_script(program: &webpipe::ast::Program, cli: &cli::Cli) -> bool {
+    !cli.serve && program.pipelines.iter().any(|pipeline| pipeline.name == "main")
+}
+
+async fn run_script_inspect_mode(
+    file_path: &Path,
+    program: webpipe::ast::Program,
+    inspect_port: u16,
+    trace_mode: bool,
+) -> Result<(), Box<dyn Error>> {
+    // Convert to absolute path for breakpoint matching
+    let absolute_path = std::fs::canonicalize(file_path)
+        .map_err(|e| format!("Failed to resolve absolute path for {}: {}", file_path.display(), e))?;
+    let file_path_str = absolute_path.to_str()
+        .ok_or_else(|| format!("Path contains invalid UTF-8: {:?}", absolute_path))?
+        .to_string();
+
+    eprintln!("=================================");
+    eprintln!("WebPipe Script Debugger");
+    eprintln!("=================================");
+    eprintln!("File:        {}", file_path_str);
+    eprintln!("Debug Port:  {}", inspect_port);
+    eprintln!("=================================");
+    eprintln!();
+
+    // Create shutdown notifier
+    let shutdown_notify = Arc::new(Notify::new());
+
+    // Create DAP server
+    let dap_server = Arc::new(DapServer::new(
+        file_path_str,
+        inspect_port,
+        Some(shutdown_notify.clone())
+    ));
+
+    // Start DAP TCP listener
+    eprintln!("[DAP] Starting DAP server on 127.0.0.1:{}...", inspect_port);
+    let dap_clone = dap_server.clone();
+    tokio::spawn(async move {
+        if let Err(e) = dap_clone.start_tcp_listener().await {
+            eprintln!("[DAP] DAP server error: {}", e);
+        }
+    });
+
+    // Give DAP server time to bind
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    eprintln!("[DAP] Waiting for debugger to connect...");
+    eprintln!("  - Press F5 in VS Code to attach debugger");
+    eprintln!("  - Set breakpoints in your .wp file");
+    eprintln!();
+
+    // The script is one-shot, so wait until the client has sent breakpoints.
+    dap_server.wait_for_configuration_done().await;
+
+    eprintln!("[DAP] Debugger connected, running main pipeline...");
+    eprintln!();
+
+    // Create debugger hook
+    let debugger_hook = Arc::new(DapDebuggerHook { server: dap_server });
+
+    let server = match WebPipeServer::from_program_with_debugger(
+        program,
+        Some(absolute_path),
+        trace_mode,
+        Some(debugger_hook)
+    ).await
+    {
+        Ok(server) => server,
+        Err(e) => {
+            eprintln!("{}", e.display_pipeline_details());
+            shutdown_notify.notify_one();
+            std::process::exit(1);
+        }
+    };
+
+    match server.execute_main_pipeline(serde_json::json!({})).await {
+        Ok((result, content_type, status_code)) => {
+            write_script_output(&result, &content_type)?;
+            shutdown_notify.notify_one();
+            if status_code.unwrap_or(200) >= 400 {
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("{}", e.display_pipeline_details());
+            shutdown_notify.notify_one();
+            std::process::exit(1);
+        }
+    }
 }
 
 async fn run_inspect_mode(

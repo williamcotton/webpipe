@@ -1323,7 +1323,8 @@ webpipe app.wp --run -- --key value    # Force script mode; forward args after `
 webpipe app.wp --serve                 # Force HTTP mode even when `main` exists
 webpipe app.wp --test                  # Run tests
 webpipe app.wp --test --verbose        # Verbose tests
-webpipe app.wp --inspect               # Debug mode
+webpipe app.wp --inspect               # Debug mode (runs script main once, or serves routes)
+webpipe app.wp --serve --inspect       # Force HTTP debug mode when main exists
 command -v webpipe-lsp >/dev/null && webpipe-lsp check app.wp
 command -v webpipe-lsp >/dev/null && webpipe-lsp check app.wp --json
 command -v webpipe-lsp >/dev/null && webpipe-lsp check app.wp --strict-types
