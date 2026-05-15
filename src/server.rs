@@ -516,6 +516,11 @@ pub struct ServerState {
     trace_enabled: bool,
 }
 
+pub struct BuiltRuntime {
+    pub env: Arc<ExecutionEnv>,
+    pub root_module_id: Option<usize>,
+}
+
 impl ServerState {
     // variable resolution now handled by shared executor
 
@@ -539,6 +544,7 @@ impl ServerState {
         };
 
         crate::executor::RequestContext {
+            invocation: crate::executor::InvocationKind::Http,
             feature_flags: flags,
             conditions: HashMap::new(),
             async_registry: crate::executor::AsyncTaskRegistry::new(),
@@ -547,6 +553,7 @@ impl ServerState {
             call_log: HashMap::new(),
             profiler: crate::executor::Profiler::default(),
             request: request_json,
+            stdin_bytes: None,
             debug_thread_id,
             debug_step_mode: None,
         }
@@ -659,9 +666,7 @@ impl WebPipeServer {
         &self.module_paths
     }
 
-    pub fn router(self) -> Router {
-        let mut router = Router::new().route("/health", get(health_check));
-
+    pub fn build_runtime(&self) -> BuiltRuntime {
         // Build named_pipelines and variables_map with Module ID support
         // Key: (module_id, name) where module_id is None for local symbols
         let mut named_pipelines: HashMap<(Option<usize>, String), Arc<Pipeline>> = HashMap::new();
@@ -723,7 +728,7 @@ impl WebPipeServer {
             for path in sorted_paths.iter() {
                 let module_info = &tree[path];
 
-                // Build import map: alias → target Module ID
+                // Build import map: alias -> target Module ID
                 let mut import_map = HashMap::new();
                 for (alias, target_path) in &module_info.imports {
                     if let Some(&target_id) = path_to_temp_id.get(target_path) {
@@ -781,6 +786,96 @@ impl WebPipeServer {
             }
         }
 
+        let root_module_id = self
+            .file_path
+            .as_ref()
+            .and_then(|path| path.canonicalize().ok())
+            .and_then(|path| module_registry.get_id_by_path(&path));
+
+        // Build ExecutionEnv with loaded symbols and module registry
+        let env = Arc::new(ExecutionEnv {
+            variables: Arc::new(variables_map),
+            named_pipelines: Arc::new(named_pipelines),
+            module_registry: Arc::new(module_registry),
+            imports: Arc::new(HashMap::new()), // DEPRECATED: kept for backward compat
+            invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
+            registry: self.middleware_registry.clone(),
+            environment: std::env::var("WEBPIPE_ENV").ok(),
+            cache: self.ctx.cache.clone(),
+            rate_limit: self.ctx.rate_limit.clone(),
+            debugger: self.debugger.clone(),
+        });
+
+        // Set the execution environment in the Context so GraphQL middleware can access it
+        *self.ctx.execution_env.write() = Some(env.clone());
+
+        BuiltRuntime {
+            env,
+            root_module_id,
+        }
+    }
+
+    fn feature_flags_pipeline(&self, root_module_id: Option<usize>) -> Option<Arc<Pipeline>> {
+        let mut pipeline = self.program.feature_flags.clone()?;
+        if let (Some(module_id), Some(file_path)) = (root_module_id, self.file_path.as_ref()) {
+            if let Ok(path) = file_path.canonicalize() {
+                let file_path_str = path.to_string_lossy().to_string();
+                set_pipeline_module_info(&mut pipeline, &file_path_str, module_id);
+            }
+        }
+        Some(Arc::new(pipeline))
+    }
+
+    pub async fn execute_main_pipeline(
+        &self,
+        input: Value,
+    ) -> Result<(Value, String, Option<u16>), WebPipeError> {
+        let runtime = self.build_runtime();
+        let main_name = "main".to_string();
+        let main_pipeline = runtime
+            .root_module_id
+            .and_then(|module_id| {
+                runtime
+                    .env
+                    .named_pipelines
+                    .get(&(Some(module_id), main_name.clone()))
+                    .cloned()
+            })
+            .or_else(|| {
+                runtime
+                    .env
+                    .named_pipelines
+                    .get(&(None, main_name.clone()))
+                    .cloned()
+            })
+            .ok_or_else(|| WebPipeError::PipelineNotFound("main".to_string()))?;
+
+        let mut flags = HashMap::new();
+        if let Some(flag_pipeline) = self.feature_flags_pipeline(runtime.root_module_id) {
+            let flag_ctx = crate::executor::RequestContext::for_script(input.clone());
+            let (_result, _ct, _status, flag_ctx) =
+                crate::executor::execute_pipeline(&runtime.env, &flag_pipeline, input.clone(), flag_ctx).await?;
+            flags.extend(flag_ctx.feature_flags);
+        }
+
+        let mut ctx = crate::executor::RequestContext::for_script(input.clone());
+        ctx.feature_flags = flags;
+        if let Some(ref debugger) = runtime.env.debugger {
+            ctx.debug_thread_id = Some(debugger.allocate_thread_id());
+        }
+
+        let (result, content_type, status_code, ctx) =
+            crate::executor::execute_pipeline(&runtime.env, &main_pipeline, input, ctx).await?;
+        ctx.run_deferred(&result, &content_type, &runtime.env);
+        Ok((result, content_type, status_code))
+    }
+
+    pub fn router(self) -> Router {
+        let mut router = Router::new().route("/health", get(health_check));
+
+        let runtime = self.build_runtime();
+        let env = runtime.env.clone();
+
         // Build method-specific matchers with RoutePayload
         let mut get_router = matchit::Router::new();
         let mut post_router = matchit::Router::new();
@@ -804,7 +899,7 @@ impl WebPipeServer {
             };
 
             // Static analysis: determine if this route needs flags
-            let needs_flags = pipeline_needs_flags(&pipeline, &named_pipelines, &self.middleware_registry);
+            let needs_flags = pipeline_needs_flags(&pipeline, env.named_pipelines.as_ref(), &self.middleware_registry);
 
             let payload = RoutePayload {
                 pipeline: pipeline.clone(),
@@ -846,7 +941,7 @@ impl WebPipeServer {
                     let graphql_pipeline = Arc::new(create_graphql_endpoint_pipeline());
 
                     // Check if pipeline needs flags (should be false for our simple pipeline)
-                    let needs_flags = pipeline_needs_flags(&graphql_pipeline, &named_pipelines, &self.middleware_registry);
+                    let needs_flags = pipeline_needs_flags(&graphql_pipeline, env.named_pipelines.as_ref(), &self.middleware_registry);
 
                     let payload = RoutePayload {
                         pipeline: graphql_pipeline,
@@ -868,30 +963,13 @@ impl WebPipeServer {
             }
         }
 
-        // Build ExecutionEnv with loaded symbols and module registry
-        let env = Arc::new(ExecutionEnv {
-            variables: Arc::new(variables_map),
-            named_pipelines: Arc::new(named_pipelines),
-            module_registry: Arc::new(module_registry),
-            imports: Arc::new(HashMap::new()), // DEPRECATED: kept for backward compat
-            invoker: Arc::new(RealInvoker::new(self.middleware_registry.clone())),
-            registry: self.middleware_registry.clone(),
-            environment: std::env::var("WEBPIPE_ENV").ok(),
-            cache: self.ctx.cache.clone(),
-            rate_limit: self.ctx.rate_limit.clone(),
-            debugger: self.debugger.clone(),
-        });
-
-        // Set the execution environment in the Context so GraphQL middleware can access it
-        *self.ctx.execution_env.write() = Some(env.clone());
-
         let server_state = ServerState {
             get_router: Arc::new(get_router),
             post_router: Arc::new(post_router),
             put_router: Arc::new(put_router),
             delete_router: Arc::new(delete_router),
             env: env.clone(),
-            feature_flags: self.program.feature_flags.as_ref().map(|p| Arc::new(p.clone())),
+            feature_flags: self.feature_flags_pipeline(runtime.root_module_id),
             trace_enabled: self.trace_enabled,
         };
 

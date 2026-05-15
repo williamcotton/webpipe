@@ -22,6 +22,12 @@ pub struct Cli {
     #[arg(long, help = "Run BDD tests")]
     pub test: bool,
 
+    #[arg(long, help = "Run root pipeline main as a script")]
+    pub run: bool,
+
+    #[arg(long, help = "Serve HTTP routes even if the file defines pipeline main")]
+    pub serve: bool,
+
     #[arg(long, help = "Verbose test output")]
     pub verbose: bool,
 
@@ -108,8 +114,12 @@ impl Cli {
 
                     if self.test {
                         OperationMode::Test(file.clone())
-                    } else {
+                    } else if self.serve || self.port.is_some() || self.address.is_some() {
                         OperationMode::Serve(file.clone())
+                    } else if self.run {
+                        OperationMode::Run(file.clone())
+                    } else {
+                        OperationMode::Auto(file.clone())
                     }
                 } else {
                     OperationMode::Help
@@ -123,6 +133,8 @@ impl Cli {
 pub enum OperationMode {
     Init,
     Migrate,
+    Auto(PathBuf),
+    Run(PathBuf),
     Serve(PathBuf),
     Test(PathBuf),
     Inspect(PathBuf),

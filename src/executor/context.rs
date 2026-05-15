@@ -4,6 +4,13 @@ use serde_json::Value;
 use crate::executor::env::ExecutionEnv;
 use crate::executor::tasks::AsyncTaskRegistry;
 use crate::executor::types::{CachePolicy, LogConfig, RateLimitStatus};
+use crate::error::WebPipeError;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvocationKind {
+    Http,
+    Script,
+}
 
 #[derive(Default)]
 pub struct RequestMetadata {
@@ -77,6 +84,9 @@ impl Profiler {
 
 /// Per-request mutable context (The Backpack)
 pub struct RequestContext {
+    /// Indicates whether this execution is serving an HTTP request or a one-shot script run.
+    pub invocation: InvocationKind,
+
     /// Feature flags for this request (extracted from headers or auth, NOT from user JSON)
     /// Static/Sticky configuration (e.g., ENABLE_BETA, NEW_UI). Controlled via @flag / getFlag / setFlag.
     pub feature_flags: HashMap<String, bool>,
@@ -104,6 +114,9 @@ pub struct RequestContext {
     /// Persistent request information (query, params, headers) that survives state transformations
     pub request: Value,
 
+    /// Cached stdin bytes for script mode. Stdin is read at most once per execution.
+    pub(crate) stdin_bytes: Option<Vec<u8>>,
+
     /// Debug thread ID for DAP protocol (None in production)
     pub debug_thread_id: Option<u64>,
 
@@ -114,6 +127,7 @@ pub struct RequestContext {
 impl RequestContext {
     pub fn new() -> Self {
         Self {
+            invocation: InvocationKind::Http,
             feature_flags: HashMap::new(),
             conditions: HashMap::new(),
             async_registry: AsyncTaskRegistry::new(),
@@ -122,9 +136,33 @@ impl RequestContext {
             call_log: HashMap::new(),
             profiler: Profiler::default(),
             request: Value::Null,
+            stdin_bytes: None,
             debug_thread_id: None,
             debug_step_mode: None,
         }
+    }
+
+    pub fn for_script(request: Value) -> Self {
+        let mut ctx = Self::new();
+        ctx.invocation = InvocationKind::Script;
+        ctx.request = request;
+        ctx
+    }
+
+    pub async fn stdin_bytes(&mut self) -> Result<Vec<u8>, WebPipeError> {
+        if let Some(bytes) = &self.stdin_bytes {
+            return Ok(bytes.clone());
+        }
+
+        use tokio::io::AsyncReadExt;
+
+        let mut bytes = Vec::new();
+        tokio::io::stdin()
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("failed to read stdin: {e}")))?;
+        self.stdin_bytes = Some(bytes.clone());
+        Ok(bytes)
     }
 
     /// Register a deferred action to run at pipeline completion

@@ -16,7 +16,7 @@ pub mod tasks;
 pub mod types;
 
 // Re-exports for backward compatibility and convenience
-pub use context::{RequestContext, RequestMetadata, Profiler};
+pub use context::{InvocationKind, RequestContext, RequestMetadata, Profiler};
 pub use context::StepMode;
 pub use env::{ExecutionEnv, MiddlewareInvoker, RealInvoker};
 pub use modules::{ModuleId, ModuleMetadata, ModuleRegistry};

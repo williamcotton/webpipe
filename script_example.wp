@@ -1,0 +1,27 @@
+assert Posts = `{
+  posts: [{
+    id: number,
+    title: string,
+    body: string
+  }]
+}`
+
+pipeline main =
+  |> fetch: "https://jsonplaceholder.typicode.com/posts"
+  |> assert: `{
+    data: {
+      response: [{
+        id: number,
+        title: string,
+        body: string
+      }]
+    }
+  }`
+  |> jq: `{ posts: .data.response }`
+  |> assert: Posts
+  |> jq: `.posts | map({ id: .id, title: .title, body: .body })`
+
+describe "main"
+  it "returns the posts"
+    when executing pipeline main
+    and output `. | length` equals 100

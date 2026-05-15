@@ -423,10 +423,11 @@ impl Context {
         let approx_entry_size = 4096usize;
         let max_entries = std::cmp::max(64, max_total_bytes / approx_entry_size);
 
-        let http = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("failed to build reqwest client");
+        let mut http_builder = Client::builder().timeout(Duration::from_secs(10));
+        if std::env::var_os("WEBPIPE_DISABLE_SYSTEM_PROXY").is_some() {
+            http_builder = http_builder.no_proxy();
+        }
+        let http = http_builder.build().expect("failed to build reqwest client");
 
         // Optional pg pool
         let pg_cfg = cfg_mgr.resolve_config_as_json("pg");
@@ -605,4 +606,3 @@ mod tests {
         assert_eq!(out, "Hello Ada");
     }
 }
-

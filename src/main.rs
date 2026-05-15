@@ -1,5 +1,6 @@
 use std::{error::Error, net::SocketAddr, path::Path, sync::mpsc as std_mpsc, time::Duration};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use serde_json::Value;
 use tokio::{sync::{mpsc as tokio_mpsc, oneshot}, signal};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use webpipe::{ast::parse_program, WebPipeServer, run_tests, run_tests_with_debugger};
@@ -40,7 +41,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "webpipe=debug,tower_http=debug".into()),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 
     let cli = cli::Cli::parse();
@@ -51,6 +52,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         cli::OperationMode::Migrate => {
             migrations::handle_migrate(&cli).await?;
+        }
+        cli::OperationMode::Auto(file_path) => {
+            auto_mode(&file_path, &cli).await?;
+        }
+        cli::OperationMode::Run(file_path) => {
+            run_mode(&file_path, &cli, true).await?;
         }
         cli::OperationMode::Serve(file_path) => {
             serve_mode(&file_path, &cli).await?;
@@ -77,6 +84,105 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    Ok(())
+}
+
+async fn auto_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Error>> {
+    let input = std::fs::read_to_string(file_path)?;
+    let (_leftover_input, program) = parse_program(&input)
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    if program.pipelines.iter().any(|pipeline| pipeline.name == "main") {
+        run_parsed_program(file_path, program, cli).await
+    } else {
+        serve_mode(file_path, cli).await
+    }
+}
+
+async fn run_mode(
+    file_path: &Path,
+    cli: &cli::Cli,
+    require_main: bool,
+) -> Result<(), Box<dyn Error>> {
+    let input = std::fs::read_to_string(file_path)?;
+    let (_leftover_input, program) = parse_program(&input)
+        .map_err(|e| format!("Parse error: {}", e))?;
+
+    if require_main && !program.pipelines.iter().any(|pipeline| pipeline.name == "main") {
+        eprintln!("Error: --run requires a root-level pipeline named main");
+        std::process::exit(1);
+    }
+
+    run_parsed_program(file_path, program, cli).await
+}
+
+async fn run_parsed_program(
+    file_path: &Path,
+    program: webpipe::ast::Program,
+    cli: &cli::Cli,
+) -> Result<(), Box<dyn Error>> {
+    let env_dir = file_path.parent().unwrap_or(Path::new("."));
+    load_env_files(env_dir, false, cli.verbose);
+
+    if std::env::var("WEBPIPE_PUBLIC_DIR").is_err() {
+        let public_path = env_dir.join("public");
+        if let Some(s) = public_path.to_str() {
+            std::env::set_var("WEBPIPE_PUBLIC_DIR", s);
+        }
+    }
+
+    let server = match WebPipeServer::from_program(
+        program,
+        Some(file_path.to_path_buf()),
+        cli.trace,
+    )
+    .await
+    {
+        Ok(server) => server,
+        Err(e) => {
+            eprintln!("{}", e.display_pipeline_details());
+            std::process::exit(1);
+        }
+    };
+
+    match server.execute_main_pipeline(serde_json::json!({})).await {
+        Ok((result, content_type, status_code)) => {
+            write_script_output(&result, &content_type)?;
+            if status_code.unwrap_or(200) >= 400 {
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+        Err(e) => {
+            eprintln!("{}", e.display_pipeline_details());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn write_script_output(result: &Value, content_type: &str) -> Result<(), Box<dyn Error>> {
+    use std::io::Write;
+
+    let mut stdout = std::io::stdout().lock();
+    if content_type.starts_with("text/html") || content_type.starts_with("image/svg+xml") {
+        let body = result.as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| serde_json::to_string(result).unwrap_or_default());
+        stdout.write_all(body.as_bytes())?;
+        if !body.ends_with('\n') {
+            stdout.write_all(b"\n")?;
+        }
+    } else if content_type.starts_with("image/png") {
+        let body = result.as_str().unwrap_or("");
+        match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, body) {
+            Ok(binary) => stdout.write_all(&binary)?,
+            Err(_) => stdout.write_all(body.as_bytes())?,
+        }
+    } else {
+        serde_json::to_writer_pretty(&mut stdout, result)?;
+        stdout.write_all(b"\n")?;
+    }
+    stdout.flush()?;
     Ok(())
 }
 
