@@ -46,6 +46,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let cli = cli::Cli::parse();
 
+    // Install the parsed CLI argv (everything after `--`) as the process-wide
+    // `$context.args` / `$context.options` default for every pipeline run.
+    webpipe::cli_args::init_global(webpipe::cli_args::parse(&cli.script_args));
+
     match cli.mode() {
         cli::OperationMode::Init => {
             scaffold::handle_init(&cli)?;

@@ -122,6 +122,10 @@ pub struct RequestContext {
 
     /// Debug stepping mode (StepOver pauses at next step)
     pub debug_step_mode: Option<StepMode>,
+
+    /// Per-request override for `$context.args` / `$context.options`. When set, takes precedence
+    /// over the process-wide CLI argv (used by the test DSL's `and args are` / `and options are`).
+    pub script_args_override: Option<std::sync::Arc<crate::cli_args::ScriptArgs>>,
 }
 
 impl RequestContext {
@@ -139,6 +143,7 @@ impl RequestContext {
             stdin_bytes: None,
             debug_thread_id: None,
             debug_step_mode: None,
+            script_args_override: None,
         }
     }
 
@@ -216,6 +221,33 @@ impl RequestContext {
         if let Some(env_name) = &env.environment {
             context.insert("env".to_string(), serde_json::Value::String(env_name.clone()));
         }
+
+        // Forwarded CLI argv: per-test override wins, else fall back to the process-wide default.
+        let script_args = self
+            .script_args_override
+            .clone()
+            .unwrap_or_else(crate::cli_args::global);
+        context.insert(
+            "args".to_string(),
+            serde_json::Value::Array(
+                script_args
+                    .args
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+        context.insert(
+            "options".to_string(),
+            serde_json::Value::Object(
+                script_args
+                    .options
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            ),
+        );
 
         // Add metadata (cache, log, rate_limit)
         let metadata_json = self.metadata.to_value();

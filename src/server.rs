@@ -556,6 +556,7 @@ impl ServerState {
             stdin_bytes: None,
             debug_thread_id,
             debug_step_mode: None,
+            script_args_override: None,
         }
     }
 

@@ -1,8 +1,9 @@
 pipeline main =
   |> stdin: `text`
+  |> jq: `{ message: ., context: $context }`
 
 describe "main"
   it "returns the stdin"
     when executing pipeline main
     and stdin is "Hello, world!"
-    then output equals "Hello, world!"
+    then output equals `{"message": "Hello, world!"}`

@@ -1275,6 +1275,32 @@ fn parse_and_stdin_clause(input: Span) -> IResult<Span, String> {
     Ok((input, value))
 }
 
+// Parses `and args are `[...]`` — seeds `$context.args` for a script-mode test.
+fn parse_and_args_clause(input: Span) -> IResult<Span, String> {
+    let (input, _) = tag("and")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("args")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("are")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, value) = parse_multiline_string(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, value))
+}
+
+// Parses `and options are `{...}`` — seeds `$context.options` for a script-mode test.
+fn parse_and_options_clause(input: Span) -> IResult<Span, String> {
+    let (input, _) = tag("and")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("options")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("are")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, value) = parse_multiline_string(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, value))
+}
+
 fn parse_it(input: Span) -> IResult<Span, It> {
     let (input, _) = skip_ws_and_comments(input)?;
     let it_start = input;
@@ -1312,6 +1338,8 @@ fn parse_it(input: Span) -> IResult<Span, It> {
     let mut headers_opt = None;
     let mut cookies_opt = None;
     let mut stdin_opt = None;
+    let mut args_opt = None;
+    let mut options_opt = None;
     let mut current_input = input;
     let mut first_with = true;
 
@@ -1340,17 +1368,27 @@ fn parse_it(input: Span) -> IResult<Span, It> {
             Err(_) => {}
         }
 
-        // Also accept `and stdin is "..."` interleaved with the with-clauses.
-        match opt(parse_and_stdin_clause).parse(current_input) {
-            Ok((new_input, Some(value))) => {
-                stdin_opt = Some(value);
-                current_input = new_input;
-                first_with = false;
-                continue;
-            }
-            Ok((_, None)) => break,
-            Err(_) => break,
+        // Also accept `and stdin is "..."` / `and args are `…`` / `and options are `…``
+        // interleaved with the with-clauses.
+        if let Ok((new_input, Some(value))) = opt(parse_and_stdin_clause).parse(current_input) {
+            stdin_opt = Some(value);
+            current_input = new_input;
+            first_with = false;
+            continue;
         }
+        if let Ok((new_input, Some(value))) = opt(parse_and_args_clause).parse(current_input) {
+            args_opt = Some(value);
+            current_input = new_input;
+            first_with = false;
+            continue;
+        }
+        if let Ok((new_input, Some(value))) = opt(parse_and_options_clause).parse(current_input) {
+            options_opt = Some(value);
+            current_input = new_input;
+            first_with = false;
+            continue;
+        }
+        break;
     }
 
     let (input, _) = skip_ws_and_comments(current_input)?;
@@ -1375,6 +1413,8 @@ fn parse_it(input: Span) -> IResult<Span, It> {
         headers: headers_opt,
         cookies: cookies_opt,
         stdin: stdin_opt,
+        args: args_opt,
+        options: options_opt,
         conditions,
         location: location_from_span(it_start),
     }))

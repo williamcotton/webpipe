@@ -39,6 +39,11 @@ pub struct Cli {
 
     #[arg(long, help = "Debug server port", default_value = "5858", value_name = "PORT")]
     pub inspect_port: u16,
+
+    /// Everything after `--` is forwarded to the script as $context.args / $context.options.
+    /// `last = true` lets clap capture it without claiming any of webpipe's own flags.
+    #[arg(last = true, value_name = "SCRIPT_ARGS")]
+    pub script_args: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]

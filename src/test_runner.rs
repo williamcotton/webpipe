@@ -891,6 +891,48 @@ async fn run_tests_internal(
                         if let Some(ref dbg) = debugger {
                             ctx.debug_thread_id = Some(dbg.allocate_thread_id());
                         }
+                        if test.args.is_some() || test.options.is_some() {
+                            let args_vec: Vec<String> = if let Some(args_str) = &test.args {
+                                let parsed = evaluate_jq_input_with_role(args_str, &variables_ctx, "test args")?;
+                                match parsed {
+                                    Value::Array(items) => items
+                                        .into_iter()
+                                        .map(|v| match v {
+                                            Value::String(s) => s,
+                                            other => other.to_string(),
+                                        })
+                                        .collect(),
+                                    other => {
+                                        return Err(WebPipeError::BadRequest(format!(
+                                            "`and args are` expects a JSON array, got {}",
+                                            other
+                                        )));
+                                    }
+                                }
+                            } else {
+                                Vec::new()
+                            };
+                            let options_map: HashMap<String, Value> = if let Some(opts_str) = &test.options {
+                                let parsed = evaluate_jq_input_with_role(opts_str, &variables_ctx, "test options")?;
+                                match parsed {
+                                    Value::Object(map) => map.into_iter().collect(),
+                                    other => {
+                                        return Err(WebPipeError::BadRequest(format!(
+                                            "`and options are` expects a JSON object, got {}",
+                                            other
+                                        )));
+                                    }
+                                }
+                            } else {
+                                HashMap::new()
+                            };
+                            ctx.script_args_override = Some(std::sync::Arc::new(
+                                crate::cli_args::ScriptArgs {
+                                    args: args_vec,
+                                    options: options_map,
+                                },
+                            ));
+                        }
                         let (out, ct, status_opt, ctx) = crate::executor::execute_pipeline(&env, &pipeline.pipeline, input, ctx).await?;
                         let log = ctx.call_log.clone();
                         (status_opt.unwrap_or(200u16), out, ct, true, String::new(), log)

@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod cli_args;
 pub mod config;
 pub mod error;
 pub mod loader;

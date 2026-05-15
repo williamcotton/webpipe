@@ -319,6 +319,12 @@ impl Display for It {
         if let Some(stdin) = &self.stdin {
             writeln!(f, "    and stdin is \"{}\"", stdin)?;
         }
+        if let Some(args) = &self.args {
+            writeln!(f, "    and args are `{}`", args)?;
+        }
+        if let Some(options) = &self.options {
+            writeln!(f, "    and options are `{}`", options)?;
+        }
         for condition in &self.conditions {
             writeln!(f, "    {}", condition)?;
         }
