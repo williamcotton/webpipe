@@ -881,7 +881,12 @@ async fn run_tests_internal(
                             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
                             debugger: debugger.clone(),
                         };
-                        let mut ctx = crate::executor::RequestContext::new();
+                        let mut ctx = if let Some(stdin_str) = &test.stdin {
+                            let rendered = render(stdin_str)?;
+                            crate::executor::RequestContext::for_script_with_stdin(input.clone(), rendered.into_bytes())
+                        } else {
+                            crate::executor::RequestContext::new()
+                        };
                         ctx.request = input.clone();
                         if let Some(ref dbg) = debugger {
                             ctx.debug_thread_id = Some(dbg.allocate_thread_id());

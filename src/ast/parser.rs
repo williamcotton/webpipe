@@ -1252,6 +1252,29 @@ fn parse_and_with_clause(input: Span) -> IResult<Span, (String, String)> {
     Ok((input, (kind.fragment().to_string(), value)))
 }
 
+// Parses `and stdin is "..."` or `and stdin is `...`` — feeds script-mode stdin to the pipeline.
+fn parse_and_stdin_clause(input: Span) -> IResult<Span, String> {
+    let (input, _) = tag("and")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("stdin")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("is")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, value) = alt((
+        parse_multiline_string,
+        map(
+            delimited(
+                char('"'),
+                map(take_until("\""), |s: Span| s.fragment().to_string()),
+                char('"'),
+            ),
+            |v| v,
+        ),
+    )).parse(input)?;
+    let (input, _) = multispace0(input)?;
+    Ok((input, value))
+}
+
 fn parse_it(input: Span) -> IResult<Span, It> {
     let (input, _) = skip_ws_and_comments(input)?;
     let it_start = input;
@@ -1288,6 +1311,7 @@ fn parse_it(input: Span) -> IResult<Span, It> {
     let mut body_opt = None;
     let mut headers_opt = None;
     let mut cookies_opt = None;
+    let mut stdin_opt = None;
     let mut current_input = input;
     let mut first_with = true;
 
@@ -1310,6 +1334,19 @@ fn parse_it(input: Span) -> IResult<Span, It> {
                 }
                 current_input = new_input;
                 first_with = false;
+                continue;
+            }
+            Ok((_, None)) => {}
+            Err(_) => {}
+        }
+
+        // Also accept `and stdin is "..."` interleaved with the with-clauses.
+        match opt(parse_and_stdin_clause).parse(current_input) {
+            Ok((new_input, Some(value))) => {
+                stdin_opt = Some(value);
+                current_input = new_input;
+                first_with = false;
+                continue;
             }
             Ok((_, None)) => break,
             Err(_) => break,
@@ -1337,6 +1374,7 @@ fn parse_it(input: Span) -> IResult<Span, It> {
         body: body_opt,
         headers: headers_opt,
         cookies: cookies_opt,
+        stdin: stdin_opt,
         conditions,
         location: location_from_span(it_start),
     }))

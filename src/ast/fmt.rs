@@ -316,6 +316,9 @@ impl Display for It {
         if let Some(cookies) = &self.cookies {
             writeln!(f, "    with cookies `{}`", cookies)?;
         }
+        if let Some(stdin) = &self.stdin {
+            writeln!(f, "    and stdin is \"{}\"", stdin)?;
+        }
         for condition in &self.conditions {
             writeln!(f, "    {}", condition)?;
         }

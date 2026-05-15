@@ -149,6 +149,14 @@ impl RequestContext {
         ctx
     }
 
+    /// Script-mode context with pre-supplied stdin bytes (used by the test runner
+    /// when an `it` block declares `and stdin is "..."`).
+    pub fn for_script_with_stdin(request: Value, stdin: Vec<u8>) -> Self {
+        let mut ctx = Self::for_script(request);
+        ctx.stdin_bytes = Some(stdin);
+        ctx
+    }
+
     pub async fn stdin_bytes(&mut self) -> Result<Vec<u8>, WebPipeError> {
         if let Some(bytes) = &self.stdin_bytes {
             return Ok(bytes.clone());

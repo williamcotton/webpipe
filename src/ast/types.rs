@@ -344,6 +344,7 @@ pub struct It {
     pub body: Option<String>,
     pub headers: Option<String>,
     pub cookies: Option<String>,
+    pub stdin: Option<String>,
     pub conditions: Vec<Condition>,
     /// Source location for debugging and error reporting
     pub location: SourceLocation,
