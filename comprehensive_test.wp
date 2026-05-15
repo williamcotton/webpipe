@@ -3121,6 +3121,7 @@ describe "DOM Scraping"
     and selector `ul.items > li:nth-child(2)` text equals "Item 2"
 
 pipeline teamTemplate =
+  |> assert: `{ team: { name: string, description: string } }`
   |> handlebars: `
     <div class="team">
       <h1>{{team.name}}</h1>
