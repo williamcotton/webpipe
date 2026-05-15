@@ -1251,11 +1251,76 @@ and call pipeline processItem with `{ "item": "widget", "quantity": 5, "price": 
 - HTMX partial responses: for HTMX apps, mutating endpoints (POST/PUT/DELETE) should return HTML fragments (not full pages) for `hx-swap`. Only the initial page load route needs the full `<html>` document.
 - Handlebars partials from variables: a `handlebars varName = \`...\`` variable works as a partial (`{{>varName}}`) only when referenced from inside another handlebars variable template. Inline handlebars steps (`|> handlebars: \`{{>varName}}\``) may fail with "Partial not found". To share template fragments, either inline the template in each step or use a single handlebars variable for the full template.
 
+## Script Mode
+
+A `.wp` file that defines a pipeline named `main` runs as a one-shot CLI program instead of an HTTP server. The same syntax and middleware apply; only the entry point, input, and output change.
+
+```bash
+webpipe file.wp [-- args...]           # Auto-detect: run `main` if defined, else serve routes
+webpipe file.wp --run [-- args...]     # Force script mode (errors if no `main`)
+webpipe file.wp --serve                # Force HTTP mode even when `main` exists
+```
+
+Everything after `--` is forwarded to the pipeline as `$context.args` (positional tokens) and `$context.options` (flags). Parsing rules:
+
+- `--key=value` or `--key value` -> `options.key = "value"` (always string)
+- `--key` followed by another `--…` or end-of-args -> `options.key = true`
+- bare tokens -> appended to `args`
+- last-wins on repeated flags; no short flags; no nested `--`
+
+```
+pipeline main =
+  |> jq: `{ city: $context.options.city, first: $context.args[0] }`
+```
+
+```bash
+$ webpipe greet.wp -- Boston --units imperial
+```
+
+### stdin middleware (script-mode only)
+
+`stdin` reads standard input in script mode and errors out in HTTP mode. Modes:
+
+```
+|> stdin: `text`     # whole stdin as a UTF-8 string  (default)
+|> stdin: `json`     # parse stdin as one JSON document
+|> stdin: `lines`    # split on newlines into [string]
+```
+
+Stdin is read at most once per run and cached on the context.
+
+### Output
+
+`main`'s final state is written to stdout, dispatched on its `content_type`:
+
+- `text/html`, `image/svg+xml` -> written as a UTF-8 string
+- `image/png` -> base64-decoded to raw bytes (so `webpipe chart.wp | imgc` works)
+- anything else -> pretty-printed JSON
+
+Exit code: `0` when final status is `< 400` or absent, `1` when status is `>= 400` (after writing output), `1` when the pipeline raises an error (message goes to stderr, nothing to stdout).
+
+`assert` failures still produce a recoverable `assertionError` envelope. Without a `result` branch they will not change the exit code on their own, and the next step may consume the merged-but-now-stale state. Pair `assert` with `result assertionError(500): ...` when the failure must be visible.
+
+### Testing script-mode pipelines
+
+```
+it "renders for Boston"
+  when executing pipeline main
+  and stdin is "raw text"
+  and args are `["pos1"]`
+  and options are `{ "city": "Boston" }`
+  then output `.city` equals "Boston"
+```
+
+`and stdin is`, `and args are`, and `and options are` are only meaningful with `when executing pipeline main` (or any script-style pipeline). They override the process-wide CLI argv for that single test.
+
 ## Running
 
 ```bash
-webpipe app.wp                         # Serve on 127.0.0.1:7770
+webpipe app.wp                         # Serve on 127.0.0.1:7770 (or run `main` as a script if defined)
 PORT=8080 webpipe app.wp               # Custom port
+webpipe app.wp --run -- --key value    # Force script mode; forward args after `--`
+webpipe app.wp --serve                 # Force HTTP mode even when `main` exists
 webpipe app.wp --test                  # Run tests
 webpipe app.wp --test --verbose        # Verbose tests
 webpipe app.wp --inspect               # Debug mode
