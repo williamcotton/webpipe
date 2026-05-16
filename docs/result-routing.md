@@ -41,6 +41,8 @@ GET /example
 3. **Fall through to default**: If no match found, use `default()` case
 4. **Set status code**: The number in parentheses becomes the HTTP status
 
+When a pipeline state contains a typed top-level error envelope like `{ errors: [{ type: "sqlError", ... }] }`, Web Pipe skips later non-`result` steps until the next `result` block. This keeps later transforms from hiding the original error before it can be routed.
+
 ### Multiple Error Handlers
 
 ```wp

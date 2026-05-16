@@ -285,7 +285,9 @@ impl<'a> RegularStepExecutor<'a> {
         is_last_step: bool,
     ) {
         // Data-fetching middleware support result wrapping under .data.<target>
-        let should_wrap = target_name.is_some() && matches!(effective_name, "pg" | "fetch" | "graphql");
+        let should_wrap = target_name.is_some()
+            && matches!(effective_name, "pg" | "fetch" | "graphql")
+            && extract_error_type(&new_value).is_none();
 
         if should_wrap {
             let target = target_name.unwrap();
@@ -455,10 +457,17 @@ pub async fn handle_result_step(
     if let Some(branch) = selected {
         let inherited_cookies = ctx.pipe_ctx.state.get("setCookies").cloned();
         let input_state = ctx.take_state();
+        let handled_error_type = extract_error_type(&input_state);
 
         let (mut result, branch_ct, _status) =
-            super::execute_pipeline_internal(ctx.env, &branch.pipeline, input_state, ctx.req_ctx)
-                .await?;
+            super::execute_pipeline_internal_with_error_short_circuit(
+                ctx.env,
+                &branch.pipeline,
+                input_state,
+                ctx.req_ctx,
+                handled_error_type,
+            )
+            .await?;
 
         // Restore cookies if not present in result
         if inherited_cookies.is_some() {

@@ -574,7 +574,7 @@ Important runtime caveats:
 
 - `assert` only runs when the route, pipeline, or variable is actually executed. A route declaration alone is not a test.
 - Array item schemas validate existing elements. `rows: [{ name: string }]` passes for `rows: []` because there are no elements to inspect.
-- If an assertion failure is followed by a `jq` step that ignores `.errors`, that later step can hide the failure. Put `result` immediately after `assert` when the failure must become an HTTP/test-visible error.
+- If an assertion failure occurs, later non-`result` steps are skipped until the next `result` block. Include an `assertionError(...)` branch when the failure must become an HTTP/test-visible response.
 
 ### cache — Response caching
 ```
@@ -675,6 +675,8 @@ Guards can also be used as dispatch cases for data-driven branching:
 - Otherwise WebPipe matches `.errors[0].type` against the branch name, such as `validationError`, `authError`, or `sqlError`.
 - If no branch matches, `default(...)` runs.
 - The status code in parentheses becomes the HTTP status for that branch, and that branch's pipeline output becomes the new response.
+
+When a typed top-level `.errors` envelope is present, later non-`result` steps are skipped until the next `result` block. This means one final `result` block can catch failures from preceding `fetch`, `assert`, `jq`, `pg`, and other branchable middleware without each failing step needing its own nested `result`.
 
 ## Middleware error types
 
@@ -1246,7 +1248,7 @@ and call pipeline processItem with `{ "item": "widget", "quantity": 5, "price": 
 - Pipeline testability: pipelines tested via `when executing pipeline ... with input` receive only the explicit input. They cannot read custom data from `context`. Keep shared pipelines pure — accept data through input, not `context`.
 - Non-ASCII in comments: avoid unicode box-drawing or other non-ASCII characters in `.wp` comments (e.g., `# ── Section ──────`). They can silently break the parser and cause entire `describe` blocks to be skipped without error. Use plain ASCII only (e.g., `# --- Section ---`).
 - `jq` variables are whole-step only: a `jq variableName = \`...\`` variable can only be used as the entire step expression (`|> jq: variableName`), not embedded inside another jq expression (`|> jq: \`{ foo: variableName }\``). To combine seed data with request fields, use a jq step that builds the full object inline.
-- `assert` is not a compile-time-only annotation: it runs at runtime and writes `.errors` on failure. Add a `result assertionError(...)` branch right after it if failures must be visible as a response or test assertion.
+- `assert` is not a compile-time-only annotation: it runs at runtime and writes `.errors` on failure. Add a `result assertionError(...)` branch somewhere after it when failures must become a shaped response or test assertion.
 - Empty arrays satisfy array item assertions vacuously. If you need to prove row fields, test with non-empty mock data or add an explicit count check in jq/result logic.
 - HTMX partial responses: for HTMX apps, mutating endpoints (POST/PUT/DELETE) should return HTML fragments (not full pages) for `hx-swap`. Only the initial page load route needs the full `<html>` document.
 - Handlebars partials from variables: a `handlebars varName = \`...\`` variable works as a partial (`{{>varName}}`) only when referenced from inside another handlebars variable template. Inline handlebars steps (`|> handlebars: \`{{>varName}}\``) may fail with "Partial not found". To share template fragments, either inline the template in each step or use a single handlebars variable for the full template.
@@ -1299,7 +1301,7 @@ Stdin is read at most once per run and cached on the context.
 
 Exit code: `0` when final status is `< 400` or absent, `1` when status is `>= 400` (after writing output), `1` when the pipeline raises an error (message goes to stderr, nothing to stdout).
 
-`assert` failures still produce a recoverable `assertionError` envelope. Without a `result` branch they will not change the exit code on their own, and the next step may consume the merged-but-now-stale state. Pair `assert` with `result assertionError(500): ...` when the failure must be visible.
+`assert` failures still produce a recoverable `assertionError` envelope. Without a `result` branch they will not change the exit code on their own. Pair `assert` with `result assertionError(500): ...` when the failure must be visible.
 
 ### Testing script-mode pipelines
 

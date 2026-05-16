@@ -140,12 +140,22 @@ fn extract_middleware_failure(err: &WebPipeError) -> Option<(String, Option<Stri
 
 /// Internal pipeline execution that accepts a mutable RequestContext
 /// Public to allow GraphQL runtime to reuse the same context for call logging
-#[async_recursion]
 pub async fn execute_pipeline_internal<'a>(
     env: &'a ExecutionEnv,
     pipeline: &'a Pipeline,
     input: Value,
     ctx: &'a mut RequestContext,
+) -> Result<(Value, String, Option<u16>), WebPipeError> {
+    execute_pipeline_internal_with_error_short_circuit(env, pipeline, input, ctx, None).await
+}
+
+#[async_recursion]
+pub(crate) async fn execute_pipeline_internal_with_error_short_circuit<'a>(
+    env: &'a ExecutionEnv,
+    pipeline: &'a Pipeline,
+    input: Value,
+    ctx: &'a mut RequestContext,
+    mut handled_error_type: Option<String>,
 ) -> Result<(Value, String, Option<u16>), WebPipeError> {
     // Track content_type and status_code as we execute steps
     let mut content_type = "application/json".to_string();
@@ -154,6 +164,19 @@ pub async fn execute_pipeline_internal<'a>(
     let mut pipeline_ctx = crate::runtime::PipelineContext::new(input);
 
     for (idx, step) in pipeline.steps.iter().enumerate() {
+        // Normal pipeline bodies stop on typed error envelopes until `result`.
+        // Result branches pass the error type they are handling so their
+        // handler steps can still shape the response.
+        let current_error_type = extract_error_type(&pipeline_ctx.state);
+        if handled_error_type.as_deref() != current_error_type.as_deref() {
+            handled_error_type = None;
+        }
+        if current_error_type.is_some() {
+            if handled_error_type.is_none() && !matches!(step, PipelineStep::Result { .. }) {
+                continue;
+            }
+        }
+
         // Create output tracker for this iteration
         let mut current_output = PipelineOutput {
             state: Value::Null, // Not used during step execution
@@ -245,6 +268,14 @@ mod tests {
                 }
                 "fail" => {
                     return Err(WebPipeError::MiddlewareExecutionError(cfg.to_string()));
+                }
+                "pg" if cfg == "error" => {
+                    pipeline_ctx.state = serde_json::json!({
+                        "errors": [{
+                            "type": "sqlError",
+                            "message": "bad query"
+                        }]
+                    });
                 }
                 "echo" => {
                     // Try to parse config as JSON and merge with input
@@ -347,6 +378,120 @@ mod tests {
         assert_eq!(out["errors"][0]["type"], serde_json::json!("failError"));
         assert_eq!(out["errors"][0]["message"], serde_json::json!("boom"));
         assert_eq!(out["errors"][0]["step"], serde_json::json!("fail"));
+    }
+
+    #[tokio::test]
+    async fn error_envelope_skips_regular_steps_until_result_block() {
+        let env = env_with_vars(vec![]);
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "fail".to_string(),
+                args: Vec::new(),
+                config: "boom".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                config_present: true,
+                condition: None,
+                parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
+            },
+            PipelineStep::Regular {
+                name: "handlebars".to_string(),
+                args: Vec::new(),
+                config: "should not render".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                config_present: true,
+                condition: None,
+                parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
+            },
+            PipelineStep::Result { branches: vec![
+                crate::ast::ResultBranch {
+                    branch_type: crate::ast::ResultBranchType::Custom("failError".to_string()),
+                    status_code: 500,
+                    pipeline: Pipeline { steps: vec![
+                        PipelineStep::Regular {
+                            name: "handlebars".to_string(),
+                            args: Vec::new(),
+                            config: "handled".to_string(),
+                            config_type: crate::ast::ConfigType::Quoted,
+                            config_present: true,
+                            condition: None,
+                            parsed_join_targets: None,
+                            location: crate::ast::SourceLocation::default(),
+                        },
+                    ] },
+                    location: crate::ast::SourceLocation::default(),
+                },
+                crate::ast::ResultBranch {
+                    branch_type: crate::ast::ResultBranchType::Ok,
+                    status_code: 200,
+                    pipeline: Pipeline { steps: vec![] },
+                    location: crate::ast::SourceLocation::default(),
+                },
+            ], location: crate::ast::SourceLocation::default() }
+        ]};
+        let (out, ct, status, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
+        assert_eq!(status, Some(500));
+        assert_eq!(ct, "text/html");
+        assert_eq!(out, serde_json::json!("<p>handled</p>"));
+    }
+
+    #[tokio::test]
+    async fn result_wrapping_does_not_hide_error_envelopes() {
+        let env = env_with_vars(vec![]);
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "pg".to_string(),
+                args: Vec::new(),
+                config: "error".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                config_present: true,
+                condition: single_tag("result", false, vec!["inserted"]),
+                parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
+            },
+            PipelineStep::Regular {
+                name: "handlebars".to_string(),
+                args: Vec::new(),
+                config: "should not render".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                config_present: true,
+                condition: None,
+                parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
+            },
+            PipelineStep::Result { branches: vec![
+                crate::ast::ResultBranch {
+                    branch_type: crate::ast::ResultBranchType::Custom("sqlError".to_string()),
+                    status_code: 500,
+                    pipeline: Pipeline { steps: vec![
+                        PipelineStep::Regular {
+                            name: "echo".to_string(),
+                            args: Vec::new(),
+                            config: r#"{"handled": true}"#.to_string(),
+                            config_type: crate::ast::ConfigType::Quoted,
+                            config_present: true,
+                            condition: None,
+                            parsed_join_targets: None,
+                            location: crate::ast::SourceLocation::default(),
+                        },
+                    ] },
+                    location: crate::ast::SourceLocation::default(),
+                },
+                crate::ast::ResultBranch {
+                    branch_type: crate::ast::ResultBranchType::Ok,
+                    status_code: 200,
+                    pipeline: Pipeline { steps: vec![] },
+                    location: crate::ast::SourceLocation::default(),
+                },
+            ], location: crate::ast::SourceLocation::default() }
+        ]};
+        let (out, ct, status, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
+        assert_eq!(status, Some(500));
+        assert_eq!(ct, "application/json");
+        assert_eq!(out["errors"][0]["type"], serde_json::json!("sqlError"));
+        assert_eq!(out["handled"], serde_json::json!(true));
+        assert!(out.get("data").is_none());
     }
 
     #[tokio::test]
