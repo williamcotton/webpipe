@@ -181,3 +181,20 @@ pub fn get_result_from_tag_expr(expr: &TagExpr) -> Option<String> {
         }
     }
 }
+
+/// Extract @error(name) from a TagExpr, walking the expression tree.
+/// Returns the first @error tag found with a single argument.
+pub fn get_error_from_tag_expr(expr: &TagExpr) -> Option<String> {
+    match expr {
+        TagExpr::Tag(tag) => {
+            if tag.name == "error" && !tag.negated && tag.args.len() == 1 {
+                Some(tag.args[0].clone())
+            } else {
+                None
+            }
+        }
+        TagExpr::And(left, right) | TagExpr::Or(left, right) => {
+            get_error_from_tag_expr(left).or_else(|| get_error_from_tag_expr(right))
+        }
+    }
+}

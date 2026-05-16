@@ -130,6 +130,23 @@ pub fn extract_error_type(input: &Value) -> Option<String> {
     None
 }
 
+pub fn override_error_type(input: &mut Value, error_type: Option<&str>) {
+    let Some(error_type) = error_type else {
+        return;
+    };
+
+    let Some(error) = input
+        .get_mut("errors")
+        .and_then(|errors| errors.as_array_mut())
+        .and_then(|errors| errors.first_mut())
+        .and_then(|error| error.as_object_mut())
+    else {
+        return;
+    };
+
+    error.insert("type".to_string(), Value::String(error_type.to_string()));
+}
+
 /// Build a state value of the form { errors: [{ type, message, step, location? }] }
 /// from a middleware failure so it can be matched by a downstream `result` block.
 pub fn make_middleware_error_value(

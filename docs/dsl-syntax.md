@@ -723,6 +723,7 @@ GET /dashboard
 | `@!guard(\`expr\`)` | Negated guard |
 | `@async(name)` | Parallel execution |
 | `@result(name)` | Name result |
+| `@error(name)` | Rename branchable errors from this step |
 
 ### Control Flow
 

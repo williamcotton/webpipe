@@ -43,6 +43,38 @@ GET /example
 
 When a pipeline state contains a typed top-level error envelope like `{ errors: [{ type: "sqlError", ... }] }`, Web Pipe skips later non-`result` steps until the next `result` block. This keeps later transforms from hiding the original error before it can be routed.
 
+The LSP checks result blocks against the error types that can be produced before the block. Middleware-provided errors such as `sqlError`, `pgError`, `httpError`, and `assertionError` are registered as branchable error types. Literal error envelopes created by `jq` also define branchable error types when `.errors[0].type` is a string literal.
+
+Use `default(status)` as the catch-all for any pending error type that is not handled by a specific branch:
+
+```wp
+|> result
+  sqlError(500):
+    |> jq: `{ error: "database_write_failed", message: .errors[0].message }`
+  ok(200):
+    |> jq: `{ ok: true }`
+  default(500):
+    |> jq: `{
+      error: "Something went wrong",
+      message: .errors[0].message,
+      timestamp: now
+    }`
+```
+
+Use `@error(name)` on a step to rename branchable errors produced by that step:
+
+```wp
+|> assert: TodoFetchResponse @error(todoFetchError)
+|> pg([.id]): `INSERT INTO todos (id) VALUES ($1)` @error(todoWriteError)
+|> result
+  todoFetchError(500):
+    |> jq: `{ ok: false, error: "unexpected_upstream_shape", message: .errors[0].message }`
+  todoWriteError(500):
+    |> jq: `{ ok: false, error: "pg_write_failed", message: .errors[0].message }`
+  ok(200):
+    |> jq: `{ ok: true }`
+```
+
 ### Multiple Error Handlers
 
 ```wp

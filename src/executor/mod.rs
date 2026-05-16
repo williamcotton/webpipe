@@ -21,7 +21,7 @@ pub use context::StepMode;
 pub use env::{ExecutionEnv, MiddlewareInvoker, RealInvoker};
 pub use modules::{ModuleId, ModuleMetadata, ModuleRegistry};
 pub use resolver::{resolve_config_and_autoname, parse_scoped_ref, determine_target_name, extract_error_type, select_branch};
-pub use tags::{should_execute_step, check_tag_expr, get_async_from_tag_expr, get_result_from_tag_expr};
+pub use tags::{should_execute_step, check_tag_expr, get_async_from_tag_expr, get_error_from_tag_expr, get_result_from_tag_expr};
 pub use tasks::{AsyncTaskRegistry, parse_join_task_names};
 pub use types::{PipelineOutput, StepOutcome, ExecutionMode, StepResult, PipelineExecFuture, CachePolicy, LogConfig, RateLimitStatus};
 pub use step::{StepContext, RegularStepExecutor, determine_step_name};
@@ -85,11 +85,19 @@ async fn execute_step<'a>(
                 Ok(outcome) => Ok(outcome),
                 Err(err) => {
                     if let Some((message, loc_str)) = extract_middleware_failure(&err) {
-                        step_ctx.pipe_ctx.state = resolver::make_middleware_error_value(
+                        let error_type_override = condition
+                            .as_ref()
+                            .and_then(tags::get_error_from_tag_expr);
+                        let mut error_value = resolver::make_middleware_error_value(
                             name,
                             &message,
                             loc_str.as_deref(),
                         );
+                        resolver::override_error_type(
+                            &mut error_value,
+                            error_type_override.as_deref(),
+                        );
+                        step_ctx.pipe_ctx.state = error_value;
                         Ok(StepOutcome::Continue)
                     } else {
                         Err(err)
@@ -490,6 +498,92 @@ mod tests {
         assert_eq!(status, Some(500));
         assert_eq!(ct, "application/json");
         assert_eq!(out["errors"][0]["type"], serde_json::json!("sqlError"));
+        assert_eq!(out["handled"], serde_json::json!(true));
+        assert!(out.get("data").is_none());
+    }
+
+    #[tokio::test]
+    async fn error_tag_renames_generic_middleware_errors() {
+        let env = env_with_vars(vec![]);
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "fail".to_string(),
+                args: Vec::new(),
+                config: "boom".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                config_present: true,
+                condition: single_tag("error", false, vec!["todoFetchError"]),
+                parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
+            },
+            PipelineStep::Result { branches: vec![
+                crate::ast::ResultBranch {
+                    branch_type: crate::ast::ResultBranchType::Custom("todoFetchError".to_string()),
+                    status_code: 500,
+                    pipeline: Pipeline { steps: vec![] },
+                    location: crate::ast::SourceLocation::default(),
+                },
+                crate::ast::ResultBranch {
+                    branch_type: crate::ast::ResultBranchType::Default,
+                    status_code: 599,
+                    pipeline: Pipeline { steps: vec![] },
+                    location: crate::ast::SourceLocation::default(),
+                },
+            ], location: crate::ast::SourceLocation::default() }
+        ]};
+        let (out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
+        assert_eq!(status, Some(500));
+        assert_eq!(out["errors"][0]["type"], serde_json::json!("todoFetchError"));
+        assert_eq!(out["errors"][0]["message"], serde_json::json!("boom"));
+        assert_eq!(out["errors"][0]["step"], serde_json::json!("fail"));
+    }
+
+    #[tokio::test]
+    async fn error_tag_renames_domain_error_envelopes_before_result_wrapping() {
+        let env = env_with_vars(vec![]);
+        let pipeline = Pipeline { steps: vec![
+            PipelineStep::Regular {
+                name: "pg".to_string(),
+                args: Vec::new(),
+                config: "error".to_string(),
+                config_type: crate::ast::ConfigType::Quoted,
+                config_present: true,
+                condition: and_tags(
+                    TagExpr::Tag(Tag { name: "result".to_string(), negated: false, args: vec!["inserted".to_string()] }),
+                    TagExpr::Tag(Tag { name: "error".to_string(), negated: false, args: vec!["pgWriteError".to_string()] }),
+                ),
+                parsed_join_targets: None,
+                location: crate::ast::SourceLocation::default(),
+            },
+            PipelineStep::Result { branches: vec![
+                crate::ast::ResultBranch {
+                    branch_type: crate::ast::ResultBranchType::Custom("pgWriteError".to_string()),
+                    status_code: 500,
+                    pipeline: Pipeline { steps: vec![
+                        PipelineStep::Regular {
+                            name: "echo".to_string(),
+                            args: Vec::new(),
+                            config: r#"{"handled": true}"#.to_string(),
+                            config_type: crate::ast::ConfigType::Quoted,
+                            config_present: true,
+                            condition: None,
+                            parsed_join_targets: None,
+                            location: crate::ast::SourceLocation::default(),
+                        },
+                    ] },
+                    location: crate::ast::SourceLocation::default(),
+                },
+                crate::ast::ResultBranch {
+                    branch_type: crate::ast::ResultBranchType::Default,
+                    status_code: 599,
+                    pipeline: Pipeline { steps: vec![] },
+                    location: crate::ast::SourceLocation::default(),
+                },
+            ], location: crate::ast::SourceLocation::default() }
+        ]};
+        let (out, _ct, status, _ctx) = execute_pipeline(&env, &pipeline, serde_json::json!({}), RequestContext::new()).await.unwrap();
+        assert_eq!(status, Some(500));
+        assert_eq!(out["errors"][0]["type"], serde_json::json!("pgWriteError"));
         assert_eq!(out["handled"], serde_json::json!(true));
         assert!(out.get("data").is_none());
     }

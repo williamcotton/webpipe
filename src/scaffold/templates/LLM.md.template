@@ -678,12 +678,34 @@ Guards can also be used as dispatch cases for data-driven branching:
 
 When a typed top-level `.errors` envelope is present, later non-`result` steps are skipped until the next `result` block. This means one final `result` block can catch failures from preceding `fetch`, `assert`, `jq`, `pg`, and other branchable middleware without each failing step needing its own nested `result`.
 
+The LSP checks result blocks against the error types that can reach them:
+- A result block is exhaustive when every pending branchable error has a specific branch, or when the block includes `default(status)`.
+- `default(status)` is the catch-all for pending errors that do not match a more specific branch.
+- `default(status)` does not hide typos in explicit branches. If the pipeline can produce `sqlError` and the block says `sqlErro(500)`, the LSP should still warn.
+- Branch names can come from built-in middleware error registrations, `@error(name)` aliases, or literal JQ-created envelopes such as `{ errors: [{ type: "customError", message: "..." }] }`.
+
+Use `@error(name)` on a step to rename branchable errors produced by that step. This is useful when the same middleware can fail at different points and each failure needs a distinct `result` branch:
+```
+|> assert: TodoFetchResponse @error(todoFetchError)
+|> pg([.id]): `INSERT INTO todos (id) VALUES ($1)` @result(inserted) @error(todoWriteError)
+|> result
+  todoFetchError(500):
+    |> jq: `{ ok: false, error: "unexpected_upstream_shape", message: .errors[0].message }`
+  todoWriteError(500):
+    |> jq: `{ ok: false, error: "pg_write_failed", message: .errors[0].message }`
+  ok(200):
+    |> jq: `{ ok: true }`
+  default(500):
+    |> jq: `{ ok: false, error: "Something went wrong", message: .errors[0].message }`
+```
+
 ## Middleware error types
 
-`result` branches on structured pipeline errors stored in `.errors`. Two layers produce them:
+`result` branches on structured pipeline errors stored in `.errors`. Three layers produce them:
 
 1. **Domain-specific envelopes** written by certain middlewares to describe the failure (e.g., `sqlError` from `pg`, `validationError` from `validate`, `assertionError` from `assert`, `httpError` from `fetch`).
 2. **Generic middleware-execution errors** automatically produced by the executor whenever any middleware step raises an internal execution failure. These take the shape `<name>Error` (e.g., `jqError`, `handlebarsError`, `luaError`) and are matchable by `result` exactly like the domain envelopes.
+3. **Literal pipeline envelopes** created by a step such as `jq` when it returns top-level `{ errors: [{ type: "customError", ... }] }`.
 
 Domain `.errors` written into pipeline state:
 
@@ -720,10 +742,11 @@ Built-in middleware error behavior:
 - `js` -> branchable `jsError` for script failures
 - `log` -> no middleware-specific `.errors` during normal execution
 - `debug` -> no middleware-specific `.errors` during normal execution
-- `join` -> branchable `joinError` for join-level execution failures; invalid static config still aborts with top-level `config_error`
+- `join` -> no branchable `.errors`; invalid static config still aborts with top-level `config_error`
 - `graphql` -> branchable `graphqlError` for inline-variable-arg failures; invalid static config still aborts with top-level `config_error`; GraphQL execution failures are returned in GraphQL response format `{ data, errors }`
 - `rateLimit` -> no `.errors`; invalid config aborts with top-level `config_error`; exceeded limits abort with top-level `rate_limit_exceeded`
 - `gg` -> branchable `ggError` for chart generation failures
+- `stdin` -> branchable `stdinError` for script input failures
 
 Top-level (non-branchable) failures still bypass `result`: `middleware_not_found`, `pipeline_not_found`, `config_error`, `database_error`, `rate_limit_exceeded`, IO/JSON parsing errors, and other system-level conditions. Everything else — including the `cannot use null as iterable` family of jq errors — is now catchable.
 
@@ -796,6 +819,16 @@ pg getUserQuery = `SELECT * FROM users`
 |> pg: getUserQuery
 # Result available at .data.getUserQuery
 ```
+
+## @error — Named step errors
+
+Rename branchable errors from a specific step:
+```
+|> assert: UserRow @error(userRowError)
+|> pg([.id]): `SELECT * FROM users WHERE id = $1` @error(userLookupError)
+```
+
+The tag changes `.errors[0].type` for errors produced by that step. It does not affect successful output.
 
 ## Feature Flags
 

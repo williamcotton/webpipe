@@ -1125,6 +1125,11 @@ POST /todos/add
             {{#*inline "errorMessage"}}{{message}}{{/inline}}
             {{> errorAlert}}
           `
+          default(500):
+            |> jq: `{
+              error: "Internal server error",
+              message: .errors[0].message
+            }`
     authError(401):
       |> handlebars: `
         {{<errorAlert}}
@@ -1132,6 +1137,11 @@ POST /todos/add
           {{$errorMessage}}Please log in to add todos.{{/errorMessage}}
         {{/errorAlert}}
       `
+    default(500):
+      |> jq: `{
+        error: "Internal server error",
+        message: .errors[0].message
+      }`
 
 POST /todos/:id/toggle
   |> auth: "required"
@@ -2203,6 +2213,11 @@ GET /test-if-with-result/:value
   |> result
     ok(200):
       |> jq: `{ success: true, data: . }`
+    default(500):
+      |> jq: `{
+        error: "Internal server error",
+        message: .errors[0].message
+      }`
 
 # Test 10: Complex condition with multiple steps
 GET /test-if-complex
@@ -4552,6 +4567,11 @@ GET /type-checking/assert-ok
       |> jq: `{ error: .errors[0].message, field: .errors[0].field }`
     ok(200):
       |> jq: `{ names: .data.rows | map(.name) }`
+    default(500):
+      |> jq: `{
+        error: "Internal server error",
+        message: .errors[0].message
+      }`
 
 
 assert TeamsPageStateIncorrect = `{
@@ -4570,6 +4590,11 @@ GET /type-checking/assert-runtime-error
       |> jq: `{ error: .errors[0].message, field: .errors[0].field }`
     ok(200):
       |> jq: `{ names: .data.rows | map(.user) }`
+    default(500):
+      |> jq: `{
+        error: "Internal server error",
+        message: .errors[0].message
+      }`
 
 # Pipeline type-checking demo: this one intentionally has a type error.
 # The LSP should report that .data.rows may be missing before this jq stage.
@@ -4582,3 +4607,135 @@ GET /type-checking/assert-runtime-error
         |> jq: `{ names: .data.rows | map(.name) }`
       default(500):
         |> jq: `{ error: "Internal server error" }`
+
+assert TodoFetchResponse = `{
+  data: {
+    todo: {
+      response: {
+        userId: number,
+        id: number,
+        title: string,
+        completed: boolean
+      }
+    }
+  }
+}`
+
+assert EnsureTableResult = `{
+  data: {
+    ensureTable: {
+      rows: [unknown],
+      rowCount: number
+    }
+  }
+}`
+
+assert InsertResult = `{
+  data: {
+    inserted: {
+      rows: [{
+        id: number,
+        source_url: string,
+        remote_id: number,
+        remote_user_id: number,
+        title: string,
+        completed: boolean,
+        fetched_at: string
+      }],
+      rowCount: number
+    }
+  }
+}`
+
+pipeline normalizeFetchedTodo =
+  |> jq: `
+    .data.todo.response as $todo |
+    {
+      sourceUrl: .sourceUrl,
+      remoteId: $todo.id,
+      remoteUserId: $todo.userId,
+      title: $todo.title,
+      completed: $todo.completed,
+      payloadJson: ($todo | tojson)
+    }
+  `
+
+pipeline writeFetchedTodo =
+  |> pg: `
+    CREATE TABLE IF NOT EXISTS webpipe_fetch_demo (
+      id BIGSERIAL PRIMARY KEY,
+      source_url TEXT NOT NULL,
+      remote_id INTEGER NOT NULL,
+      remote_user_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      completed BOOLEAN NOT NULL,
+      payload JSONB NOT NULL,
+      fetched_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  ` @result(ensureTable)
+  |> assert: EnsureTableResult @error(pgShapeError)
+  |> pg([.sourceUrl, .remoteId, .remoteUserId, .title, .completed, .payloadJson]): `
+    INSERT INTO webpipe_fetch_demo (
+      source_url,
+      remote_id,
+      remote_user_id,
+      title,
+      completed,
+      payload
+    )
+    VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+    RETURNING
+      id,
+      source_url,
+      remote_id,
+      remote_user_id,
+      title,
+      completed,
+      fetched_at
+  ` @result(inserted)
+  |> assert: InsertResult @error(pgShapeError)
+
+pipeline mainDemo =
+  |> jq: `{ sourceUrl: ($context.options.url // "https://jsonplaceholder.typicode.com/todos/1") }`
+  |> fetch(.sourceUrl, { method: "GET", headers: { "Accept": "application/json" } }) @result(todo)
+  |> assert: TodoFetchResponse @error(todoFetchError)
+  |> normalizeFetchedTodo
+  |> writeFetchedTodo
+  |> result
+    httpError(502):
+      |> jq: `{ ok: false, error: "upstream_http_error", status: .errors[0].status, message: .errors[0].message }`
+    networkError(502):
+      |> jq: `{ ok: false, error: "upstream_network_error", message: .errors[0].message }`
+    timeoutError(504):
+      |> jq: `{ ok: false, error: "upstream_timeout", message: .errors[0].message }`
+    fetchError(500):
+      |> jq: `{ ok: false, error: "fetch_failed", message: .errors[0].message }`
+    todoFetchError(500):
+      |> jq: `{ ok: false, error: "unexpected_upstream_shape", field: .errors[0].field, message: .errors[0].message }`
+    sqlError(500):
+      |> jq: `{ ok: false, error: "pg_write_failed", message: .errors[0].message }`
+    pgError(500):
+      |> jq: `{ ok: false, error: "pg_failed", message: .errors[0].message }`
+    pgShapeError(500):
+      |> jq: `{ ok: false, error: "unexpected_pg_shape", field: .errors[0].field, message: .errors[0].message }`
+    assertionError(500):
+      |> jq: `{ ok: false, error: "unexpected_shape", field: .errors[0].field, message: .errors[0].message }`
+    ok(200):
+      |> jq: `{
+        ok: true,
+        saved: .data.inserted.rows[0],
+        fetched: {
+          url: .sourceUrl,
+          remoteId: .remoteId,
+          remoteUserId: .remoteUserId,
+          title: .title,
+          completed: .completed
+        }
+      }`
+    default(500):
+      |> jq: `{
+        ok: false,
+        error: "Something went wrong",
+        message: .errors[0].message,
+        timestamp: now
+      }`

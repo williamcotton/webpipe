@@ -18,8 +18,8 @@ use crate::{
 use super::{
     context::RequestContext,
     env::ExecutionEnv,
-    resolver::{determine_target_name, extract_error_type, resolve_config_and_autoname, select_branch},
-    tags::{check_tag_expr, get_async_from_tag_expr, should_execute_step},
+    resolver::{determine_target_name, extract_error_type, override_error_type, resolve_config_and_autoname, select_branch},
+    tags::{check_tag_expr, get_async_from_tag_expr, get_error_from_tag_expr, should_execute_step},
     types::{ExecutionMode, PipelineOutput, StepOutcome, StepResult},
 };
 
@@ -174,7 +174,7 @@ impl<'a> RegularStepExecutor<'a> {
             determine_target_name(self.condition, &ctx.pipe_ctx.state, auto_named);
 
         // 5. Execute Core Logic
-        let step_result = self
+        let mut step_result = self
             .run_core_logic(
                 mode,
                 ctx,
@@ -184,6 +184,11 @@ impl<'a> RegularStepExecutor<'a> {
                 target_name.as_deref(),
             )
             .await?;
+        let error_type_override = self
+            .condition
+            .as_ref()
+            .and_then(get_error_from_tag_expr);
+        override_error_type(&mut step_result.value, error_type_override.as_deref());
 
         // 6. Apply State Changes
         self.apply_result_to_state(
