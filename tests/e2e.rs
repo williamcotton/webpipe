@@ -137,6 +137,44 @@ pipeline main =
 }
 
 #[test]
+fn cli_main_pipeline_stdin_text_preserves_input_and_stays_quiet() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let app_path = dir.path().join("app.wp");
+    let scripts_path = dir.path().join("scripts");
+    std::fs::create_dir(&scripts_path).expect("create scripts dir");
+    std::fs::write(scripts_path.join("helper.lua"), "return {}").expect("write script");
+    std::fs::write(
+        &app_path,
+        r#"
+pipeline main =
+  |> stdin: text
+  |> jq: `{ message: . }`
+"#,
+    )
+    .expect("write app");
+
+    let mut child = webpipe_command()
+        .arg(&app_path)
+        .current_dir(dir.path())
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn webpipe");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    stdin.write_all(b"test\n").expect("write stdin");
+    drop(stdin);
+
+    let output = child.wait_with_output().expect("wait");
+    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
+    let stdout: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json stdout");
+    assert_eq!(stdout["message"], serde_json::json!("test\n"));
+}
+
+#[test]
 fn cli_run_requires_root_main_even_if_import_defines_main() {
     let dir = tempfile::tempdir().expect("tempdir");
     let app_path = dir.path().join("app.wp");

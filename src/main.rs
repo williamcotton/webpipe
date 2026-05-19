@@ -14,6 +14,32 @@ mod cli;
 mod scaffold;
 mod migrations;
 
+const DEFAULT_LOG_FILTER: &str = "webpipe=debug,tower_http=debug";
+const SCRIPT_LOG_FILTER: &str = "webpipe=warn,tower_http=warn";
+
+fn init_tracing(default_filter: &'static str) {
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| default_filter.into()),
+        )
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .init();
+}
+
+fn tracing_filter_for_mode(mode: &cli::OperationMode) -> Option<&'static str> {
+    match mode {
+        cli::OperationMode::Auto(_) | cli::OperationMode::Inspect(_) => None,
+        cli::OperationMode::Run(_)
+        | cli::OperationMode::Test(_)
+        | cli::OperationMode::TestInspect(_) => Some(SCRIPT_LOG_FILTER),
+        cli::OperationMode::Init
+        | cli::OperationMode::Migrate
+        | cli::OperationMode::Serve(_)
+        | cli::OperationMode::Help => Some(DEFAULT_LOG_FILTER),
+    }
+}
+
 fn load_env_files(env_dir: &Path, override_existing: bool, debug: bool) {
     // Load .env files located next to the WebPipe file
     let files = [".env", ".env.local"];
@@ -82,22 +108,18 @@ GET /
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize tracing
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "webpipe=debug,tower_http=debug".into()),
-        )
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        .init();
-
     let cli = cli::Cli::parse();
 
     // Install the parsed CLI argv (everything after `--`) as the process-wide
     // `$context.args` / `$context.options` default for every pipeline run.
     webpipe::cli_args::init_global(webpipe::cli_args::parse(&cli.script_args));
 
-    match cli.mode() {
+    let mode = cli.mode();
+    if let Some(default_filter) = tracing_filter_for_mode(&mode) {
+        init_tracing(default_filter);
+    }
+
+    match mode {
         cli::OperationMode::Init => {
             scaffold::handle_init(&cli)?;
         }
@@ -144,8 +166,10 @@ async fn auto_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Error
         .map_err(|e| format!("Parse error: {}", e))?;
 
     if program.pipelines.iter().any(|pipeline| pipeline.name == "main") {
+        init_tracing(SCRIPT_LOG_FILTER);
         run_parsed_program(file_path, program, cli).await
     } else {
+        init_tracing(DEFAULT_LOG_FILTER);
         serve_mode(file_path, cli).await
     }
 }
@@ -410,8 +434,11 @@ async fn inspect_mode(file_path: &Path, cli: &cli::Cli) -> Result<(), Box<dyn Er
         .map_err(|e| format!("Parse error: {}", e))?;
 
     if inspect_runs_standalone_script(&program, cli) {
+        init_tracing(SCRIPT_LOG_FILTER);
         return run_script_inspect_mode(file_path, program, inspect_port, trace_mode).await;
     }
+
+    init_tracing(DEFAULT_LOG_FILTER);
 
     // Determine address
     let default_addr = "127.0.0.1:7770".to_string();
