@@ -3433,7 +3433,8 @@ describe "JQ Inputs - Pipeline Execution with Complex Data"
           features: .features,
           completion: ((.features * 10) | tostring) + "%"
         },
-        tags: [.projectName, ("v" + (.version | tostring)), "production"]
+        tags: [.projectName, ("v" + (.version | tostring)), "production"],
+        description: ("Project " + .projectName + " v" + (.version | tostring))
       }
     }`
     then selector `.team` exists
