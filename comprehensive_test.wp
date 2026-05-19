@@ -1095,41 +1095,34 @@ GET /todos
 
 POST /todos/add
   |> auth: "required"
+  |> validate: `
+    title: string(3..30)
+  `
+  |> jq: `. + {
+    sqlParams: [.body.title, false, .user.id]
+  }`
+  |> pg: `INSERT INTO todos (title, completed, user_id) VALUES ($1, $2, $3) RETURNING *`
   |> result
-    ok(200):
-      |> validate: `
-        title: string(3..30)
+    ok(201):
+      |> jq: `(.data.rows[0] | . + {id: (.id | tostring)})`
+      |> handlebars: `
+        <div hx-swap-oob="afterbegin:#todo-list">
+          {{>todoItemPartial}}
+        </div>
+        <input type="text" id="title" name="title" required class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" value="" hx-swap-oob="true">
       `
-      |> jq: `. + { 
-        sqlParams: [.body.title, false, .user.id]
+    validationError(400):
+      |> jq: `{
+        error: "Validation failed",
+        field: .errors[0].field,
+        rule: .errors[0].rule,
+        message: .errors[0].message
       }`
-      |> pg: `INSERT INTO todos (title, completed, user_id) VALUES ($1, $2, $3) RETURNING *`
-      |> result
-        ok(201):
-          |> jq: `(.data.rows[0] | . + {id: (.id | tostring)})`
-          |> handlebars: `
-            <div hx-swap-oob="afterbegin:#todo-list">
-              {{>todoItemPartial}}
-            </div>
-            <input type="text" id="title" name="title" required class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" value="" hx-swap-oob="true">
-          `
-        validationError(400):
-          |> jq: `{
-            error: "Validation failed",
-            field: .errors[0].field,
-            rule: .errors[0].rule,
-            message: .errors[0].message
-          }`
-          |> handlebars: `
-            {{#*inline "errorTitle"}}Validation Error{{/inline}}
-            {{#*inline "errorMessage"}}{{message}}{{/inline}}
-            {{> errorAlert}}
-          `
-          default(500):
-            |> jq: `{
-              error: "Internal server error",
-              message: .errors[0].message
-            }`
+      |> handlebars: `
+        {{#*inline "errorTitle"}}Validation Error{{/inline}}
+        {{#*inline "errorMessage"}}{{message}}{{/inline}}
+        {{> errorAlert}}
+      `
     authError(401):
       |> handlebars: `
         {{<errorAlert}}
@@ -4469,7 +4462,10 @@ GET /order/:id/process
   |> pipeline: processItem
   |> jq: `{
     success: true,
-    result: .
+    processed: .processed,
+    item: .item,
+    quantity: .quantity,
+    total: .total
   }`
 
 # Route that chains multiple pipelines
@@ -4739,3 +4735,13 @@ pipeline mainDemo =
         message: .errors[0].message,
         timestamp: now
       }`
+
+GET /main-demo
+  |> mainDemo
+  |> result
+    ok(200):
+      |> jq: `{
+        ok: true
+      }`
+    default(500):
+      |> jq: `{ ok: false, error: "Something went wrong", message: .errors[0].message }`
