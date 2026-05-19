@@ -1,0 +1,394 @@
+# WebPipe LSP Diagnostic Coverage Fixture
+#
+# Purpose: drive at least one minimal trigger through every reachable warning
+# and error the WebPipe LSP can emit. Phase 0 of the major refactor snapshots
+# the TypeScript LSP checker's output against this file in both loose mode
+# (`webpipe-lsp check`) and strict mode (`webpipe-lsp check --strict-types`).
+# Those snapshots become the diagnostic parity target for the Rust checker
+# delivered in Phase 11.
+#
+# THE SNAPSHOT IS THE CONTRACT, NOT THIS COMMENT.
+# The `# DIAG:` annotations below name the diagnostic kind the trigger was
+# *designed* to fire, based on a static read of validation.ts and
+# type-checker.ts. In practice the parser sometimes bails before validation
+# runs and the LSP reports a generic "Unrecognized or unsupported syntax"
+# warning instead of the specific kind. That is correct behavior; the
+# committed snapshot records what is actually emitted, and the Rust checker
+# in Phase 11 must reproduce the snapshot — not the catalog.
+#
+# Do NOT fix the intentional diagnostics in this file. Each one is an oracle.
+# If a new diagnostic kind is added to the LSP, add its minimal trigger here
+# in the same PR and regenerate the snapshot.
+#
+# Sections A-O match the categories in the diagnostic catalog. Within each
+# section, every comment beginning with `# DIAG:` names the targeted kind and
+# its emission site.
+#
+# Untriggerable from authored source (documented, not exercised here):
+#   - no-trailing-newline (validation.ts:56): requires a file with no
+#     terminating newline. This file ends with one on purpose.
+#   - validation-error (validation.ts:127): internal catch-block message,
+#     fires only on an uncaught validator exception.
+#
+# Catalogued kinds that appear to be unreachable because the parser rejects
+# the trigger before validation runs (the LSP emits "Unrecognized syntax"
+# instead). The triggers are kept in place so the snapshot captures the
+# recovery behavior:
+#   - unknown-variable-type (validation.ts:142): see section B.
+#   - malformed-with-input-syntax (validation.ts:699): see section M.
+#   - wrong-mock-syntax-pipeline (validation.ts:713): see section M.
+#   - malformed-mock-syntax (validation.ts:731): see section M.
+#
+# If a future parser change makes these reachable, the snapshot will pick up
+# the more specific diagnostic automatically — no fixture change needed.
+
+# ============================================================================
+# Imports (must be at the top of the file)
+# ============================================================================
+
+# Real import used as the positive base for module-scoped failures below.
+import "./test.wp" as test
+
+# DIAG: import-file-not-found (error) — validation.ts:307
+import "./this_file_does_not_exist.wp" as missing
+
+# ============================================================================
+# Setup: real declarations used as positive references elsewhere in this file.
+# These exist so that "unknown X" cases are unambiguous misses, not parse
+# errors that prevent other diagnostics from firing.
+# ============================================================================
+
+pipeline goodPipeline =
+  |> jq: `{ ok: true }`
+
+pg goodQuery = `SELECT 1 as one`
+
+query goodGqlQuery =
+  |> jq: `{ ok: true }`
+
+mutation goodGqlMutation =
+  |> jq: `{ ok: true }`
+
+handlebars goodPartial = `<p>{{message}}</p>`
+
+assert GoodContract = `{ ok: boolean }`
+
+# ============================================================================
+# A. Pipeline & unknown identifiers
+# ============================================================================
+
+# DIAG: unknown-pipeline (error) — type-checker.ts:639
+GET /diag/unknown-pipeline
+  |> pipeline: undefinedPipeline
+
+# DIAG: pipeline-not-found-in-module (error) — validation.ts:342
+# `test` is imported above but does not export this pipeline.
+GET /diag/pipeline-not-found-in-module
+  |> pipeline: test::pipelineThatIsNotInTestModule
+
+# DIAG: unknown-import-alias (error) — validation.ts:343
+GET /diag/unknown-import-alias
+  |> pipeline: noSuchAlias::anything
+
+# DIAG: pipeline-type-error-propagation (error) — type-checker.ts:654
+# `brokenPipeline` itself has an invalid assert contract; the call site is
+# expected to surface the propagated error.
+pipeline brokenPipeline =
+  |> assert: `{ not closed properly`
+
+GET /diag/pipeline-type-error-propagation
+  |> pipeline: brokenPipeline
+
+# DIAG: unknown-pipeline-bdd (error) — validation.ts:460
+describe "unknown-pipeline-bdd"
+  it "executes an undefined pipeline by name"
+    when executing pipeline pipelineThatDoesNotExistAnywhere
+    with input `{}`
+    then status is 200
+
+# DIAG: unknown-step (warning) — validation.ts:397
+GET /diag/unknown-step
+  |> notARealMiddlewareName: `irrelevant`
+
+# ============================================================================
+# B. Variables & configuration
+# ============================================================================
+
+# DIAG: duplicate-variable (warning) — validation.ts:192
+pg duplicatedVariable = `SELECT 1`
+pg duplicatedVariable = `SELECT 2`
+
+# DIAG: unknown-variable (error) — validation.ts:390
+GET /diag/unknown-variable
+  |> pg: undefinedPgVariable
+
+# DIAG: variable-not-found-in-module (error) — validation.ts:382
+GET /diag/variable-not-found-in-module
+  |> pg: test::undefinedQueryInTestModule
+
+# DIAG: unknown-variable-type (warning) — validation.ts:142
+mysterymw mysteryVariable = `irrelevant body`
+
+# DIAG: unknown-config-block (error) — validation.ts:160
+config unknownConfigBlock {
+  whatever: "value"
+}
+
+# ============================================================================
+# C. Routes & HTTP
+# ============================================================================
+
+# DIAG: unknown-http-method (error) — validation.ts:229
+SUMMON /diag/unknown-http-method
+  |> jq: `.`
+
+# DIAG: duplicate-route (warning) — validation.ts:237
+GET /diag/duplicate-route
+  |> jq: `{ first: true }`
+
+GET /diag/duplicate-route
+  |> jq: `{ second: true }`
+
+# DIAG: invalid-http-status-code (error) — validation.ts:409
+# Both branches use out-of-range status codes.
+GET /diag/invalid-http-status-code
+  |> jq: `.`
+  |> result
+    ok(999):
+      |> jq: `.`
+    default(50):
+      |> jq: `.`
+
+# DIAG: invalid-http-status-code-assertion (error) — validation.ts:805/820
+describe "invalid-http-status-code-assertion"
+  it "asserts an impossible status"
+    when calling GET /diag/duplicate-route
+    then status is 999
+
+# DIAG: invalid-http-status-range-end (error) — validation.ts:832
+describe "invalid-http-status-range-end"
+  it "asserts a malformed status range"
+    when calling GET /diag/duplicate-route
+    then status in 200..999
+
+# ============================================================================
+# D. Pipeline structure & result types
+# ============================================================================
+
+# DIAG: duplicate-result-branch (warning) — validation.ts:416
+GET /diag/duplicate-result-branch
+  |> jq: `.`
+  |> result
+    customError(400):
+      |> jq: `.`
+    customError(401):
+      |> jq: `.`
+    default(500):
+      |> jq: `.`
+
+# DIAG: duplicate-result-branch-ok (warning) — validation.ts:421
+GET /diag/duplicate-result-branch-ok
+  |> jq: `.`
+  |> result
+    ok(200):
+      |> jq: `.`
+    ok(201):
+      |> jq: `.`
+    default(500):
+      |> jq: `.`
+
+# ============================================================================
+# E. Authentication & middleware config
+# ============================================================================
+
+# DIAG: unknown-auth-flow (warning) — validation.ts:358
+GET /diag/unknown-auth-flow
+  |> auth: "bogus_flow"
+  |> jq: `.`
+
+# ============================================================================
+# F. JQ type checking & filters
+# ============================================================================
+
+# DIAG: jq-type-check-error (warning) — type-checker.ts:968
+# jqtype reports a type violation when the filter accesses a field on a
+# value that has no fields.
+GET /diag/jq-type-check-error
+  |> jq: `{ x: 1 }`
+  |> jq: `.x | .nope`
+
+# DIAG: jq-analysis-failed (warning) — type-checker.ts:888
+# jqtype cannot parse the filter at all.
+GET /diag/jq-analysis-failed
+  |> jq: `((((`
+
+# DIAG: missing-field-error (error in strict, warning in loose) — type-checker.ts:995
+GET /diag/missing-field-error
+  |> jq: `{ a: 1 }`
+  |> jq: `.b`
+
+# ============================================================================
+# G. Assert & validate steps
+# ============================================================================
+
+# DIAG: invalid-assert-contract-format (error) — type-checker.ts:1061
+GET /diag/invalid-assert-contract-format
+  |> jq: `.`
+  |> assert: `{ this is not a valid contract`
+
+# DIAG: assert-contract-mismatch (warning) — type-checker.ts:1070
+# Previous stage produces { name: string }; contract demands { count: number }.
+GET /diag/assert-contract-mismatch
+  |> jq: `{ name: "x" }`
+  |> assert: `{ count: number }`
+
+# DIAG: unknown-assert-contract-identifier (error) — type-checker.ts:1425
+GET /diag/unknown-assert-contract-identifier
+  |> jq: `.`
+  |> assert: NoSuchContract
+
+# DIAG: validate-schema-inference-failed (warning) — type-checker.ts:1087
+GET /diag/validate-schema-inference-failed
+  |> validate: `{{{ broken schema source`
+  |> jq: `.`
+
+# ============================================================================
+# H. Strict-mode-only type errors
+#
+# These do NOT enable strict mode in this file (no `config typecheck { strict: true }`
+# block) so that loose-mode snapshots stay loose. They fire under
+# `webpipe-lsp check --strict-types`. The existing strict-types.wp exercises
+# the same code paths with file-level strict config for cross-validation.
+# ============================================================================
+
+# DIAG: strict-type-error-debt-access (strict) — type-checker.ts:2062
+GET /diag/strict-debt-access
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT id, name FROM teams`
+  |> jq: `{ names: .data.rows | map(.name) }`
+
+# DIAG: strict-type-error-step-with-debt (strict) — type-checker.ts:2074
+GET /diag/strict-step-with-debt
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT id, name FROM teams`
+  |> handlebars: `{{data.rows.0.name}}`
+
+# DIAG: strict-type-error-exit-with-debt (strict) — type-checker.ts:2086
+GET /diag/strict-exit-with-debt
+  |> jq: `{ sqlParams: [] }`
+  |> pg: `SELECT id, name FROM teams`
+
+# ============================================================================
+# I. Handlebars templates
+# ============================================================================
+
+# DIAG: handlebars-type-error (error) — type-checker.ts:2176
+# Asserted shape provides { title } but the template reads a different field.
+GET /diag/handlebars-type-error
+  |> jq: `{ title: "x" }`
+  |> assert: `{ title: string }`
+  |> handlebars: `{{nonexistentField}}`
+
+# DIAG: unknown-handlebars-partial (warning) — validation.ts:903
+GET /diag/unknown-handlebars-partial
+  |> jq: `.`
+  |> handlebars: `{{> nonexistentPartial}}`
+
+# ============================================================================
+# K. Tests & mocks
+# ============================================================================
+
+describe "test-mock-coverage"
+  # DIAG: unknown-pipeline-in-mock (error) — validation.ts:603
+  with mock pipeline thisPipelineDoesNotExist returning `{ "ok": true }`
+  # DIAG: unknown-pipeline-in-mock-dot (error) — validation.ts:658
+  and mock pipeline.alsoNotAPipeline returning `{ "ok": true }`
+  # DIAG: unknown-graphql-query-in-mock (warning) — validation.ts:612
+  and mock query nonexistentGqlQuery returning `{ "data": {} }`
+  # DIAG: unknown-graphql-mutation-in-mock (warning) — validation.ts:620
+  and mock mutation nonexistentGqlMutation returning `{ "data": {} }`
+  # DIAG: unknown-variable-in-mock (error) — validation.ts:684
+  and mock pg.undefinedPgVar returning `{ "rows": [] }`
+  # DIAG: unknown-middleware-in-mock (warning) — validation.ts:718
+  and mock customMw returning `{ "ok": true }`
+
+  it "exercises mock-target diagnostics"
+    when calling GET /diag/duplicate-route
+    then status is 200
+    # DIAG: unknown-graphql-in-assertion (warning) — validation.ts:791
+    and called query missingQueryAssertion times 1
+
+# DIAG: unknown-async-task (error) — validation.ts:941
+GET /diag/unknown-async-task
+  |> jq: `{ a: 1 }` @async(taskA)
+  |> join: `taskA, taskThatWasNeverSpawned`
+
+# DIAG: undefined-test-variable (error) — validation.ts:1044/1061
+describe "undefined-test-variable"
+  it "uses an undefined template variable"
+    when calling GET /hello/{{undefinedTemplateVar}}
+    then status is 200
+
+# ============================================================================
+# L. Test syntax & BDD
+# ============================================================================
+
+# DIAG: unknown-http-method-bdd (error) — validation.ts:492
+describe "unknown-http-method-bdd"
+  it "uses an invalid http verb"
+    when calling GROK /diag/duplicate-route
+    then status is 200
+
+# DIAG: unknown-route-bdd (error) — validation.ts:500
+describe "unknown-route-bdd"
+  it "calls a route that does not exist"
+    when calling GET /diag/this-route-was-never-declared
+    then status is 200
+
+# DIAG: unknown-variable-bdd (error) — validation.ts:485
+describe "unknown-variable-bdd"
+  it "executes an undefined variable"
+    when executing pg variableThatDoesNotExist
+    with input `{ "sqlParams": [] }`
+    then status is 200
+
+# ============================================================================
+# M. Mock syntax recovery
+#
+# These forms may not parse cleanly. The LSP recovers and emits a diagnostic
+# describing the malformed input. If a future parser revision starts rejecting
+# the surrounding describe/it before validation runs, these need to move into
+# their own describe blocks or be replaced with closer-to-valid variants that
+# still trip the recovery path.
+# ============================================================================
+
+describe "malformed-with-input-syntax"
+  # DIAG: malformed-with-input-syntax (error) — validation.ts:699
+  with input { not_in_backticks: true }
+  it "uses with-input without backticks"
+    when calling GET /diag/duplicate-route
+    then status is 200
+
+describe "wrong-mock-syntax-pipeline"
+  # DIAG: wrong-mock-syntax-pipeline (error) — validation.ts:713
+  with mock pipeline returning `{ "ok": true }`
+  it "omits the pipeline name in a pipeline mock"
+    when calling GET /diag/duplicate-route
+    then status is 200
+
+describe "malformed-mock-syntax"
+  # DIAG: malformed-mock-syntax (error) — validation.ts:731
+  with mock @@@invalid@@@ returning `{ "ok": true }`
+  it "uses a structurally invalid mock target"
+    when calling GET /diag/duplicate-route
+    then status is 200
+
+# ============================================================================
+# N. Assertions & content type
+# ============================================================================
+
+# DIAG: malformed-contenttype-assertion (error) — validation.ts:845
+describe "malformed-contenttype-assertion"
+  it "uses a non-is comparator on contentType"
+    when calling GET /diag/duplicate-route
+    then contentType contains "json"
