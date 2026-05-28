@@ -342,6 +342,8 @@ impl<'a> RegularStepExecutor<'a> {
                 || is_last_step
                 || effective_name == "handlebars"
                 || effective_name == "gg"
+                || effective_name == "algraf"
+                || effective_name == "ag"
             {
                 ctx.output.content_type = content_type;
             }

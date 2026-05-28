@@ -21,6 +21,7 @@ mod graphql;
 mod rate_limit;
 mod gramgraph;
 mod stdin;
+mod algraf;
 
 pub use jq::{JqMiddleware, eval_bool as jq_eval_bool};
 pub use auth::AuthMiddleware;
@@ -39,6 +40,7 @@ pub use graphql::GraphQLMiddleware;
 pub use rate_limit::RateLimitMiddleware;
 pub use gramgraph::GramGraphMiddleware;
 pub use stdin::StdinMiddleware;
+pub use algraf::AlgrafMiddleware;
 
 /// Describes how a middleware interacts with the pipeline state
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -127,6 +129,8 @@ impl MiddlewareRegistry {
         registry.register("rateLimit", Box::new(RateLimitMiddleware { ctx: ctx.clone() }));
         registry.register("gg", Box::new(GramGraphMiddleware::new()));
         registry.register("stdin", Box::new(StdinMiddleware));
+        registry.register("algraf", Box::new(AlgrafMiddleware::new()));
+        registry.register("ag", Box::new(AlgrafMiddleware::new()));
         registry
     }
 
