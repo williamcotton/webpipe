@@ -4408,21 +4408,47 @@ GET /svg/weather-alias
   `
   |> ag({
       "type": "svg",
-      "width": 800,
-      "height": 400,
       "dataFormat": "json",
       "variables": {
-        "color": "#e74c3c",
-        "size": $context.request.query.size // "3"
+        "color": $context.request.query.color // "#e74c3c",
+        "size": $context.request.query.size // "3",
+        "width": $context.request.query.width // 800,
+        "height": $context.request.query.height // 400,
       }
     }): `
-    Chart(data: input, width: 800, height: 400) {
+    Chart(data: input, width: $width, height: $height ) {
       Space(time * temp) {
         Line(stroke: "$color", strokeWidth: $size)
         Point(fill: "$color", size: $size)
       }
     }
   `
+
+GET /svg/weather-sparkline
+  |> jq: weatherData
+  |> jq: `
+    .hourly as $h |
+    [$h.time, $h.temperature_2m] | transpose | map({time: .[0], temp: .[1]})
+  `
+  |> ag({
+      "type": "svg",
+      "dataFormat": "json",
+      "variables": {
+        "color": $context.request.query.color // "#e74c3c",
+        "size": $context.request.query.size // "1",
+        "width": $context.request.query.width // 200,
+        "height": $context.request.query.height // 120,
+      }
+    }): `
+    Chart(data: input, width: $width, height: $height) {
+      Theme(name: "void")
+      Space(time * temp) {
+        Theme(name: "void")
+        Line(stroke: "$color", strokeWidth: $size)
+      }
+    }
+  `  
+=
 
 describe "algraf alias ag"
   it "renders svg using ag alias"

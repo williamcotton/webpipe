@@ -39,7 +39,7 @@ dependencies = [
 [[package]]
 name = "algraf-core"
 version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#62e868217e083672b5c70cbcebfdd4b04444f14e"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -48,7 +48,7 @@ dependencies = [
 [[package]]
 name = "algraf-data"
 version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#62e868217e083672b5c70cbcebfdd4b04444f14e"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
 dependencies = [
  "algraf-core",
  "chrono",
@@ -65,7 +65,7 @@ dependencies = [
 [[package]]
 name = "algraf-driver"
 version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#62e868217e083672b5c70cbcebfdd4b04444f14e"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
 dependencies = [
  "algraf-core",
  "algraf-data",
@@ -77,7 +77,7 @@ dependencies = [
 [[package]]
 name = "algraf-render"
 version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#62e868217e083672b5c70cbcebfdd4b04444f14e"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
 dependencies = [
  "algraf-core",
  "algraf-data",
@@ -96,7 +96,7 @@ dependencies = [
 [[package]]
 name = "algraf-semantics"
 version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#62e868217e083672b5c70cbcebfdd4b04444f14e"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
 dependencies = [
  "algraf-core",
  "algraf-data",
@@ -106,7 +106,7 @@ dependencies = [
 [[package]]
 name = "algraf-syntax"
 version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#62e868217e083672b5c70cbcebfdd4b04444f14e"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
 dependencies = [
  "algraf-core",
  "logos",

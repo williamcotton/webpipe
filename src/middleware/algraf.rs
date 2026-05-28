@@ -29,22 +29,10 @@ struct AlgrafConfig {
     data_format: FormatOption,
 
     #[serde(default)]
-    width: Option<u32>,
-
-    #[serde(default)]
-    height: Option<u32>,
-
-    #[serde(default)]
     theme: Option<String>,
 
     #[serde(default)]
     strict: bool,
-
-    #[serde(default)]
-    png_scale: Option<f32>,
-
-    #[serde(default)]
-    png_dpi: Option<u32>,
 
     #[serde(default)]
     variables: HashMap<String, Value>,
@@ -187,12 +175,8 @@ impl AlgrafConfig {
         AlgrafConfig {
             output_type: AlgrafOutputType::Svg,
             data_format: default_data_format(),
-            width: None,
-            height: None,
             theme: None,
             strict: false,
-            png_scale: None,
-            png_dpi: None,
             variables: HashMap::new(),
         }
     }
