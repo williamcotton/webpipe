@@ -38,8 +38,8 @@ dependencies = [
 
 [[package]]
 name = "algraf-core"
-version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
+version = "0.29.0"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#ca8d95acf9f9625896043e9d4d735d003cae07ac"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -47,8 +47,8 @@ dependencies = [
 
 [[package]]
 name = "algraf-data"
-version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
+version = "0.29.0"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#ca8d95acf9f9625896043e9d4d735d003cae07ac"
 dependencies = [
  "algraf-core",
  "chrono",
@@ -64,8 +64,8 @@ dependencies = [
 
 [[package]]
 name = "algraf-driver"
-version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
+version = "0.29.0"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#ca8d95acf9f9625896043e9d4d735d003cae07ac"
 dependencies = [
  "algraf-core",
  "algraf-data",
@@ -76,8 +76,8 @@ dependencies = [
 
 [[package]]
 name = "algraf-render"
-version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
+version = "0.29.0"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#ca8d95acf9f9625896043e9d4d735d003cae07ac"
 dependencies = [
  "algraf-core",
  "algraf-data",
@@ -95,8 +95,8 @@ dependencies = [
 
 [[package]]
 name = "algraf-semantics"
-version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
+version = "0.29.0"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#ca8d95acf9f9625896043e9d4d735d003cae07ac"
 dependencies = [
  "algraf-core",
  "algraf-data",
@@ -105,8 +105,8 @@ dependencies = [
 
 [[package]]
 name = "algraf-syntax"
-version = "0.28.0"
-source = "git+https://github.com/williamcotton/algraf.git?branch=main#350c29796986270cb61b51810fe603d1d4d9fa6e"
+version = "0.29.0"
+source = "git+https://github.com/williamcotton/algraf.git?branch=main#ca8d95acf9f9625896043e9d4d735d003cae07ac"
 dependencies = [
  "algraf-core",
  "logos",
@@ -3006,9 +3006,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50b7e5b27aa02a74bac8c3f23f448f8d87ff11f92d3aac1a6ed369ee08cc56c1"
+checksum = "02bd0af71c67b473010cbbc60715ee815645a4dc942899111f494b4b737d6fda"
 dependencies = [
  "libc",
  "wasi",
@@ -4475,9 +4475,9 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "socket2"
-version = "0.6.3"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
+checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
@@ -5091,7 +5091,7 @@ checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
 dependencies = [
  "bytes",
  "libc",
- "mio 1.2.0",
+ "mio 1.2.1",
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
