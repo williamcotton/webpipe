@@ -4448,14 +4448,74 @@ GET /svg/weather-sparkline
         Line(stroke: "$color", strokeWidth: $size)
       }
     }
-  `  
-=
+  `
 
 describe "algraf alias ag"
   it "renders svg using ag alias"
     when calling GET /svg/weather-alias?size=12
     then status is 200
     and selector `svg` exists
+
+GET /svg/weather-named-files
+  |> jq: weatherData
+  |> ag({
+      "type": "svg",
+      "variables": {
+        "color": $context.request.query.color // "#e74c3c",
+        "size": $context.request.query.size // "3",
+        "width": $context.request.query.width // 800,
+        "height": $context.request.query.height // 400
+      },
+      "data": {
+        "weather_hourly.json": (
+          .hourly as $h |
+          [$h.time, $h.temperature_2m]
+          | transpose
+          | map({time: .[0], temp: .[1]})
+        ),
+        "weather_labels.json": (
+          .hourly as $h
+          | (
+              [$h.time, $h.temperature_2m]
+              | transpose
+              | map({time: .[0], temp: .[1]})
+            ) as $points
+          | [
+              ($points | min_by(.temp) | . + {label: "Low"}),
+              ($points | max_by(.temp) | . + {label: "High"})
+            ]
+        )
+      }
+    }): `
+    Chart(data: "weather_hourly.json", width: $width, height: $height) {
+      Table labels = "weather_labels.json"
+
+      Guide(axis: x, label: "Hour")
+      Guide(axis: y, label: "Temperature (C)")
+
+      Space(time * temp) {
+        Line(stroke: "$color", strokeWidth: $size)
+        Point(fill: "$color", size: $size)
+      }
+
+      Space(time * temp, data: labels) {
+        Point(fill: "#111111", size: 5)
+        Text(label: label, size: 12, dy: -12)
+      }
+    }
+  `
+
+describe "weather svg with named data files"
+  it "renders svg from virtual json files"
+    when calling GET /svg/weather-named-files
+    then status is 200
+    and selector `svg` exists
+
+  it "renders svg with query params"
+    when calling GET /svg/weather-named-files?size=8&color=%23007acc&width=640&height=320
+    then status is 200
+    and selector `svg` exists
+
 
 GET /:city/weather.svg
   |> fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + .params.city + "&count=10&language=en&format=json", {method: "GET"})
