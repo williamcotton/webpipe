@@ -5725,7 +5725,7 @@ dependencies = [
 
 [[package]]
 name = "webpipe"
-version = "2.0.95"
+version = "2.0.96"
 dependencies = [
  "algraf-core",
  "algraf-data",
