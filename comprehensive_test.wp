@@ -4437,11 +4437,11 @@ GET /svg/weather-sparkline
       "variables": {
         "color": $context.request.query.color // "#e74c3c",
         "size": $context.request.query.size // "1",
-        "width": $context.request.query.width // 200,
-        "height": $context.request.query.height // 120,
+        "width": $context.request.query.width // 60,
+        "height": $context.request.query.height // 30,
       }
     }): `
-    Chart(data: input, width: $width, height: $height) {
+    Chart(data: input, width: $width, height: $height, marginLeft: 0, marginRight: 0, marginTop: 0, marginBottom: 0) {
       Theme(name: "void")
       Space(time * temp) {
         Theme(name: "void")
