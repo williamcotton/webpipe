@@ -54,6 +54,9 @@ struct AlgrafConfig {
     theme: Option<String>,
 
     #[serde(default)]
+    interactive: bool,
+
+    #[serde(default)]
     strict: bool,
 
     #[serde(default)]
@@ -172,6 +175,7 @@ impl AlgrafConfig {
             width: None,
             height: None,
             theme: None,
+            interactive: false,
             strict: false,
             png_scale: None,
             png_dpi: None,
@@ -186,6 +190,7 @@ impl AlgrafConfig {
             height: self.height,
             theme: self.theme.clone(),
             output_format: self.output_type.into(),
+            interactive: self.interactive,
             strict: self.strict,
             png_dpi: self.png_dpi,
             ..EmbeddedRenderOptions::default()

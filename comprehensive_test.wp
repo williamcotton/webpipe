@@ -4560,6 +4560,7 @@ GET /svg/weather-cities
   |> fetch("https://api.open-meteo.com/v1/forecast?latitude=" + .locations.seattle.latitude + "&longitude=" + .locations.seattle.longitude + "&hourly=temperature_2m&forecast_days=1", {method: "GET"}) @async(seattle)
   |> join: `chicago,denver,miami,seattle`
   |> ag({
+      "interactive": true,
       "type": "svg",
       "variables": {
         "size": $context.request.query.size // "2.5",
@@ -4647,7 +4648,7 @@ GET /svg/weather-cities
 
       Space(time * temp) {
         Line(stroke: city, strokeWidth: $size)
-        Point(fill: city, size: $size)
+        Point(fill: city, size: $size, tooltip: [city, time, temp])
       }
 
       Space(time * temp, data: labels) {
