@@ -4516,6 +4516,147 @@ describe "weather svg with named data files"
     then status is 200
     and selector `svg` exists
 
+GET /svg/weather-cities
+  |> jq: `{
+    cities: {
+      chicago: "Chicago",
+      denver: "Denver",
+      miami: "Miami",
+      seattle: "Seattle"
+    }
+  }`
+  |> fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + .cities.chicago + "&count=1&language=en&format=json", {method: "GET"}) @async(geo_chicago)
+  |> fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + .cities.denver + "&count=1&language=en&format=json", {method: "GET"}) @async(geo_denver)
+  |> fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + .cities.miami + "&count=1&language=en&format=json", {method: "GET"}) @async(geo_miami)
+  |> fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + .cities.seattle + "&count=1&language=en&format=json", {method: "GET"}) @async(geo_seattle)
+  |> join: `geo_chicago,geo_denver,geo_miami,geo_seattle`
+  |> jq: `. + {
+    locations: {
+      chicago: {
+        name: .cities.chicago,
+        latitude: (.async.geo_chicago.data.response.results[0].latitude | tostring),
+        longitude: (.async.geo_chicago.data.response.results[0].longitude | tostring)
+      },
+      denver: {
+        name: .cities.denver,
+        latitude: (.async.geo_denver.data.response.results[0].latitude | tostring),
+        longitude: (.async.geo_denver.data.response.results[0].longitude | tostring)
+      },
+      miami: {
+        name: .cities.miami,
+        latitude: (.async.geo_miami.data.response.results[0].latitude | tostring),
+        longitude: (.async.geo_miami.data.response.results[0].longitude | tostring)
+      },
+      seattle: {
+        name: .cities.seattle,
+        latitude: (.async.geo_seattle.data.response.results[0].latitude | tostring),
+        longitude: (.async.geo_seattle.data.response.results[0].longitude | tostring)
+      }
+    }
+  }`
+  |> fetch("https://api.open-meteo.com/v1/forecast?latitude=" + .locations.chicago.latitude + "&longitude=" + .locations.chicago.longitude + "&hourly=temperature_2m&forecast_days=1", {method: "GET"}) @async(chicago)
+  |> fetch("https://api.open-meteo.com/v1/forecast?latitude=" + .locations.denver.latitude + "&longitude=" + .locations.denver.longitude + "&hourly=temperature_2m&forecast_days=1", {method: "GET"}) @async(denver)
+  |> fetch("https://api.open-meteo.com/v1/forecast?latitude=" + .locations.miami.latitude + "&longitude=" + .locations.miami.longitude + "&hourly=temperature_2m&forecast_days=1", {method: "GET"}) @async(miami)
+  |> fetch("https://api.open-meteo.com/v1/forecast?latitude=" + .locations.seattle.latitude + "&longitude=" + .locations.seattle.longitude + "&hourly=temperature_2m&forecast_days=1", {method: "GET"}) @async(seattle)
+  |> join: `chicago,denver,miami,seattle`
+  |> ag({
+      "type": "svg",
+      "variables": {
+        "size": $context.request.query.size // "2.5",
+        "width": $context.request.query.width // 800,
+        "height": $context.request.query.height // 400
+      },
+      "data": {
+        "weather_hourly.json": (
+          [
+            (
+              .locations.chicago.name as $city |
+              .async.chicago.data.response.hourly as $h |
+              [$h.time, $h.temperature_2m]
+              | transpose
+              | map({city: $city, time: .[0], temp: .[1]})
+            ),
+            (
+              .locations.denver.name as $city |
+              .async.denver.data.response.hourly as $h |
+              [$h.time, $h.temperature_2m]
+              | transpose
+              | map({city: $city, time: .[0], temp: .[1]})
+            ),
+            (
+              .locations.miami.name as $city |
+              .async.miami.data.response.hourly as $h |
+              [$h.time, $h.temperature_2m]
+              | transpose
+              | map({city: $city, time: .[0], temp: .[1]})
+            ),
+            (
+              .locations.seattle.name as $city |
+              .async.seattle.data.response.hourly as $h |
+              [$h.time, $h.temperature_2m]
+              | transpose
+              | map({city: $city, time: .[0], temp: .[1]})
+            )
+          ] | add
+        ),
+        "weather_labels.json": (
+          [
+            (
+              .locations.chicago.name as $city |
+              .async.chicago.data.response.hourly as $h |
+              [$h.time, $h.temperature_2m]
+              | transpose
+              | map({city: $city, time: .[0], temp: .[1]})
+            ),
+            (
+              .locations.denver.name as $city |
+              .async.denver.data.response.hourly as $h |
+              [$h.time, $h.temperature_2m]
+              | transpose
+              | map({city: $city, time: .[0], temp: .[1]})
+            ),
+            (
+              .locations.miami.name as $city |
+              .async.miami.data.response.hourly as $h |
+              [$h.time, $h.temperature_2m]
+              | transpose
+              | map({city: $city, time: .[0], temp: .[1]})
+            ),
+            (
+              .locations.seattle.name as $city |
+              .async.seattle.data.response.hourly as $h |
+              [$h.time, $h.temperature_2m]
+              | transpose
+              | map({city: $city, time: .[0], temp: .[1]})
+            )
+          ]
+          | add
+          | group_by(.city)
+          | map(max_by(.temp) | . + {label: .city})
+        )
+      }
+    }): `
+    Chart(data: "weather_hourly.json", width: $width, height: $height) {
+      Theme(name: "minimal")
+      Table labels = "weather_labels.json"
+
+      Scale(stroke: city, palette: "accent")
+      Scale(fill: city, palette: "accent")
+      Guide(axis: x, label: "Hour", timeFormat: "time-minute")
+      Guide(axis: y, label: "Temperature (C)")
+
+      Space(time * temp) {
+        Line(stroke: city, strokeWidth: $size)
+        Point(fill: city, size: $size)
+      }
+
+      Space(time * temp, data: labels) {
+        Point(fill: city, size: 5)
+        Text(label: label, size: 11, dy: -12, anchor: "middle")
+      }
+    }
+  `
+
 
 GET /:city/weather.svg
   |> fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + .params.city + "&count=10&language=en&format=json", {method: "GET"})
