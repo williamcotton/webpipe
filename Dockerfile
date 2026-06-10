@@ -30,7 +30,8 @@ RUN xx-apt-get update && xx-apt-get install -y --no-install-recommends \
   libssl-dev \
   libc6-dev \
   libgcc-12-dev \
-  libfontconfig-dev
+  libfontconfig-dev \
+  libsqlite3-dev
 
 WORKDIR /build
 
@@ -53,6 +54,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   libssl3 \
   ca-certificates \
   libfontconfig1 \
+  libsqlite3-0 \
   && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r wp && useradd -r -g wp -d /app wp
