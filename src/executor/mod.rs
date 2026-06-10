@@ -208,12 +208,48 @@ pub(crate) async fn execute_pipeline_internal_with_error_short_circuit<'a>(
 
         match outcome {
             StepOutcome::Continue => continue,
-            StepOutcome::Return(output) => return Ok((output.state, output.content_type, output.status_code)),
+            StepOutcome::Return(output) => {
+                run_pending_cache_saves(
+                    std::mem::take(&mut pipeline_ctx.pending_cache_saves),
+                    &output.state,
+                    &output.content_type,
+                );
+                return Ok((output.state, output.content_type, output.status_code));
+            }
         }
     }
 
+    run_pending_cache_saves(
+        std::mem::take(&mut pipeline_ctx.pending_cache_saves),
+        &pipeline_ctx.state,
+        &content_type,
+    );
+
     // Return final result with accumulated state and metadata
     Ok((pipeline_ctx.state, content_type, status_code))
+}
+
+/// Execute cache writes registered by `cache` steps during this pipeline run,
+/// storing the run's final state. Typed error envelopes are not cached so
+/// transient failures don't get pinned for a full TTL.
+pub(crate) fn run_pending_cache_saves(
+    saves: Vec<crate::runtime::PendingCacheSave>,
+    state: &Value,
+    content_type: &str,
+) {
+    if saves.is_empty() || extract_error_type(state).is_some() {
+        return;
+    }
+    for save in saves {
+        let cached_data = serde_json::json!({
+            "_cache_value": state,
+            "_cache_content_type": content_type
+        });
+        // "Write-once" semantics to prevent race conditions
+        if save.store.get(&save.key).is_none() {
+            save.store.put(save.key, cached_data, Some(save.ttl));
+        }
+    }
 }
 
 /// Public entry point for pipeline execution

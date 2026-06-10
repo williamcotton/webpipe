@@ -174,21 +174,13 @@ impl super::Middleware for CacheMiddleware {
             return Ok(super::MiddlewareOutput::default());
         }
 
-        // CACHE MISS: Register deferred action to save result at pipeline end
-        let store = env.cache.clone();
-        let key_clone = key.clone();
-        ctx.defer(move |final_result, content_type, _env_ref| {
-            // This runs AFTER the pipeline finishes
-            // Store both the value and content_type
-            let cached_data = serde_json::json!({
-                "_cache_value": final_result,
-                "_cache_content_type": content_type
-            });
-
-            // Use "write-once" semantics to prevent race conditions
-            if store.get(&key_clone).is_none() {
-                store.put(key_clone, cached_data, Some(ttl));
-            }
+        // CACHE MISS: Register a pending save executed with the final state of
+        // the pipeline this step runs in (not the enclosing request), so the
+        // cached value matches what a cache hit short-circuits to.
+        pipeline_ctx.pending_cache_saves.push(crate::runtime::PendingCacheSave {
+            key,
+            ttl,
+            store: env.cache.clone(),
         });
 
         // Cache miss - state unchanged
@@ -254,7 +246,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cache_miss_registers_deferred_action() {
+    async fn cache_miss_registers_pending_save() {
         crate::config::init_global(vec![]);
 
         let ctx = test_ctx();
@@ -270,17 +262,45 @@ mod tests {
         // Should return input unchanged (no metadata)
         assert_eq!(pipeline_ctx.state, input);
 
-        // Verify cache is empty before deferred runs (env.cache is the one used by middleware)
+        // Verify a pending save was registered but the cache is still empty
+        assert_eq!(pipeline_ctx.pending_cache_saves.len(), 1);
+        assert_eq!(pipeline_ctx.pending_cache_saves[0].key, "test-key-123");
         assert!(env.cache.get("test-key-123").is_none());
 
-        // Run deferred actions with final result
+        // Run pending saves with the pipeline's final state
         let final_result = serde_json::json!({"final": "data"});
-        req_ctx.run_deferred(&final_result, "application/json", &env);
+        crate::executor::run_pending_cache_saves(
+            std::mem::take(&mut pipeline_ctx.pending_cache_saves),
+            &final_result,
+            "application/json",
+        );
 
         // Verify cache was populated (env.cache is the one used by middleware)
         let cached = env.cache.get("test-key-123").unwrap();
         assert_eq!(cached["_cache_value"]["final"], serde_json::json!("data"));
         assert_eq!(cached["_cache_content_type"], serde_json::json!("application/json"));
+    }
+
+    #[tokio::test]
+    async fn pending_save_skips_error_envelopes() {
+        crate::config::init_global(vec![]);
+
+        let mw = CacheMiddleware { ctx: test_ctx() };
+        let env = dummy_env();
+        let mut req_ctx = crate::executor::RequestContext::new();
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
+        mw.execute(&[], "ttl: 5, keyTemplate: err-key", &mut pipeline_ctx, &env, &mut req_ctx, None).await.unwrap();
+
+        let error_result = serde_json::json!({
+            "errors": [{ "type": "notFound", "message": "missing" }]
+        });
+        crate::executor::run_pending_cache_saves(
+            std::mem::take(&mut pipeline_ctx.pending_cache_saves),
+            &error_result,
+            "application/json",
+        );
+
+        assert!(env.cache.get("err-key").is_none());
     }
 
     #[tokio::test]

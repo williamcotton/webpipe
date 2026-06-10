@@ -1,5 +1,18 @@
 use serde_json::Value;
 
+use crate::runtime::context::CacheStore;
+
+/// A cache write registered by the cache middleware on a miss. It is executed
+/// with the final state of the pipeline run in which it was registered, so a
+/// `cache` step caches the output of its own pipeline rather than the
+/// response of the enclosing request.
+#[derive(Debug)]
+pub struct PendingCacheSave {
+    pub key: String,
+    pub ttl: u64,
+    pub store: CacheStore,
+}
+
 /// Runtime keys that should be preserved during Transform operations
 /// These are needed for async/join, accumulated results, and request context
 const RUNTIME_KEYS: &[&str] = &[
@@ -14,12 +27,14 @@ const RUNTIME_KEYS: &[&str] = &[
 pub struct PipelineContext {
     /// The JSON state being transformed through the pipeline
     pub state: Value,
+    /// Cache writes to perform with this pipeline run's final state
+    pub pending_cache_saves: Vec<PendingCacheSave>,
 }
 
 impl PipelineContext {
     /// Create a new PipelineContext with the given initial state
     pub fn new(state: Value) -> Self {
-        Self { state }
+        Self { state, pending_cache_saves: Vec::new() }
     }
 
     /// Merge incoming state into current state (The "Backpack" semantics).
