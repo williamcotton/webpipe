@@ -2,7 +2,7 @@ use crate::error::WebPipeError;
 use crate::runtime::Context;
 use async_trait::async_trait;
 use handlebars::Handlebars;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct HandlebarsMiddleware {
-    pub(crate) handlebars: Arc<Mutex<Handlebars<'static>>>,
+    pub(crate) handlebars: Arc<RwLock<Handlebars<'static>>>,
     pub(crate) registered_templates: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -23,7 +23,7 @@ impl Default for HandlebarsMiddleware {
 impl HandlebarsMiddleware {
     pub fn new() -> Self {
         Self {
-            handlebars: Arc::new(Mutex::new(Handlebars::new())),
+            handlebars: Arc::new(RwLock::new(Handlebars::new())),
             registered_templates: Arc::new(Mutex::new(HashSet::new())),
         }
     }
@@ -61,22 +61,29 @@ impl HandlebarsMiddleware {
     }
 
     fn render_template(&self, template: &str, data: &Value) -> Result<String, WebPipeError> {
-        let mut handlebars = self.handlebars.lock();
         let tpl = Self::dedent_multiline(template);
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         tpl.hash(&mut hasher);
         let id = format!("tpl_{:x}", hasher.finish());
 
-        let mut compiled = self.registered_templates.lock();
-        if !compiled.contains(&id) {
-            if let Err(e) = handlebars.register_template_string(&id, &tpl) {
-                return Err(WebPipeError::MiddlewareExecutionError(format!("Handlebars template compile error: {}", e)));
+        // Register on first sight only; templates are content-addressed and
+        // never removed, so after this block the id is always renderable.
+        let needs_register = !self.registered_templates.lock().contains(&id);
+        if needs_register {
+            let mut handlebars = self.handlebars.write();
+            let mut compiled = self.registered_templates.lock();
+            if !compiled.contains(&id) {
+                if let Err(e) = handlebars.register_template_string(&id, &tpl) {
+                    return Err(WebPipeError::MiddlewareExecutionError(format!("Handlebars template compile error: {}", e)));
+                }
+                compiled.insert(id.clone());
             }
-            compiled.insert(id.clone());
         }
 
-        handlebars
+        // Renders take a read lock so concurrent requests render in parallel
+        self.handlebars
+            .read()
             .render(&id, data)
             .map_err(|e| WebPipeError::MiddlewareExecutionError(format!("Handlebars render error: {}", e)))
     }
@@ -195,6 +202,29 @@ mod tests {
         let s = "\n  a\n    b\n";
         let out = HandlebarsMiddleware::dedent_multiline(s);
         assert_eq!(out, "a\n  b");
+    }
+
+    #[test]
+    fn concurrent_renders_share_registry() {
+        let mw = std::sync::Arc::new(HandlebarsMiddleware::new());
+        // Register once up front
+        mw.render_template("Hello {{name}}", &serde_json::json!({"name": "warm"})).unwrap();
+
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let mw = mw.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..50 {
+                    let out = mw
+                        .render_template("Hello {{name}}", &serde_json::json!({"name": format!("t{}", i)}))
+                        .unwrap();
+                    assert_eq!(out, format!("Hello t{}", i));
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }
 

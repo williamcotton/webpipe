@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::runtime::context::CacheStore;
+use crate::runtime::context::{CacheStore, CachedResponse};
 
 /// A cache write registered by the cache middleware on a miss. It is executed
 /// with the final state of the pipeline run in which it was registered, so a
@@ -11,6 +11,10 @@ pub struct PendingCacheSave {
     pub key: String,
     pub ttl: u64,
     pub store: CacheStore,
+    /// True when this save refreshes a stale entry (the caller was elected
+    /// refresher by stale-while-revalidate); if the save is skipped the
+    /// refresh slot must be released via `CacheStore::clear_refresh`.
+    pub refreshing: bool,
 }
 
 /// Runtime keys that should be preserved during Transform operations
@@ -29,12 +33,24 @@ pub struct PipelineContext {
     pub state: Value,
     /// Cache writes to perform with this pipeline run's final state
     pub pending_cache_saves: Vec<PendingCacheSave>,
+    /// Set by the cache middleware on a hit; the executor short-circuits the
+    /// current pipeline run with this response (typed channel — the cached
+    /// value never passes through user-visible state)
+    pub cache_hit: Option<CachedResponse>,
+    /// Identity of the step currently executing (file:line:col#index), used
+    /// to namespace default cache keys so distinct steps never collide
+    pub current_step_id: Option<String>,
 }
 
 impl PipelineContext {
     /// Create a new PipelineContext with the given initial state
     pub fn new(state: Value) -> Self {
-        Self { state, pending_cache_saves: Vec::new() }
+        Self {
+            state,
+            pending_cache_saves: Vec::new(),
+            cache_hit: None,
+            current_step_id: None,
+        }
     }
 
     /// Merge incoming state into current state (The "Backpack" semantics).

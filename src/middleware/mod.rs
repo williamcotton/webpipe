@@ -176,7 +176,7 @@ mod tests {
             http: Client::new(),
             cache: CacheStore::new(8, 1),
             rate_limit: crate::runtime::context::RateLimitStore::new(1000),
-            hb: std::sync::Arc::new(parking_lot::Mutex::new(Handlebars::new())),
+            hb: std::sync::Arc::new(parking_lot::RwLock::new(Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: std::sync::Arc::new(std::collections::HashMap::new()),
             js_scripts: std::sync::Arc::new(std::collections::HashMap::new()),

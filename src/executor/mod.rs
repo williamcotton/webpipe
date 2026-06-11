@@ -213,6 +213,7 @@ pub(crate) async fn execute_pipeline_internal_with_error_short_circuit<'a>(
                     std::mem::take(&mut pipeline_ctx.pending_cache_saves),
                     &output.state,
                     &output.content_type,
+                    output.status_code,
                 );
                 return Ok((output.state, output.content_type, output.status_code));
             }
@@ -223,6 +224,7 @@ pub(crate) async fn execute_pipeline_internal_with_error_short_circuit<'a>(
         std::mem::take(&mut pipeline_ctx.pending_cache_saves),
         &pipeline_ctx.state,
         &content_type,
+        status_code,
     );
 
     // Return final result with accumulated state and metadata
@@ -230,25 +232,41 @@ pub(crate) async fn execute_pipeline_internal_with_error_short_circuit<'a>(
 }
 
 /// Execute cache writes registered by `cache` steps during this pipeline run,
-/// storing the run's final state. Typed error envelopes are not cached so
-/// transient failures don't get pinned for a full TTL.
+/// storing the run's final state plus the response metadata (content type and
+/// status code) needed to replay it. Typed error envelopes and 5xx responses
+/// are not cached so transient failures don't get pinned for a full TTL; in
+/// that case any held refresh slots are released so another caller can retry.
 pub(crate) fn run_pending_cache_saves(
     saves: Vec<crate::runtime::PendingCacheSave>,
     state: &Value,
     content_type: &str,
+    status_code: Option<u16>,
 ) {
-    if saves.is_empty() || extract_error_type(state).is_some() {
+    if saves.is_empty() {
         return;
     }
-    for save in saves {
-        let cached_data = serde_json::json!({
-            "_cache_value": state,
-            "_cache_content_type": content_type
-        });
-        // "Write-once" semantics to prevent race conditions
-        if save.store.get(&save.key).is_none() {
-            save.store.put(save.key, cached_data, Some(save.ttl));
+
+    let uncacheable = extract_error_type(state).is_some()
+        || status_code.is_some_and(|s| s >= 500);
+    if uncacheable {
+        for save in saves {
+            if save.refreshing {
+                save.store.clear_refresh(&save.key);
+            }
         }
+        return;
+    }
+
+    let response = crate::runtime::CachedResponse {
+        body: std::sync::Arc::new(state.clone()),
+        content_type: content_type.to_string(),
+        status_code,
+    };
+    for save in saves {
+        // Overwrite semantics: an elected refresher must be able to replace
+        // its stale entry, and concurrent cold misses writing the same key
+        // are idempotent now that default keys are step-namespaced.
+        save.store.put_response(save.key, response.clone(), Some(save.ttl));
     }
 }
 

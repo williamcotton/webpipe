@@ -265,7 +265,16 @@ impl<'a> RegularStepExecutor<'a> {
             }
             ExecutionMode::Standard => {
                 let mut temp_ctx = crate::runtime::PipelineContext::new(input);
-                handle_standard_execution(
+                // Step identity for namespacing default cache keys: distinct
+                // steps must never share a key even with identical configs.
+                temp_ctx.current_step_id = Some(format!(
+                    "{}:{}:{}#{}",
+                    self.location.file_path.as_deref().unwrap_or("?"),
+                    self.location.line,
+                    self.location.column,
+                    ctx.step_index,
+                ));
+                let result = handle_standard_execution(
                     ctx.env,
                     ctx.req_ctx,
                     effective_name,
@@ -274,7 +283,10 @@ impl<'a> RegularStepExecutor<'a> {
                     &mut temp_ctx,
                     target_name,
                 )
-                .await
+                .await?;
+                ctx.pipe_ctx.pending_cache_saves.append(&mut temp_ctx.pending_cache_saves);
+                ctx.pipe_ctx.cache_hit = temp_ctx.cache_hit.take();
+                Ok(result)
             }
             ExecutionMode::Async(_) => unreachable!("Async handled above"),
         }
@@ -354,17 +366,18 @@ impl<'a> RegularStepExecutor<'a> {
         }
     }
 
-    /// Check for cache stop signal.
-    fn check_cache_stop(&self, ctx: &StepContext) -> Option<StepOutcome> {
-        if let Some((cached_val, cached_ct)) = check_cache_control_signal(&ctx.pipe_ctx.state) {
-            let final_ct = cached_ct.unwrap_or_else(|| ctx.output.content_type.clone());
-            return Some(StepOutcome::Return(PipelineOutput {
-                state: cached_val,
-                content_type: final_ct,
-                status_code: ctx.output.status_code,
-            }));
-        }
-        None
+    /// Check for a cache hit signalled by the cache middleware; if present,
+    /// short-circuit the current pipeline run with the cached response.
+    fn check_cache_stop(&self, ctx: &mut StepContext) -> Option<StepOutcome> {
+        let hit = ctx.pipe_ctx.cache_hit.take()?;
+        // The only deep clone on the hit path, and it happens outside the
+        // cache store lock; reuses the allocation when nobody else holds it.
+        let state = std::sync::Arc::try_unwrap(hit.body).unwrap_or_else(|arc| (*arc).clone());
+        Some(StepOutcome::Return(PipelineOutput {
+            state,
+            content_type: hit.content_type,
+            status_code: hit.status_code.or(ctx.output.status_code),
+        }))
     }
 }
 
@@ -604,22 +617,6 @@ pub async fn handle_debugger_after(ctx: &mut StepContext<'_>, step: &PipelineSte
 // ==================================================================================
 // Internal Helper Functions (re-exported from mod.rs or kept private)
 // ==================================================================================
-
-/// Check for cache control signal from cache middleware.
-fn check_cache_control_signal(input: &Value) -> Option<(Value, Option<String>)> {
-    input.get("_control").and_then(|c| {
-        if c.get("stop").and_then(|b| b.as_bool()).unwrap_or(false) {
-            let value = c.get("value").cloned()?;
-            let content_type = c
-                .get("content_type")
-                .and_then(|ct| ct.as_str())
-                .map(|s| s.to_string());
-            Some((value, content_type))
-        } else {
-            None
-        }
-    })
-}
 
 /// Determine the execution mode for a step.
 fn detect_execution_mode(name: &str, condition: &Option<TagExpr>) -> ExecutionMode {
@@ -1054,21 +1051,70 @@ mod tests {
     }
 
     #[test]
-    fn test_check_cache_control_signal() {
-        let no_control = serde_json::json!({"data": "test"});
-        assert!(check_cache_control_signal(&no_control).is_none());
-
-        let with_control = serde_json::json!({
-            "_control": {
-                "stop": true,
-                "value": {"cached": "data"},
-                "content_type": "text/html"
-            }
+    fn test_cache_hit_short_circuits_with_cached_response() {
+        let mut pipe_ctx = crate::runtime::PipelineContext::new(serde_json::json!({"original": true}));
+        pipe_ctx.cache_hit = Some(crate::runtime::CachedResponse {
+            body: std::sync::Arc::new(serde_json::json!({"cached": "data"})),
+            content_type: "text/html".to_string(),
+            status_code: Some(404),
         });
-        let result = check_cache_control_signal(&with_control);
-        assert!(result.is_some());
-        let (value, ct) = result.unwrap();
-        assert_eq!(value, serde_json::json!({"cached": "data"}));
-        assert_eq!(ct, Some("text/html".to_string()));
+
+        struct StubInvoker;
+        #[async_trait::async_trait]
+        impl crate::executor::MiddlewareInvoker for StubInvoker {
+            async fn call(
+                &self,
+                _name: &str,
+                _args: &[String],
+                _cfg: &str,
+                _pipeline_ctx: &mut crate::runtime::PipelineContext,
+                _env: &ExecutionEnv,
+                _ctx: &mut RequestContext,
+                _target_name: Option<&str>,
+            ) -> Result<crate::middleware::MiddlewareOutput, WebPipeError> {
+                Ok(crate::middleware::MiddlewareOutput::default())
+            }
+        }
+        let env = ExecutionEnv {
+            variables: std::sync::Arc::new(std::collections::HashMap::new()),
+            named_pipelines: std::sync::Arc::new(std::collections::HashMap::new()),
+            imports: std::sync::Arc::new(std::collections::HashMap::new()),
+            invoker: std::sync::Arc::new(StubInvoker),
+            registry: std::sync::Arc::new(crate::middleware::MiddlewareRegistry::empty()),
+            environment: None,
+            cache: crate::runtime::context::CacheStore::new(8, 60),
+            rate_limit: crate::runtime::context::RateLimitStore::new(16),
+            module_registry: std::sync::Arc::new(crate::executor::ModuleRegistry::new()),
+            debugger: None,
+        };
+        let mut req_ctx = RequestContext::new();
+        let mut output = PipelineOutput {
+            state: Value::Null,
+            content_type: "application/json".to_string(),
+            status_code: None,
+        };
+        let steps: Vec<PipelineStep> = vec![];
+        let mut ctx = StepContext {
+            env: &env,
+            req_ctx: &mut req_ctx,
+            pipe_ctx: &mut pipe_ctx,
+            output: &mut output,
+            step_index: 0,
+            all_steps: &steps,
+        };
+
+        let location = SourceLocation::default();
+        let condition = None;
+        let executor = RegularStepExecutor::new("cache", &[], "", false, &condition, None, &location);
+        let outcome = executor.check_cache_stop(&mut ctx).expect("hit should short-circuit");
+        match outcome {
+            StepOutcome::Return(out) => {
+                assert_eq!(out.state, serde_json::json!({"cached": "data"}));
+                assert_eq!(out.content_type, "text/html");
+                assert_eq!(out.status_code, Some(404));
+            }
+            _ => panic!("expected Return"),
+        }
+        assert!(ctx.pipe_ctx.cache_hit.is_none(), "hit must be consumed");
     }
 }

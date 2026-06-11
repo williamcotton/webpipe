@@ -269,7 +269,7 @@ mod tests {
             http: reqwest::Client::new(),
             cache: CacheStore::new(8, 60),
             rate_limit: RateLimitStore::new(1000),
-            hb: Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
+            hb: Arc::new(parking_lot::RwLock::new(handlebars::Handlebars::new())),
             cfg: ConfigSnapshot(json!({})),
             lua_scripts: Arc::new(std::collections::HashMap::new()),
             js_scripts: Arc::new(std::collections::HashMap::new()),

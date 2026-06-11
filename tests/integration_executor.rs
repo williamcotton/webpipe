@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 
 use axum::{routing::get, Json, Router};
 
@@ -167,9 +170,17 @@ pipeline p =
 #[tokio::test]
 async fn fetch_with_local_server_and_cache() {
     // Start a tiny local server
+    let hit_count = Arc::new(AtomicUsize::new(0));
+    let route_hit_count = hit_count.clone();
     let app = Router::new().route(
         "/echo",
-        get(|| async { Json(serde_json::json!({"ok": true})) }),
+        get(move || {
+            let route_hit_count = route_hit_count.clone();
+            async move {
+                let count = route_hit_count.fetch_add(1, Ordering::SeqCst) + 1;
+                Json(serde_json::json!({"ok": true, "count": count}))
+            }
+        }),
     );
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -192,18 +203,17 @@ pipeline getEcho =
 
     // First call hits network
     let input = serde_json::json!({"resultName": "e"});
-    let (out1, _ct, _st, ctx1) = execute_pipeline(&env, &pipeline, input.clone(), webpipe::executor::RequestContext::new()).await.unwrap();
+    let (out1, _ct, _st, _ctx1) = execute_pipeline(&env, &pipeline, input.clone(), webpipe::executor::RequestContext::new()).await.unwrap();
     assert!(out1["data"]["e"]["response"]["ok"].as_bool().unwrap());
+    assert_eq!(hit_count.load(Ordering::SeqCst), 1);
 
-    // CRITICAL: Run deferred actions to populate the cache
-    ctx1.run_deferred(&out1, "application/json", &env);
-
-    // Second call should return quickly and use cache (behavioral equivalence)
+    // Second call should return from cache without hitting the server again.
     let (out2, _ct, _st, _ctx2) = execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
     assert_eq!(out1["data"]["e"], out2["data"]["e"]);
+    assert_eq!(hit_count.load(Ordering::SeqCst), 1);
 
     // Stop server
-    drop(server);
+    server.abort();
 }
 
 #[tokio::test]
@@ -241,4 +251,159 @@ pipeline processData =
     // The cached result should match the first result exactly
     assert_eq!(out1, out2);
     assert_eq!(out2["articles"][0], serde_json::json!("fetched content"));
+}
+
+#[tokio::test]
+async fn cache_replays_status_code_for_rendered_error_pages() {
+    let src = r#"
+pipeline p =
+  |> cache: `enabled: true, ttl: 60, keyTemplate: status-replay`
+  |> jq: `{ errors: [{ type: "notFound", message: "nope" }] }`
+  |> result
+    notFound(404):
+      |> jq: `"rendered 404 page"`
+    ok(200):
+      |> jq: `"ok"`
+"#;
+    let (_rest, program) = parse_program(src).unwrap();
+    let env = build_env(&program).await;
+    let pipeline = find_pipeline_owned(&program, "p");
+
+    let input = serde_json::json!({});
+    let (out1, _ct, st1, _) = execute_pipeline(&env, &pipeline, input.clone(), webpipe::executor::RequestContext::new()).await.unwrap();
+    assert_eq!(st1, Some(404));
+    assert_eq!(out1, serde_json::json!("rendered 404 page"));
+
+    // Second run must come from cache with the stored status code
+    let (out2, _ct, st2, _) = execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
+    assert_eq!(st2, Some(404), "cached response must replay its status code");
+    assert_eq!(out2, serde_json::json!("rendered 404 page"));
+}
+
+#[tokio::test]
+async fn cache_never_stores_5xx_responses() {
+    let src = r#"
+pipeline p =
+  |> cache: `enabled: true, ttl: 60, keyTemplate: err5xx`
+  |> jq: `{ errors: [{ type: "boom", message: "transient" }] }`
+  |> result
+    boom(500):
+      |> jq: `"error page"`
+    ok(200):
+      |> jq: `"ok"`
+"#;
+    let (_rest, program) = parse_program(src).unwrap();
+    let env = build_env(&program).await;
+    let pipeline = find_pipeline_owned(&program, "p");
+
+    let input = serde_json::json!({});
+    let (_out, _ct, st, _) = execute_pipeline(&env, &pipeline, input.clone(), webpipe::executor::RequestContext::new()).await.unwrap();
+    assert_eq!(st, Some(500));
+    assert!(
+        matches!(env.cache.lookup("err5xx"), webpipe::runtime::CacheLookup::Miss),
+        "5xx responses must not be cached"
+    );
+
+    // The pipeline re-executes on every request while the upstream is failing
+    let (_out, _ct, st, _) = execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
+    assert_eq!(st, Some(500));
+}
+
+#[tokio::test]
+async fn route_and_nested_cache_steps_with_identical_configs_do_not_collide() {
+    // Regression: a route-level cache step and a nested pipeline cache step
+    // with byte-identical configs used to hash to the same default key; the
+    // route then served the inner pipeline's JSON instead of its own output.
+    let src = r#"
+pipeline inner =
+  |> cache: `enabled: true, ttl: 60`
+  |> jq: `{ data: "inner-data" }`
+
+pipeline route =
+  |> cache: `enabled: true, ttl: 60`
+  |> pipeline: "inner"
+  |> jq: `"<html>" + .data + "</html>"`
+"#;
+    let (_rest, program) = parse_program(src).unwrap();
+    let env = build_env(&program).await;
+    let pipeline = find_pipeline_owned(&program, "route");
+
+    // Request-shaped input: method/path/query/params persist through the
+    // nested pipeline via backpack merge, which is what made the keys collide
+    let input = serde_json::json!({"method": "GET", "path": "/", "query": {}, "params": {}});
+    let (out1, _ct, _st, _) = execute_pipeline(&env, &pipeline, input.clone(), webpipe::executor::RequestContext::new()).await.unwrap();
+    assert_eq!(out1, serde_json::json!("<html>inner-data</html>"));
+
+    // Second run hits the route-level cache; it must serve the route's own
+    // output, not the inner pipeline's
+    let (out2, _ct, _st, _) = execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await.unwrap();
+    assert_eq!(out2, serde_json::json!("<html>inner-data</html>"));
+}
+
+#[tokio::test]
+async fn stale_while_revalidate_prevents_thundering_herd() {
+    let hit_count = Arc::new(AtomicUsize::new(0));
+    let route_hit_count = hit_count.clone();
+    let app = Router::new().route(
+        "/echo",
+        get(move || {
+            let route_hit_count = route_hit_count.clone();
+            async move {
+                let count = route_hit_count.fetch_add(1, Ordering::SeqCst) + 1;
+                Json(serde_json::json!({"ok": true, "count": count}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let url = format!("http://{}/echo", addr);
+    let src = format!(
+        r#"
+pipeline getEcho =
+  |> cache: `enabled: true, ttl: 1, keyTemplate: herd`
+  |> fetch: "{}"
+"#,
+        url
+    );
+    let (_rest, program) = parse_program(&src).unwrap();
+    let env = build_env(&program).await;
+    let pipeline = find_pipeline_owned(&program, "getEcho");
+
+    // Warm the cache
+    let input = serde_json::json!({"resultName": "e"});
+    let (out1, _ct, _st, _) = execute_pipeline(&env, &pipeline, input.clone(), webpipe::executor::RequestContext::new()).await.unwrap();
+    assert!(out1["data"]["e"]["response"]["ok"].as_bool().unwrap());
+    assert_eq!(hit_count.load(Ordering::SeqCst), 1);
+
+    // Let the entry go stale (TTL 1s; default SWR grace keeps it servable)
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+    // Hammer with 10 concurrent requests: exactly one is elected to refresh,
+    // everyone else is served the stale value
+    let env = Arc::new(env);
+    let pipeline = Arc::new(pipeline);
+    let mut handles = Vec::new();
+    for _ in 0..10 {
+        let env = env.clone();
+        let pipeline = pipeline.clone();
+        let input = input.clone();
+        handles.push(tokio::spawn(async move {
+            execute_pipeline(&env, &pipeline, input, webpipe::executor::RequestContext::new()).await
+        }));
+    }
+    for handle in handles {
+        let (out, _ct, _st, _) = handle.await.unwrap().unwrap();
+        assert!(out["data"]["e"]["response"]["ok"].as_bool().unwrap());
+    }
+    assert_eq!(
+        hit_count.load(Ordering::SeqCst),
+        2,
+        "only the elected refresher may hit the upstream (initial warm + one refresh)"
+    );
+
+    server.abort();
 }

@@ -116,12 +116,19 @@ impl super::Middleware for CacheMiddleware {
             key_template: parsed.key_tpl.clone(),
         });
 
-        // Generate cache key
+        // Generate cache key. keyTemplate keys are deliberately global (a
+        // shared namespace) so multiple routes can share one entry; default
+        // keys are namespaced by step identity so distinct cache steps with
+        // identical configs never collide.
         let key = if let Some(tpl) = &parsed.key_tpl {
             render_key_template(tpl, input)
         } else {
-            // Generate a hash-based key from the config and relevant input parts
+            // Generate a hash-based key from the step identity, the config,
+            // and relevant input parts
             let mut hasher = DefaultHasher::new();
+            if let Some(step_id) = &pipeline_ctx.current_step_id {
+                step_id.hash(&mut hasher);
+            }
             config.hash(&mut hasher);
             // Hash method and path if present (for route-level caching)
             if let Some(method) = input.get("method").and_then(|v| v.as_str()) {
@@ -145,46 +152,41 @@ impl super::Middleware for CacheMiddleware {
             format!("pipeline:{:x}", hasher.finish())
         };
 
-        // Check cache for a hit using env.cache (global shared cache)
-        if let Some(cached_val) = env.cache.get(&key) {
-            // Extract stored content_type if available
-            let (value, stored_content_type) = if let Some(obj) = cached_val.as_object() {
-                if let (Some(v), Some(ct)) = (obj.get("_cache_value"), obj.get("_cache_content_type")) {
-                    (v.clone(), ct.as_str().map(|s| s.to_string()))
-                } else {
-                    (cached_val.clone(), None)
-                }
-            } else {
-                (cached_val.clone(), None)
-            };
-
-            // CACHE HIT: Set state to wrapper with stop signal
-            let mut control = serde_json::json!({
-                "_control": {
-                    "stop": true,
-                    "value": value
-                }
-            });
-
-            if let Some(ct) = stored_content_type {
-                control["_control"]["content_type"] = serde_json::json!(ct);
+        // Look up with stale-while-revalidate semantics (env.cache is the
+        // global shared cache)
+        match env.cache.lookup(&key) {
+            crate::runtime::CacheLookup::Fresh(resp) | crate::runtime::CacheLookup::Stale(resp) => {
+                // CACHE HIT (fresh, or stale while another caller refreshes):
+                // signal the executor to short-circuit this pipeline run with
+                // the cached response.
+                pipeline_ctx.cache_hit = Some(resp);
+                Ok(super::MiddlewareOutput::default())
             }
-
-            pipeline_ctx.state = control;
-            return Ok(super::MiddlewareOutput::default());
+            crate::runtime::CacheLookup::Refresh(_) => {
+                // STALE, ELECTED REFRESHER: proceed past the cache step and
+                // overwrite the entry with this pipeline run's final state.
+                pipeline_ctx.pending_cache_saves.push(crate::runtime::PendingCacheSave {
+                    key,
+                    ttl,
+                    store: env.cache.clone(),
+                    refreshing: true,
+                });
+                Ok(super::MiddlewareOutput::default())
+            }
+            crate::runtime::CacheLookup::Miss => {
+                // CACHE MISS: Register a pending save executed with the final
+                // state of the pipeline this step runs in (not the enclosing
+                // request), so the cached value matches what a cache hit
+                // short-circuits to.
+                pipeline_ctx.pending_cache_saves.push(crate::runtime::PendingCacheSave {
+                    key,
+                    ttl,
+                    store: env.cache.clone(),
+                    refreshing: false,
+                });
+                Ok(super::MiddlewareOutput::default())
+            }
         }
-
-        // CACHE MISS: Register a pending save executed with the final state of
-        // the pipeline this step runs in (not the enclosing request), so the
-        // cached value matches what a cache hit short-circuits to.
-        pipeline_ctx.pending_cache_saves.push(crate::runtime::PendingCacheSave {
-            key,
-            ttl,
-            store: env.cache.clone(),
-        });
-
-        // Cache miss - state unchanged
-        Ok(super::MiddlewareOutput::default())
     }
 }
 
@@ -202,7 +204,7 @@ mod tests {
             http: Client::new(),
             cache: CacheStore::new(64, 60),
             rate_limit: RateLimitStore::new(1000),
-            hb: Arc::new(parking_lot::Mutex::new(handlebars::Handlebars::new())),
+            hb: Arc::new(parking_lot::RwLock::new(handlebars::Handlebars::new())),
             cfg: ConfigSnapshot(serde_json::json!({})),
             lua_scripts: Arc::new(std::collections::HashMap::new()),
             js_scripts: Arc::new(std::collections::HashMap::new()),
@@ -245,6 +247,13 @@ mod tests {
         }
     }
 
+    fn lookup_fresh(cache: &crate::runtime::context::CacheStore, key: &str) -> Option<crate::runtime::CachedResponse> {
+        match cache.lookup(key) {
+            crate::runtime::CacheLookup::Fresh(r) => Some(r),
+            _ => None,
+        }
+    }
+
     #[tokio::test]
     async fn cache_miss_registers_pending_save() {
         crate::config::init_global(vec![]);
@@ -265,7 +274,8 @@ mod tests {
         // Verify a pending save was registered but the cache is still empty
         assert_eq!(pipeline_ctx.pending_cache_saves.len(), 1);
         assert_eq!(pipeline_ctx.pending_cache_saves[0].key, "test-key-123");
-        assert!(env.cache.get("test-key-123").is_none());
+        assert!(!pipeline_ctx.pending_cache_saves[0].refreshing);
+        assert!(matches!(env.cache.lookup("test-key-123"), crate::runtime::CacheLookup::Miss));
 
         // Run pending saves with the pipeline's final state
         let final_result = serde_json::json!({"final": "data"});
@@ -273,12 +283,14 @@ mod tests {
             std::mem::take(&mut pipeline_ctx.pending_cache_saves),
             &final_result,
             "application/json",
+            Some(200),
         );
 
         // Verify cache was populated (env.cache is the one used by middleware)
-        let cached = env.cache.get("test-key-123").unwrap();
-        assert_eq!(cached["_cache_value"]["final"], serde_json::json!("data"));
-        assert_eq!(cached["_cache_content_type"], serde_json::json!("application/json"));
+        let cached = lookup_fresh(&env.cache, "test-key-123").unwrap();
+        assert_eq!(cached.body["final"], serde_json::json!("data"));
+        assert_eq!(cached.content_type, "application/json");
+        assert_eq!(cached.status_code, Some(200));
     }
 
     #[tokio::test]
@@ -298,13 +310,34 @@ mod tests {
             std::mem::take(&mut pipeline_ctx.pending_cache_saves),
             &error_result,
             "application/json",
+            None,
         );
 
-        assert!(env.cache.get("err-key").is_none());
+        assert!(matches!(env.cache.lookup("err-key"), crate::runtime::CacheLookup::Miss));
     }
 
     #[tokio::test]
-    async fn returns_stop_signal_on_cache_hit() {
+    async fn pending_save_skips_5xx_responses() {
+        crate::config::init_global(vec![]);
+
+        let mw = CacheMiddleware { ctx: test_ctx() };
+        let env = dummy_env();
+        let mut req_ctx = crate::executor::RequestContext::new();
+        let mut pipeline_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
+        mw.execute(&[], "ttl: 5, keyTemplate: err-500", &mut pipeline_ctx, &env, &mut req_ctx, None).await.unwrap();
+
+        crate::executor::run_pending_cache_saves(
+            std::mem::take(&mut pipeline_ctx.pending_cache_saves),
+            &serde_json::json!("<html>error page</html>"),
+            "text/html",
+            Some(500),
+        );
+
+        assert!(matches!(env.cache.lookup("err-500"), crate::runtime::CacheLookup::Miss));
+    }
+
+    #[tokio::test]
+    async fn signals_cache_hit_with_stored_response() {
         crate::config::init_global(vec![]);
 
         let ctx = test_ctx();
@@ -313,23 +346,95 @@ mod tests {
         let env = dummy_env();
 
         // Pre-populate env.cache (which is what the middleware uses)
-        env.cache.put(
+        env.cache.put_response(
             "test-key".to_string(),
-            serde_json::json!({
-                "_cache_value": {"cached": "data"},
-                "_cache_content_type": "text/html"
-            }),
-            Some(60)
+            crate::runtime::CachedResponse {
+                body: Arc::new(serde_json::json!({"cached": "data"})),
+                content_type: "text/html".to_string(),
+                status_code: Some(404),
+            },
+            Some(60),
         );
 
         let mut req_ctx = crate::executor::RequestContext::new();
         let mut pipeline_ctx = crate::runtime::PipelineContext::new(input.clone());
         mw.execute(&[], "keyTemplate: test-key", &mut pipeline_ctx, &env, &mut req_ctx, None).await.unwrap();
 
-        // Should return stop signal with cached value and content_type
-        assert_eq!(pipeline_ctx.state["_control"]["stop"], serde_json::json!(true));
-        assert_eq!(pipeline_ctx.state["_control"]["value"]["cached"], serde_json::json!("data"));
-        assert_eq!(pipeline_ctx.state["_control"]["content_type"], serde_json::json!("text/html"));
+        // Should signal a typed hit and leave state untouched
+        assert_eq!(pipeline_ctx.state, input, "state must not carry the cached value");
+        let hit = pipeline_ctx.cache_hit.as_ref().expect("cache hit signalled");
+        assert_eq!(hit.body["cached"], serde_json::json!("data"));
+        assert_eq!(hit.content_type, "text/html");
+        assert_eq!(hit.status_code, Some(404));
+    }
+
+    #[tokio::test]
+    async fn stale_entry_elects_single_refresher_and_serves_stale() {
+        crate::config::init_global(vec![]);
+
+        let mw = CacheMiddleware { ctx: test_ctx() };
+        let env = dummy_env();
+        env.cache.put_response(
+            "swr-key".to_string(),
+            crate::runtime::CachedResponse {
+                body: Arc::new(serde_json::json!({"v": 1})),
+                content_type: "application/json".to_string(),
+                status_code: Some(200),
+            },
+            Some(1),
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        // First caller in the stale window proceeds as the refresher
+        let mut req_ctx = crate::executor::RequestContext::new();
+        let mut refresher_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
+        mw.execute(&[], "ttl: 1, keyTemplate: swr-key", &mut refresher_ctx, &env, &mut req_ctx, None).await.unwrap();
+        assert!(refresher_ctx.cache_hit.is_none(), "refresher must proceed past the cache step");
+        assert_eq!(refresher_ctx.pending_cache_saves.len(), 1);
+        assert!(refresher_ctx.pending_cache_saves[0].refreshing);
+
+        // Concurrent callers get the stale value
+        let mut stale_ctx = crate::runtime::PipelineContext::new(serde_json::json!({}));
+        mw.execute(&[], "ttl: 1, keyTemplate: swr-key", &mut stale_ctx, &env, &mut req_ctx, None).await.unwrap();
+        let hit = stale_ctx.cache_hit.as_ref().expect("stale value served");
+        assert_eq!(hit.body["v"], serde_json::json!(1));
+
+        // The refresher's save overwrites the stale entry
+        crate::executor::run_pending_cache_saves(
+            std::mem::take(&mut refresher_ctx.pending_cache_saves),
+            &serde_json::json!({"v": 2}),
+            "application/json",
+            Some(200),
+        );
+        let refreshed = lookup_fresh(&env.cache, "swr-key").unwrap();
+        assert_eq!(refreshed.body["v"], serde_json::json!(2));
+    }
+
+    #[tokio::test]
+    async fn identical_configs_get_distinct_default_keys_per_step() {
+        crate::config::init_global(vec![]);
+
+        let mw = CacheMiddleware { ctx: test_ctx() };
+        let env = dummy_env();
+        let mut req_ctx = crate::executor::RequestContext::new();
+        // Same config and same state, but two different step identities —
+        // this is the route-cache vs nested-pipeline-cache collision
+        let input = serde_json::json!({"method": "GET", "path": "/", "query": {}, "params": {}});
+
+        let mut ctx_a = crate::runtime::PipelineContext::new(input.clone());
+        ctx_a.current_step_id = Some("app.wp:10:3#0".to_string());
+        mw.execute(&[], "ttl: 60", &mut ctx_a, &env, &mut req_ctx, None).await.unwrap();
+
+        let mut ctx_b = crate::runtime::PipelineContext::new(input);
+        ctx_b.current_step_id = Some("app.wp:42:3#2".to_string());
+        mw.execute(&[], "ttl: 60", &mut ctx_b, &env, &mut req_ctx, None).await.unwrap();
+
+        assert_eq!(ctx_a.pending_cache_saves.len(), 1);
+        assert_eq!(ctx_b.pending_cache_saves.len(), 1);
+        assert_ne!(
+            ctx_a.pending_cache_saves[0].key, ctx_b.pending_cache_saves[0].key,
+            "distinct steps must never share a default cache key"
+        );
     }
 
     #[tokio::test]
